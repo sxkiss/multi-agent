@@ -48,6 +48,27 @@
     <div class="status-row" id="statusRow">加载中...</div>
   </div>
 
+  <!-- gateway provider 自定义配置 -->
+  <div class="card">
+    <h2>Gateway 配置（CLI 自定义）</h2>
+    <label>API Base URL</label>
+    <input id="gwBaseUrl" placeholder="http://127.0.0.1:8787/v1">
+    <label>API Key</label>
+    <input id="gwApiKey" type="password" placeholder="API Key">
+    <label>模型名</label>
+    <input id="gwModel" placeholder="auto">
+    <label>推理深度 (reasoningEffort)</label>
+    <select id="gwEffort">
+      <option value="low">low - 轻量推理</option>
+      <option value="medium">medium - 中等推理</option>
+      <option value="high">high - 深度推理</option>
+      <option value="xhigh">xhigh - 超深度推理</option>
+      <option value="max">max - 最大深度推理</option>
+    </select>
+    <button onclick="saveGateway()">保存 Gateway 配置</button>
+    <span class="small" id="gwMsg"></span>
+  </div>
+
   <!-- 内置模板 -->
   <div class="card">
     <h2>内置模板（只读）</h2>
@@ -94,7 +115,32 @@ async function load() {
   BUILTIN = d.data.builtin_templates || [];
   renderTemplates(); renderBuiltin();
   await loadStatus();
+  await loadGateway();
   setStatus('已加载', 'saved');
+}
+
+async function loadGateway() {
+  const d = await api('/api/opencode/cli-config');
+  if (!d.status) return;
+  const g = d.data;
+  $('gwBaseUrl').value = g.base_url || '';
+  $('gwApiKey').value = g.api_key || '';
+  $('gwModel').value = g.model || 'auto';
+  $('gwEffort').value = g.reasoning_effort || 'max';
+}
+
+async function saveGateway() {
+  const d = await api('/api/opencode/cli-config', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      base_url: $('gwBaseUrl').value.trim(),
+      api_key: $('gwApiKey').value.trim(),
+      model: $('gwModel').value.trim() || 'auto',
+      reasoning_effort: $('gwEffort').value
+    })
+  });
+  if (d.status) { $('gwMsg').textContent = '已保存 ✓'; $('gwMsg').className = 'small saved'; }
+  else { $('gwMsg').textContent = '保存失败: ' + (d.msg||''); $('gwMsg').className = 'small err'; }
 }
 
 async function loadStatus() {

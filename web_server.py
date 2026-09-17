@@ -1430,6 +1430,81 @@ class AgentMain:
             "running_jobs": running,
         })
 
+    def opencode_cli_get_config(self, get=None):
+        """获取 opencode CLI 全局配置 (~/.config/opencode/opencode.json) 的 gateway provider"""
+        import shutil as _shutil
+        from chat_client.opencode_config import _GLOBAL_OC_PATH, _GLOBAL_AUTH_PATH
+        oc = {}
+        try:
+            with open(_GLOBAL_OC_PATH, 'r', encoding='utf-8') as f:
+                oc = json.load(f)
+        except Exception as e:
+            logger.warning("读取 opencode.json 失败: %s", e)
+        gateway = (oc.get('provider') or {}).get('gateway', {})
+        options = gateway.get('options', {})
+        models = gateway.get('models', {})
+        # 获取第一个 model 的 reasoningEffort
+        reasoning_effort = 'max'
+        for mname, mconf in models.items():
+            reasoning_effort = mconf.get('options', {}).get('reasoningEffort', 'max')
+            break
+        oc_bin = _shutil.which("opencode") or os.path.expanduser("~/.local/nodejs/node-latest/bin/opencode")
+        return public.return_data(True, data={
+            "base_url": options.get('baseURL', ''),
+            "api_key": options.get('apiKey', ''),
+            "model": list(models.keys())[0] if models else '',
+            "reasoning_effort": reasoning_effort,
+            "opencode_binary": oc_bin,
+            "config_path": _GLOBAL_OC_PATH,
+        })
+
+    def opencode_cli_save_config(self, get):
+        """保存 opencode CLI 全局配置 gateway provider"""
+        from chat_client.opencode_config import _GLOBAL_OC_PATH, _GLOBAL_AUTH_PATH
+        import stat as _stat
+        base_url = str(get.get('base_url', '')).strip()
+        api_key = str(get.get('api_key', '')).strip()
+        model = str(get.get('model', 'auto')).strip() or 'auto'
+        reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
+        if not base_url:
+            return public.returnMsg(False, "base_url 不能为空")
+        try:
+            existing = {}
+            if os.path.exists(_GLOBAL_OC_PATH):
+                with open(_GLOBAL_OC_PATH, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+            # 只覆盖 gateway provider
+            existing.setdefault('provider', {})['gateway'] = {
+                "name": "gateway",
+                "type": "openai",
+                "options": {"baseURL": base_url, "apiKey": api_key},
+                "models": {
+                    model: {
+                        "name": model,
+                        "reasoning": True,
+                        "options": {"reasoningEffort": reasoning_effort},
+                        "limit": {"context": 262144, "output": 32000},
+                    }
+                },
+            }
+            os.makedirs(os.path.dirname(_GLOBAL_OC_PATH), exist_ok=True)
+            with open(_GLOBAL_OC_PATH, 'w', encoding='utf-8') as f:
+                json.dump(existing, f, indent=2, ensure_ascii=False)
+            # auth.json
+            existing_auth = {}
+            try:
+                with open(_GLOBAL_AUTH_PATH, 'r', encoding='utf-8') as f:
+                    existing_auth = json.load(f)
+            except Exception:
+                pass
+            existing_auth["gateway"] = {"type": "api", "key": api_key}
+            with open(_GLOBAL_AUTH_PATH, 'w', encoding='utf-8') as f:
+                json.dump(existing_auth, f, indent=2)
+            os.chmod(_GLOBAL_AUTH_PATH, _stat.S_IRUSR | _stat.S_IWUSR)
+            return public.return_data(True, data={"saved": True})
+        except Exception as e:
+            return public.returnMsg(False, f"保存失败: {e!s}")
+
     def claude_get_config(self, get=None):
         """获取 Claude CLI 配置：effortLevel + env 环境变量"""
         import shutil as _shutil
@@ -2509,6 +2584,24 @@ async def api_claude_config_post(request: Request):
     except Exception:
         logger.warning("plugin claude_save 参数提取异常", exc_info=True)
     return JSONResponse(agent_main.claude_save_config(params))
+
+
+@app.get("/api/opencode/cli-config")
+async def api_opencode_cli_config_get(request: Request):
+    params = dict(request.query_params)
+    return JSONResponse(agent_main.opencode_cli_get_config(params))
+
+
+@app.post("/api/opencode/cli-config")
+async def api_opencode_cli_config_post(request: Request):
+    params = dict(request.query_params)
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            params.update(body)
+    except Exception:
+        logger.warning("plugin opencode_cli_save 参数提取异常", exc_info=True)
+    return JSONResponse(agent_main.opencode_cli_save_config(params))
 
 
 @app.get("/api/chat/history")
