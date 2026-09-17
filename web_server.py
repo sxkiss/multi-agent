@@ -1827,101 +1827,96 @@ class AgentMain:
                         sessions.append({"session_id": session_id, "title": title, "timestamp": int(mtime), "time_str": time_str, "workspace": "", "source": "single"})
                     except Exception:
                         continue
-
-                # ── 标记集团主对话（通过 job jsonl 是否有 crew_plan 判断）────
-                jobs_dir = os.path.join(self.plugin_path, 'jobs')
-                for s in sessions:
-                    if s.get('source') != 'single':
-                        continue
-                    sid = s.get('session_id', '')
-                    try:
-                        import glob as _glob
-                        job_files = _glob.glob(os.path.join(jobs_dir, f'{sid}::*'))
-                        if any('crew_plan' in open(jf, encoding='utf-8', errors='ignore').read() for jf in job_files):
-                            s['is_group'] = True
-                    except Exception:
-                        pass
-
-                # ── 扫描集团模式子代理会话（读 meta.json 判断来源，避免误判）────
-                for session_id in dirs:
-                    parent_path = os.path.join(sessions_dir, session_id)
-                    if not os.path.isdir(parent_path):
-                        continue
-                    try:
-                        sub_dirs = os.listdir(parent_path)
-                        for sub_dir in sub_dirs:
-                            sub_path = os.path.join(parent_path, sub_dir)
-                            if not os.path.isdir(sub_path):
-                                continue
-                            meta_file = os.path.join(sub_path, 'meta.json')
-                            sub_file = os.path.join(sub_path, 'sessions.json')
-                            # 有 meta.json 才认为是 crew 子会话；sessions.json 可选（未完成的任务）
-                            is_crew = os.path.exists(meta_file)
-                            # 兜底：无 meta.json 但有 sessions.json 的子目录
-                            # 检查父会话的 job jsonl 是否有 crew_plan 事件来判断是否集团模式
-                            if not is_crew and os.path.exists(sub_file):
-                                try:
-                                    import glob
-                                    jobs_dir = os.path.join(os.path.dirname(sessions_dir), 'jobs')
-                                    job_files = glob.glob(os.path.join(jobs_dir, f'{session_id}::*'))
-                                    is_crew = any('crew_plan' in open(jf, encoding='utf-8', errors='ignore').read() for jf in job_files)
-                                except Exception:
-                                    is_crew = False
-                            if not is_crew:
-                                continue
-                            try:
-                                # 有 meta.json 时从其 mtime 开始，否则用 sub_file
-                                if os.path.exists(meta_file):
-                                    mtime = os.path.getmtime(meta_file)
-                                else:
-                                    mtime = 0
-                                if os.path.exists(sub_file):
-                                    mtime = max(mtime, os.path.getmtime(sub_file))
-                                time_str = datetime.datetime.fromtimestamp(mtime).astimezone().strftime('%Y-%m-%d %H:%M:%S')
-                                # 有 meta.json 时读取，否则兜底构造
-                                if os.path.exists(meta_file):
-                                    with open(meta_file, 'r', encoding='utf-8') as f:
-                                        meta = json.load(f)
-                                else:
-                                    meta = {"source": "crew", "parent": session_id, "agent": "", "dept": ""}
-                                title = sub_dir[:36]
-                                if os.path.exists(sub_file):
-                                    with open(sub_file, 'r', encoding='utf-8') as sf:
-                                        history = json.load(sf)
-                                        if history:
-                                            for msg in history:
-                                                if msg.get('role') == 'user':
-                                                    content = msg.get('content', '')
-                                                    if isinstance(content, list):
-                                                        text_item = next(
-                                                            (item for item in content
-                                                             if isinstance(item, dict) and item.get('type') == 'text'),
-                                                            None
-                                                        )
-                                                        content = text_item.get('text', '') if text_item else ''
-                                                    if not isinstance(content, str):
-                                                        content = ''
-                                                    title = content[:20] + '...' if len(content) > 20 else content
-                                                    break
-                                sessions.append({
-                                    "session_id": sub_dir,
-                                    "title": title,
-                                    "timestamp": int(mtime),
-                                    "time_str": time_str,
-                                    "workspace": "",
-                                    "source": meta.get("source", "crew"),
-                                    "parent": session_id,
-                                    "agent": meta.get("agent", ""),
-                                    "dept": meta.get("dept", ""),
-                                })
-                            except Exception:
-                                continue
-                    except Exception:
-                        pass
             except Exception:
                 pass
 
-        # 去重：同一 session_id 可能同时出现在 native 和 opencode/claude 历史
+        # ── 标记集团主对话（通过 job jsonl 是否有 crew_plan 判断）────
+        try:
+            import glob
+            jobs_dir = os.path.join(self.plugin_path, 'jobs')
+            for s in sessions:
+                if s.get('source') != 'single':
+                    continue
+                sid = s.get('session_id', '')
+                job_files = glob.glob(os.path.join(jobs_dir, f'{sid}::*'))
+                if any('crew_plan' in open(jf, encoding='utf-8', errors='ignore').read() for jf in job_files):
+                    s['is_group'] = True
+        except Exception:
+            pass
+
+        # ── 扫描集团模式子代理会话（读 meta.json 判断来源，避免误判）────
+        if os.path.exists(sessions_dir):
+            try:
+                dirs2 = os.listdir(sessions_dir)
+                for session_id in dirs2:
+                    parent_path = os.path.join(sessions_dir, session_id)
+                    if not os.path.isdir(parent_path):
+                        continue
+                    sub_dirs = os.listdir(parent_path)
+                    for sub_dir in sub_dirs:
+                        sub_path = os.path.join(parent_path, sub_dir)
+                        if not os.path.isdir(sub_path):
+                            continue
+                        meta_file = os.path.join(sub_path, 'meta.json')
+                        sub_file = os.path.join(sub_path, 'sessions.json')
+                        is_crew = os.path.exists(meta_file)
+                        if not is_crew and os.path.exists(sub_file):
+                            try:
+                                job_files = glob.glob(os.path.join(jobs_dir, f'{session_id}::*'))
+                                is_crew = any('crew_plan' in open(jf, encoding='utf-8', errors='ignore').read() for jf in job_files)
+                            except Exception:
+                                pass
+                        if not is_crew:
+                            continue
+                        try:
+                            if os.path.exists(meta_file):
+                                mtime = os.path.getmtime(meta_file)
+                            else:
+                                mtime = 0
+                            if os.path.exists(sub_file):
+                                mtime = max(mtime, os.path.getmtime(sub_file))
+                            time_str = datetime.datetime.fromtimestamp(mtime).astimezone().strftime('%Y-%m-%d %H:%M:%S')
+                            if os.path.exists(meta_file):
+                                with open(meta_file, 'r', encoding='utf-8') as f:
+                                    meta = json.load(f)
+                            else:
+                                meta = {"source": "crew", "parent": session_id, "agent": "", "dept": ""}
+                            title = sub_dir[:36]
+                            if os.path.exists(sub_file):
+                                with open(sub_file, 'r', encoding='utf-8') as sf:
+                                    history = json.load(sf)
+                                    if history:
+                                        for msg in history:
+                                            if msg.get('role') == 'user':
+                                                content = msg.get('content', '')
+                                                if isinstance(content, list):
+                                                    text_item = next(
+                                                        (item for item in content
+                                                         if isinstance(item, dict) and item.get('type') == 'text'),
+                                                        None
+                                                    )
+                                                    content = text_item.get('text', '') if text_item else ''
+                                                if not isinstance(content, str):
+                                                    content = ''
+                                                title = content[:20] + '...' if len(content) > 20 else content
+                                                break
+                            sessions.append({
+                                "session_id": sub_dir,
+                                "title": title,
+                                "timestamp": int(mtime),
+                                "time_str": time_str,
+                                "workspace": "",
+                                "source": meta.get("source", "crew"),
+                                "parent": session_id,
+                                "agent": meta.get("agent", ""),
+                                "dept": meta.get("dept", ""),
+                            })
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
+        # 去重       # 去重：同一 session_id 可能同时出现在 native 和 opencode/claude 历史
         # 优先保留有 is_group 标记或 source=crew 的记录
         seen = {}
         for s in sessions:
