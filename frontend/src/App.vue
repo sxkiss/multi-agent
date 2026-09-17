@@ -954,6 +954,7 @@ function loadConversations() {
           completedToolIds,
           updatedAt: e.updated_at || '',
           timeStr: e.time_str || '',
+          timestamp: Number(e.timestamp || 0),
         }
       })
     }

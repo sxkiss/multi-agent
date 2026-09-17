@@ -426,12 +426,16 @@ def query_claude_sessions(workspace_filter: str = "") -> list[dict]:
             else:
                 sid = base_name
             first_user = ""
+            file_cwd = ""
             with open(f, "r", encoding="utf-8", errors="replace") as fp:
                 for line in fp:
                     try:
                         d = json.loads(line)
                     except (json.JSONDecodeError, ValueError):
                         continue
+                    # 首次拿到 cwd 就记录（jsonl 每行都带 cwd 字段）
+                    if not file_cwd and d.get("cwd"):
+                        file_cwd = str(d["cwd"])
                     if d.get("type") == "user":
                         content = d.get("message", {}).get("content", [])
                         if isinstance(content, list):
@@ -453,7 +457,7 @@ def query_claude_sessions(workspace_filter: str = "") -> list[dict]:
                 "id": sid,
                 "title": first_user,
                 "time_updated": int(mtime * 1000),
-                "directory": "",
+                "directory": file_cwd,
                 "source": "claude",
             })
         except Exception:

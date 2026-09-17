@@ -1196,6 +1196,25 @@ class AgentMain:
             # 自定义 API 配置（优先前端传入，回退全局配置）
             custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
             custom_api_key = str(get.get('api_key', '')).strip() or self.config.get('api_key', '')
+            # 持久化 workspace（CLI 自家 DB 可能不记录前端传入的 workspace）
+            try:
+                if workspace:
+                    _md = os.path.join(self.plugin_path, 'sessions', session_id)
+                    os.makedirs(_md, exist_ok=True)
+                    _mf = os.path.join(_md, 'meta.json')
+                    _m = {}
+                    if os.path.exists(_mf):
+                        try:
+                            with open(_mf, 'r', encoding='utf-8') as _f:
+                                _m = json.load(_f) or {}
+                        except Exception:
+                            _m = {}
+                    _m['workspace'] = workspace
+                    _m['source'] = 'opencode'
+                    with open(_mf, 'w', encoding='utf-8') as _f:
+                        json.dump(_m, _f, ensure_ascii=False)
+            except Exception:
+                logger.warning("opencode 模式持久化 workspace 到 meta.json 失败", exc_info=True)
             t = threading.Thread(
                 target=run_opencode_chat,
                 args=(session_id, user_input, job, model, system_prompt, workspace, reasoning_effort, custom_base_url, custom_api_key),
@@ -1223,6 +1242,24 @@ class AgentMain:
             # 自定义 API 配置（优先前端传入，回退全局配置）
             custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
             custom_api_key = str(get.get('api_key', '')).strip() or self.config.get('api_key', '')
+            try:
+                if workspace:
+                    _md = os.path.join(self.plugin_path, 'sessions', session_id)
+                    os.makedirs(_md, exist_ok=True)
+                    _mf = os.path.join(_md, 'meta.json')
+                    _m = {}
+                    if os.path.exists(_mf):
+                        try:
+                            with open(_mf, 'r', encoding='utf-8') as _f:
+                                _m = json.load(_f) or {}
+                        except Exception:
+                            _m = {}
+                    _m['workspace'] = workspace
+                    _m['source'] = 'claude'
+                    with open(_mf, 'w', encoding='utf-8') as _f:
+                        json.dump(_m, _f, ensure_ascii=False)
+            except Exception:
+                logger.warning("claude 模式持久化 workspace 到 meta.json 失败", exc_info=True)
             t = threading.Thread(
                 target=run_claude_chat,
                 args=(session_id, user_input, job, model, system_prompt, workspace, reasoning_effort, custom_base_url, custom_api_key),
@@ -1246,6 +1283,24 @@ class AgentMain:
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
             custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
             custom_api_key = str(get.get('api_key', '')).strip() or self.config.get('api_key', '')
+            try:
+                if workspace:
+                    _md = os.path.join(self.plugin_path, 'sessions', session_id)
+                    os.makedirs(_md, exist_ok=True)
+                    _mf = os.path.join(_md, 'meta.json')
+                    _m = {}
+                    if os.path.exists(_mf):
+                        try:
+                            with open(_mf, 'r', encoding='utf-8') as _f:
+                                _m = json.load(_f) or {}
+                        except Exception:
+                            _m = {}
+                    _m['workspace'] = workspace
+                    _m['source'] = 'codex'
+                    with open(_mf, 'w', encoding='utf-8') as _f:
+                        json.dump(_m, _f, ensure_ascii=False)
+            except Exception:
+                logger.warning("codex 模式持久化 workspace 到 meta.json 失败", exc_info=True)
             t = threading.Thread(
                 target=run_codex_chat,
                 args=(session_id, user_input, job, model, system_prompt, workspace, reasoning_effort, custom_base_url, custom_api_key),
@@ -1267,6 +1322,27 @@ class AgentMain:
         if err:
             chat_jobs.discard(job.key)
             return public.returnMsg(False, err["data"]["msg"])
+
+        # 持久化 workspace 到 sessions/<id>/meta.json，供历史列表按工作目录分组
+        try:
+            _ws = (agent.config or {}).get('workspace', '') or ''
+            if _ws:
+                _meta_dir = os.path.join(self.plugin_path, 'sessions', session_id)
+                os.makedirs(_meta_dir, exist_ok=True)
+                _meta_file = os.path.join(_meta_dir, 'meta.json')
+                _meta_data = {}
+                if os.path.exists(_meta_file):
+                    try:
+                        with open(_meta_file, 'r', encoding='utf-8') as _mf:
+                            _meta_data = json.load(_mf) or {}
+                    except Exception:
+                        _meta_data = {}
+                _meta_data['workspace'] = _ws
+                _meta_data['source'] = 'single'
+                with open(_meta_file, 'w', encoding='utf-8') as _mf:
+                    json.dump(_meta_data, _mf, ensure_ascii=False)
+        except Exception:
+            logger.warning("native 模式持久化 workspace 到 meta.json 失败", exc_info=True)
 
         job.attach_agent(agent)
         t = threading.Thread(
@@ -1945,11 +2021,50 @@ class AgentMain:
         # 只有 group/single 模式才读本地 native 会话（集团对话 + 单 Agent + 子代理）
         if mode in ('group', 'single'):
             sessions_dir = os.path.join(self.plugin_path, 'sessions')
+            # CLI 会话 ID 前缀（这些是 opencode/claude/codex 模式，不应混入 native 历史）
+            _cli_prefixes = ('ses_', 'agent-', 'rollout-')
+
+            def _is_crew_session(sid: str, history, session_path) -> bool:
+                """可靠识别集团会话：子代理 UUID 子目录 / crew 工具调用 / jobs 含 crew_plan"""
+                # 1) 子代理 UUID 子目录（最可靠）
+                try:
+                    for sub in os.listdir(session_path):
+                        sp = os.path.join(session_path, sub)
+                        if not os.path.isdir(sp):
+                            continue
+                        # UUID 形式（36 字符，含 4 个连字符）的子目录 + 内含 sessions.json
+                        if len(sub) >= 32 and sub.count('-') >= 2 and os.path.exists(os.path.join(sp, 'sessions.json')):
+                            return True
+                except Exception:
+                    pass
+                # 2) 历史里调用过 crew 工具
+                if history:
+                    for m in history:
+                        for tc in (m.get('tool_calls') or []):
+                            if not isinstance(tc, dict):
+                                continue
+                            name = (tc.get('function') or {}).get('name', '') or tc.get('name', '')
+                            if name in ('RunCrew', 'Task', 'CreateDepartment', 'RecruitMember'):
+                                return True
+                # 3) jobs 文件含 crew_plan（兜底）
+                try:
+                    import glob
+                    jobs_dir = os.path.join(self.plugin_path, 'jobs')
+                    for jf in glob.glob(os.path.join(jobs_dir, f'{sid}::*')):
+                        if 'crew_plan' in open(jf, encoding='utf-8', errors='ignore').read():
+                            return True
+                except Exception:
+                    pass
+                return False
+
             if os.path.exists(sessions_dir):
                 try:
                     dirs = os.listdir(sessions_dir)
                     dirs.sort(key=lambda x: os.path.getmtime(os.path.join(sessions_dir, x)), reverse=True)
                     for session_id in dirs:
+                        # 跳过 CLI 会话 ID 的顶层目录（属于 opencode/claude/codex）
+                        if session_id.startswith(_cli_prefixes):
+                            continue
                         session_path = os.path.join(sessions_dir, session_id)
                         if not os.path.isdir(session_path):
                             continue
@@ -1977,25 +2092,31 @@ class AgentMain:
                                                 content = ''
                                             title = content[:20] + '...' if len(content) > 20 else content
                                             break
-                            sessions.append({"session_id": session_id, "title": title, "timestamp": int(mtime), "time_str": time_str, "workspace": "", "source": "single"})
+                            # 从 meta.json 读 workspace（chat_start 时持久化）
+                            ws = ''
+                            meta_file = os.path.join(session_path, 'meta.json')
+                            if os.path.exists(meta_file):
+                                try:
+                                    with open(meta_file, 'r', encoding='utf-8') as mf:
+                                        ws = (json.load(mf) or {}).get('workspace', '') or ''
+                                except Exception:
+                                    ws = ''
+                            item = {
+                                "session_id": session_id,
+                                "title": title,
+                                "timestamp": int(mtime),
+                                "time_str": time_str,
+                                "workspace": ws,
+                                "source": "single",
+                                "is_group": _is_crew_session(session_id, history, session_path),
+                            }
+                            sessions.append(item)
                         except Exception:
                             continue
                 except Exception:
                     pass
 
-            # ── 标记集团主对话（通过 job jsonl 是否有 crew_plan 判断）────
-            try:
-                import glob
-                jobs_dir = os.path.join(self.plugin_path, 'jobs')
-                for s in sessions:
-                    if s.get('source') != 'single':
-                        continue
-                    sid = s.get('session_id', '')
-                    job_files = glob.glob(os.path.join(jobs_dir, f'{sid}::*'))
-                    if any('crew_plan' in open(jf, encoding='utf-8', errors='ignore').read() for jf in job_files):
-                        s['is_group'] = True
-            except Exception:
-                pass
+            # ── 旧版 jobs-only 检测已合并到 _is_crew_session，块删除 ──
 
             # ── 扫描集团模式子代理会话（读 meta.json 判断来源，避免误判）────
             if os.path.exists(sessions_dir):
@@ -2058,7 +2179,8 @@ class AgentMain:
                                     "title": title,
                                     "timestamp": int(mtime),
                                     "time_str": time_str,
-                                    "workspace": "",
+                                    # 子代理 workspace 优先读 meta.json，没有则继承父会话
+                                    "workspace": meta.get("workspace", "") or "",
                                     "source": meta.get("source", "crew"),
                                     "parent": session_id,
                                     "agent": meta.get("agent", ""),
@@ -2070,6 +2192,16 @@ class AgentMain:
                     pass
 
         # 去重       # 去重：同一 session_id 可能同时出现在 native 和 opencode/claude 历史
+        # 先建立 session_id → workspace 映射，供 crew 子代理继承父会话 workspace
+        _parent_ws = {}
+        for _s in sessions:
+            _sid = _s.get('session_id', '')
+            _ws = _s.get('workspace', '') or ''
+            if _sid and _ws:
+                _parent_ws[_sid] = _ws
+        for _s in sessions:
+            if not _s.get('workspace') and _s.get('parent') and _s['parent'] in _parent_ws:
+                _s['workspace'] = _parent_ws[_s['parent']]
         # 优先保留有 is_group 标记或 source=crew 的记录
         seen = {}
         for s in sessions:

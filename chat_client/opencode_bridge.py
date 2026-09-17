@@ -437,13 +437,13 @@ def query_opencode_sessions(workspace_filter: str = "") -> list[dict]:
         try:
             if workspace_filter:
                 session_rows = conn.execute(
-                    "SELECT id, directory, title, time_updated, tokens_input, tokens_output "
+                    "SELECT id, slug AS directory, title, time_updated, tokens_input, tokens_output "
                     "FROM session WHERE directory = ? ORDER BY time_updated DESC LIMIT 200",
                     (workspace_filter,),
                 ).fetchall()
             else:
                 session_rows = conn.execute(
-                    "SELECT id, directory, title, time_updated, tokens_input, tokens_output "
+                    "SELECT id, slug AS directory, title, time_updated, tokens_input, tokens_output "
                     "FROM session ORDER BY time_updated DESC LIMIT 200",
                 ).fetchall()
         except Exception:
@@ -468,29 +468,61 @@ def query_opencode_sessions(workspace_filter: str = "") -> list[dict]:
             for r in agg:
                 sid = r["sid"]
                 last_t = int(r["last_t"] or 0)
-                # 取该 session 首条 user 消息作标题
+                # 取该 session 首条 user 消息作标题 + 从 message.data.path.cwd 提取 workspace
                 first_user = ""
+                fb_cwd = ""
                 try:
                     um = conn.execute(
-                        "SELECT data FROM message WHERE session_id = ? AND data LIKE '%\"role\":\"user\"%' "
+                        "SELECT id, data FROM message WHERE session_id = ? AND data LIKE '%\"role\":\"user\"%' "
                         "ORDER BY CAST(time_created AS INTEGER) ASC LIMIT 1",
                         (sid,),
                     ).fetchone()
                     if um:
                         d = json.loads(um["data"])
-                        content = d.get("content", "")
-                        if isinstance(content, list):
-                            for c in content:
-                                if isinstance(c, dict) and c.get("type") == "text":
-                                    first_user = c.get("text", "")
-                                    break
-                        elif isinstance(content, str):
-                            first_user = content
+                        pth = d.get("path") or {}
+                        if isinstance(pth, dict) and pth.get("cwd"):
+                            fb_cwd = str(pth["cwd"])
+                        # 文本存在 part 表（message.data 无 content 字段）
+                        try:
+                            tp = conn.execute(
+                                "SELECT data FROM part WHERE message_id = ? AND json_extract(data,'$.type')='text' "
+                                "ORDER BY CAST(time_created AS INTEGER) ASC LIMIT 1",
+                                (um["id"],),
+                            ).fetchone()
+                            if tp:
+                                first_user = str(json.loads(tp["data"]).get("text") or "")
+                        except Exception:
+                            pass
+                        if not first_user:
+                            content = d.get("content", "")
+                            if isinstance(content, list):
+                                for c in content:
+                                    if isinstance(c, dict) and c.get("type") == "text":
+                                        first_user = c.get("text", "")
+                                        break
+                            elif isinstance(content, str):
+                                first_user = content
                 except Exception:
                     first_user = ""
+                # user 消息没有 path 时，用该会话最新一条消息兜底
+                if not fb_cwd:
+                    try:
+                        lm = conn.execute(
+                            "SELECT data FROM message WHERE session_id = ? AND data LIKE '%\"cwd\"%' "
+                            "ORDER BY CAST(time_created AS INTEGER) DESC LIMIT 1",
+                            (sid,),
+                        ).fetchone()
+                        if lm:
+                            pth = (json.loads(lm["data"]) or {}).get("path") or {}
+                            if isinstance(pth, dict) and pth.get("cwd"):
+                                fb_cwd = str(pth["cwd"])
+                    except Exception:
+                        pass
+                if workspace_filter and fb_cwd != workspace_filter:
+                    continue
                 sessions.append({
                     "id": sid,
-                    "directory": "",  # session 表缺失，无法拿到 directory
+                    "directory": fb_cwd,
                     "title": (first_user[:50].strip() or "opencode 会话"),
                     "time_updated": last_t,
                     "tokens_input": 0,
@@ -520,12 +552,10 @@ def query_opencode_history(session_id: str) -> list[dict]:
         conn = sqlite3.connect(db_path, timeout=5)
         conn.row_factory = sqlite3.Row
 
+        # session 表可能被清空（会话从 message 表反查而来），查不到也继续用 message/part 表
         sess = conn.execute(
-            "SELECT directory, title FROM session WHERE id = ?", (session_id,)
+            "SELECT slug AS directory, title FROM session WHERE id = ?", (session_id,)
         ).fetchone()
-        if not sess:
-            conn.close()
-            return []
 
         # 全部消息按时间排序（一条 user 对应一条 assistant）
         msgs = conn.execute(
