@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>codex 管理面板</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f8fafc;color:#1e293b;min-height:100vh}
+.wrap{max-width:760px;margin:0 auto;padding:24px 16px;display:flex;flex-direction:column;gap:16px}
+h1{font-size:20px;font-weight:700;margin-bottom:8px;color:#0f172a}
+h2{font-size:14px;font-weight:600;color:#374151;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #e5e7eb}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.status-row{font-size:13px;line-height:1.8}
+.status-row .ok{color:#059669;font-weight:600}
+.status-row .bad{color:#dc2626;font-weight:600}
+.status-row .err{color:#dc2626}
+.status-row .saved{color:#059669}
+label{display:block;font-size:12px;font-weight:500;color:#6b7280;margin-bottom:4px;margin-top:10px}
+input,select{width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;outline:none;transition:border-color .15s}
+input:focus,select:focus{border-color:#2563eb;box-shadow:0 0 0 2px #2563eb20}
+button{background:#2563eb;color:#fff;border:none;border-radius:7px;padding:8px 16px;font-size:13px;cursor:pointer;margin-top:12px;transition:background .15s}
+button:hover{background:#1d4ed8}
+button:active{background:#1e40af}
+.small{font-size:11px;color:#9ca3af;display:block;margin-top:6px}
+.err{color:#dc2626}
+.saved{color:#059669}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:500}
+.badge-ok{background:#dcfce7;color:#16a34a}
+.badge-bad{background:#fee2e2;color:#dc2626}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>codex 管理面板</h1>
+    <p class="small">配置 ~/.codex/config.toml，查看二进制状态</p>
+  </div>
+
+  <!-- 运行状态 -->
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="status-row" id="statusRow">加载中...</div>
+  </div>
+
+  <!-- config.toml 配置 -->
+  <div class="card">
+    <h2>config.toml 配置</h2>
+    <label>模型 (model)</label>
+    <input id="cfgModel" placeholder="auto">
+    <label>推理深度 (model_reasoning_effort)</label>
+    <select id="cfgEffort">
+      <option value="low">low - 轻量推理</option>
+      <option value="medium">medium - 中等推理</option>
+      <option value="high">high - 深度推理</option>
+      <option value="xhigh">xhigh - 超深度推理</option>
+      <option value="max">max - 最大深度推理</option>
+    </select>
+    <label>API Base URL</label>
+    <input id="cfgBaseUrl" placeholder="http://127.0.0.1:3333/v1">
+    <label>API Key</label>
+    <input id="cfgApiKey" type="password" placeholder="OPENAI_API_KEY">
+    <button onclick="saveConfig()">保存配置</button>
+    <span class="small" id="saveMsg"></span>
+  </div>
+
+  <!-- 快捷操作 -->
+  <div class="card">
+    <h2>快捷操作</h2>
+    <button onclick="testCodex()" style="background:#7c3aed">测试 codex exec</button>
+    <span class="small" id="testMsg"></span>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id)
+function api(url, opts) {
+  return fetch(url, opts).then(r => r.json())
+}
+
+async function load() {
+  await loadConfig()
+  await loadStatus()
+}
+
+async function loadConfig() {
+  const d = await api('/api/codex/cli-config')
+  if (!d.status) return
+  const g = d.data
+  $('cfgModel').value = g.model || 'auto'
+  $('cfgEffort').value = g.reasoning_effort || 'max'
+  $('cfgApiKey').value = g.api_key || ''
+  $('cfgApiKey').value = g.api_key || ''
+}
+
+async function saveConfig() {
+  const d = await api('/api/codex/cli-config', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      model: $('cfgModel').value.trim() || 'auto',
+      reasoning_effort: $('cfgEffort').value,
+      base_url: $('cfgBaseUrl').value.trim(),
+      api_key: $('cfgApiKey').value.trim(),
+    })
+  })
+  if (d.status) {
+    $('saveMsg').textContent = '已保存 ✓ 备份已创建'
+    $('saveMsg').className = 'small saved'
+  } else {
+    $('saveMsg').textContent = '保存失败: ' + (d.msg||'')
+    $('saveMsg').className = 'small err'
+  }
+}
+
+async function loadStatus() {
+  const d = await api('/api/codex/status')
+  if (!d.status) { setStatus('加载状态失败', 'err'); return }
+  const s = d.data
+  const binary = s.binary || '未找到'
+  const available = s.available
+  setStatus(
+    `<span class="badge ${available ? 'badge-ok' : 'badge-bad'}">${available ? '可用' : '不可用'}</span> ` +
+    `codex 二进制: <code>${binary}</code>`
+  )
+}
+
+function setStatus(html, cls) {
+  $('statusRow').innerHTML = `<span class="${cls}">${html}</span>`
+}
+
+async function testCodex() {
+  $('testMsg').textContent = '测试中...'
+  $('testMsg').className = 'small'
+  try {
+    const r = await fetch('/api/codex/test', { method: 'POST' })
+    const d = await r.json()
+    if (d.status) {
+      $('testMsg').textContent = '测试成功 ✓ codex CLI 工作正常'
+      $('testMsg').className = 'small saved'
+    } else {
+      $('testMsg').textContent = '测试失败: ' + (d.msg || d.error || '')
+      $('testMsg').className = 'small err'
+    }
+  } catch(e) {
+    $('testMsg').textContent = '测试异常: ' + e.message
+    $('testMsg').className = 'small err'
+  }
+}
+
+load()
+</script>
+</body>
+</html>

@@ -4,6 +4,7 @@
       :conversations="conversations"
       :current-conversation-id="currentConversationId"
       :is-sending="isSending"
+      :chat-mode="chatMode"
       :api-configured="!!(globalConfig.api_base_url && globalConfig.api_key)"
       :get-time-ago="getTimeAgo"
       @create-new="createNewConversation"
@@ -58,6 +59,7 @@
       <button type="button" :class="{ active: chatMode === 'group' }" @click="chatMode = 'group'">集团模式</button>
       <button type="button" :class="{ active: chatMode === 'opencode' }" @click="onOpencodeMode">opencode</button>
       <button type="button" :class="{ active: chatMode === 'claude' }" @click="chatMode = 'claude'">claude</button>
+      <button type="button" :class="{ active: chatMode === 'codex' }" @click="chatMode = 'codex'">codex</button>
       <button type="button" :class="{ active: chatMode === 'single' }" @click="chatMode = 'single'">单 Agent</button>
     </div>
     <!-- 模式状态指示器 -->
@@ -79,8 +81,8 @@
         <span class="small" v-else>留空则使用项目默认目录</span>
       </div>
     </div>
-    <!-- opencode / claude / 单 Agent 模式：目录 / 提示词模板 / 自定义指令 -->
-    <div class="codex-bar" v-if="['opencode', 'claude', 'single'].includes(chatMode)">
+    <!-- opencode / claude / codex / 单 Agent 模式：目录 / 提示词模板 / 自定义指令 -->
+    <div class="codex-bar" v-if="['opencode', 'claude', 'codex', 'single'].includes(chatMode)">
       <div class="codex-field">
         <label>工作目录</label>
         <input v-model="ocWorkspace" placeholder="填入目标项目路径，如 /path/to/project" @change="onWorkspaceChange">
@@ -99,6 +101,7 @@
       </details>
       <a class="codex-manage" href="/static/opencode_panel.html" target="_blank" v-if="chatMode === 'opencode'">opencode 管理面板</a>
       <a class="codex-manage" href="/static/claude_panel.html" target="_blank" v-if="chatMode === 'claude'">claude 管理面板</a>
+      <a class="codex-manage" href="/static/codex_panel.html" target="_blank" v-if="chatMode === 'codex'">codex 管理面板</a>
     </div>
     <ChatInput
       ref="chatInputRef"
@@ -252,7 +255,11 @@ let pendingReconnect = false
 // 工作模式：group=集团模式（经理只编排）/ opencode=opencode CLI 模式（可配提示词模板）
 // 默认集团模式，避免 localStorage 残留 opencode/claude/single 导致集团模式失灵
 const chatMode = ref((localStorage.getItem('ai_chat_mode') || 'group') === 'group' ? 'group' : localStorage.getItem('ai_chat_mode'))
-watch(chatMode, (v) => { try { if (v) localStorage.setItem('ai_chat_mode', v) } catch (e) {} })
+watch(chatMode, (v) => {
+  try { if (v) localStorage.setItem('ai_chat_mode', v) } catch (e) {}
+  // 切换模式时重新加载该模式的历史会话
+  loadConversations()
+})
 
 // opencode 模式状态：工作目录 / 提示词模板 / 自定义指令
 const ocWorkspace = ref(localStorage.getItem('ai_oc_workspace') || '')
@@ -292,11 +299,11 @@ function onOpencodeMode() {
   loadOpencodeConfig()
 }
 
-// 页面加载时如果已是 opencode/claude/single 模式，立即加载配置
-if (['opencode', 'claude', 'single'].includes(chatMode.value)) {
+// 页面加载时如果已是 opencode/claude/codex/single 模式，立即加载配置
+if (['opencode', 'claude', 'codex', 'single'].includes(chatMode.value)) {
   loadOpencodeConfig()
 }
-watch(chatMode, (v) => { if (['opencode', 'claude', 'single'].includes(v) && !ocBuiltinTemplates.value.length) loadOpencodeConfig() })
+watch(chatMode, (v) => { if (['opencode', 'claude', 'codex', 'single'].includes(v) && !ocBuiltinTemplates.value.length) loadOpencodeConfig() })
 const showModelPopover = ref(false)
 const showToolPopover = ref(false)
 const modelsLoading = ref(false)
@@ -770,7 +777,7 @@ async function followChatEvents(sessionId, fromLastId, handlers) {
 
 // 启动后台聊天任务并订阅其事件流
 async function getAIResponseStream(message, sessionId, model, tools, webSearch, onChunk, onComplete, onError, onThink, onToolCall, onToolResult, onMetaInfo, queueIndex = -1) {
-  const isOpencode = ['opencode', 'claude', 'single'].includes(chatMode.value || 'group')
+  const isOpencode = ['opencode', 'claude', 'codex', 'single'].includes(chatMode.value || 'group')
   const activeMode = (chatMode.value || 'group') === 'group' ? 'group' : (chatMode.value || 'group')
   const endpoint = '/api/chat/start'
   const payload = {
@@ -798,7 +805,7 @@ async function getAIResponseStream(message, sessionId, model, tools, webSearch, 
     // 传递工作目录：优先使用当前模式下的 workspace 输入框，其次回退到全局配置
     ...((groupWorkspace.value.trim() && chatMode.value === 'group')
       ? { workspace: groupWorkspace.value.trim() }
-      : ((chatMode.value !== 'opencode' && chatMode.value !== 'claude' && globalConfig.value?.workspace)
+      : ((!['opencode', 'claude', 'codex', 'single'].includes(chatMode.value) && globalConfig.value?.workspace)
         ? { workspace: globalConfig.value.workspace }
         : {}))
   }
@@ -917,8 +924,21 @@ function saveConversation() {
 }
 
 function loadConversations() {
-  const ws = ((chatMode.value === 'opencode' || chatMode.value === 'claude' || chatMode.value === 'single') && ocWorkspace.value.trim()) ? ocWorkspace.value.trim() : ''
-  const url = '/api/chat/history' + (ws ? '?workspace=' + encodeURIComponent(ws) : '')
+  const mode = chatMode.value || 'group'
+  // 各模式只查自己的历史
+  // group → 查 native（crew + single is_group）
+  // single → 查 native source=single（只看非 is_group 的）
+  // opencode/claude/codex → 查对应 source
+  const params = new URLSearchParams()
+  if (['opencode', 'claude', 'codex'].includes(mode)) {
+    params.set('source', mode)
+  } else if (mode === 'single') {
+    params.set('source', 'single')
+  }
+  // workspace 过滤
+  const ws = (['opencode', 'claude', 'codex', 'single'].includes(mode) && ocWorkspace.value.trim()) ? ocWorkspace.value.trim() : ''
+  if (ws) params.set('workspace', ws)
+  const url = '/api/chat/history' + (params.toString() ? '?' + params.toString() : '')
   apiGet(url, (result) => {
     if (result.status && result.data) {
       conversations.value = result.data.map(e => {
@@ -957,17 +977,17 @@ function loadConversation(id) {
 
   const seq = ++loadConversationSeq
   const idx = conversations.value.findIndex(c => c.id === id)
+  const convo = idx >= 0 ? conversations.value[idx] : null
   // opencode / claude 会话：自动切换到对应模式并回填工作目录
-  if (idx >= 0 && conversations.value[idx]) {
-    const convo = conversations.value[idx]
+  if (convo) {
     if (convo.workspace) {
       ocWorkspace.value = convo.workspace
     }
     // 注意：不根据会话 source 自动切换 chatMode —— 模式完全由顶部按钮控制，
-    // 避免点开历史会话时被强制切回 opencode/claude/single，导致集团模式失灵。
+    // 避免点开历史会话时被强制切回 opencode/claude/codex/single，导致集团模式失灵。
     const src = convo.source || ''
-    // 若 workspace 已回填或会话源为 opencode/claude/single，按当前模式+目录重查历史
-    if (ocWorkspace.value.trim() || (src === 'opencode' || src === 'claude' || src === 'single')) {
+    // 若 workspace 已回填或会话源为 opencode/claude/codex/single，按当前模式+目录重查历史
+    if (ocWorkspace.value.trim() || (['opencode', 'claude', 'codex', 'single'].includes(src))) {
       loadConversations()
     }
   }
@@ -982,7 +1002,7 @@ function loadConversation(id) {
     return
   }
 
-  apiGet('/api/chat/messages?session_id=' + encodeURIComponent(id), (result) => {
+  apiGet('/api/chat/messages?session_id=' + encodeURIComponent(id) + '&source=' + encodeURIComponent(convo?.source || ''), (result) => {
     // 竞态保护：只应用最新一次请求的结果
     if (seq !== loadConversationSeq) return
     if (result.status && result.data) {
@@ -1417,6 +1437,13 @@ function buildStreamHandlers(sessionId) {
       if (chatMode.value === 'opencode' && meta.opencode_session_id) {
         currentConversationId.value = meta.opencode_session_id
         localStorage.setItem('ai_last_conversation_id', String(meta.opencode_session_id))
+      }
+      // ── codex 模式续聊修复 ──
+      // codex exec 生成真实 thread_id，通过 meta_info 回传。
+      // 前端更新 currentConversationId，后续对话才能复用同一 codex 会话。
+      if (chatMode.value === 'codex' && meta.codex_thread_id) {
+        currentConversationId.value = meta.codex_thread_id
+        localStorage.setItem('ai_last_conversation_id', String(meta.codex_thread_id))
       }
     },
     onCompactSummary: (data) => {

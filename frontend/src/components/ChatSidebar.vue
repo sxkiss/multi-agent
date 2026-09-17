@@ -137,6 +137,7 @@ export default {
     conversations: { type: Array, default: () => [] },
     currentConversationId: { type: String, default: '' },
     isSending: { type: Boolean, default: false },
+    chatMode: { type: String, default: 'group' },
     apiConfigured: { type: Boolean, default: false },
     getTimeAgo: { type: Function, default: () => () => '' }
   },
@@ -161,64 +162,93 @@ export default {
       return this.conversations.length > 0 && this.selectedIds.length === this.conversations.length
     },
     folderGroups() {
-      // 分类规则：
-      //  - source=crew → "集团子代理"
-      //  - source=single && is_group=true → "集团对话"
-      //  - source=single && is_group=false → "单 Agent"
-      //  - 其余（opencode/claude 等）→ "模式 · 工作目录" 分组
-      const crew = []
-      const groupChats = []    // source=single 且 is_group=true
-      const singleChats = []   // source=single 且 is_group=false
-      const groups = {}
-      const order = []
-      for (const conv of this.conversations) {
-        if (conv.source === 'crew') {
-          crew.push(conv)
-          continue
+      // 分类规则（按当前 chatMode 决定显示哪些会话）：
+      //  - group 模式：source=crew → "集团子代理"，source=single && is_group=true → "集团对话"
+      //  - single 模式：source=single && is_group=false → "单 Agent 主对话"
+      //  - opencode/claude/codex 模式：source=<mode>，按工作目录分组
+      //  - 其他：全部显示
+      const folders = []
+      const mode = this.chatMode || 'group'
+
+      if (mode === 'group') {
+        const crew = this.conversations.filter(c => c.source === 'crew')
+        const groupChats = this.conversations.filter(c => c.source === 'single' && c.is_group)
+        const singleChats = this.conversations.filter(c => c.source === 'single' && !c.is_group)
+        // 集团子代理
+        if (crew.length > 0) {
+          folders.push({ path: '__crew__', name: '集团子代理', items: crew })
         }
-        if (conv.source === 'single') {
-          if (conv.is_group) {
-            groupChats.push(conv)
-          } else {
-            singleChats.push(conv)
+        // 集团对话（主）
+        if (groupChats.length > 0) {
+          folders.unshift({ path: '__group__', name: '集团对话', items: groupChats })
+        }
+        // 未归类的单 Agent（兜底）
+        if (singleChats.length > 0) {
+          folders.push({ path: '__single__', name: '单 Agent', items: singleChats })
+        }
+      } else if (mode === 'single') {
+        // 单 Agent 模式：只显示非 is_group 的 single 会话
+        const singleChats = this.conversations.filter(c => c.source === 'single' && !c.is_group)
+        if (singleChats.length > 0) {
+          folders.push({ path: '__single__', name: '单 Agent', items: singleChats })
+        }
+      } else if (['opencode', 'claude', 'codex'].includes(mode)) {
+        // CLI 模式：按工作目录分组
+        const modeConv = this.conversations.filter(c => c.source === mode)
+        const groups = {}
+        const order = []
+        for (const conv of modeConv) {
+          const ws = (conv.workspace || '').trim()
+          const key = ws ? `${mode} · ${ws}` : `${mode} · 未分类`
+          if (!groups[key]) {
+            groups[key] = []
+            order.push(key)
           }
-          continue
+          groups[key].push(conv)
         }
-        const ws = (conv.workspace || '').trim()
-        const key = ws ? `${conv.source} · ${ws}` : `${conv.source} · 未分类`
-        if (!groups[key]) {
-          groups[key] = []
-          order.push(key)
+        for (const path of order) {
+          folders.push({ path, name: this._folderName(path), items: groups[path] })
         }
-        groups[key].push(conv)
-      }
-      const folders = order.map(path => ({
-        path,
-        name: this._folderName(path),
-        items: groups[path],
-      }))
-      // 集团主对话放最前
-      if (groupChats.length > 0) {
-        folders.unshift({
-          path: '__group__',
-          name: '集团对话',
-          items: groupChats,
-        })
-      }
-      // 单 Agent 对话
-      if (singleChats.length > 0) {
-        folders.unshift({
-          path: '__single__',
-          name: '单 Agent',
-          items: singleChats,
-        })
-      }
-      if (crew.length > 0) {
-        folders.unshift({
-          path: '__crew__',
-          name: '集团子代理',
-          items: crew,
-        })
+      } else {
+        // 默认：按原逻辑
+        const crew = this.conversations.filter(c => c.source === 'crew')
+        const groupChats = this.conversations.filter(c => c.source === 'single' && c.is_group)
+        const singleChats = this.conversations.filter(c => c.source === 'single' && !c.is_group)
+        const groups = {}
+        const order = []
+        for (const conv of this.conversations) {
+          if (conv.source === 'crew') {
+            crew.push(conv)
+            continue
+          }
+          if (conv.source === 'single') {
+            if (conv.is_group) {
+              groupChats.push(conv)
+            } else {
+              singleChats.push(conv)
+            }
+            continue
+          }
+          const ws = (conv.workspace || '').trim()
+          const key = ws ? `${conv.source} · ${ws}` : `${conv.source} · 未分类`
+          if (!groups[key]) {
+            groups[key] = []
+            order.push(key)
+          }
+          groups[key].push(conv)
+        }
+        if (groupChats.length > 0) {
+          folders.unshift({ path: '__group__', name: '集团对话', items: groupChats })
+        }
+        if (singleChats.length > 0) {
+          folders.unshift({ path: '__single__', name: '单 Agent', items: singleChats })
+        }
+        if (crew.length > 0) {
+          folders.push({ path: '__crew__', name: '集团子代理', items: crew })
+        }
+        for (const path of order) {
+          folders.push({ path, name: this._folderName(path), items: groups[path] })
+        }
       }
       return folders
     }
