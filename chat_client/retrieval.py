@@ -576,8 +576,17 @@ class Mem0Service:
         self.api_url = mem0_api_url.rstrip('/')
         self.session = requests.Session()
     
-    def search(self, query: str, score: float = 0.1) -> list[dict]:
-        """搜索相关记忆"""
+    def search(self, query: str, score: float = 0.1, **kwargs) -> list[str]:
+        """搜索相关记忆
+        
+        Args:
+            query: 搜索查询
+            score: 置信度阈值
+            **kwargs: 兼容参数（scope, session_history, enable_rag_judgment 等，Mem0 暂不使用）
+        
+        Returns:
+            相关记忆文本列表
+        """
         try:
             resp = self.session.post(
                 f"{self.api_url}/search",
@@ -586,7 +595,9 @@ class Mem0Service:
             )
             if resp.status_code == 200:
                 data = resp.json()
-                return data.get("results", [])
+                # 提取 memory 字段，保持与其他 RAG 服务一致的返回格式
+                results = data.get("results", [])
+                return [r.get("memory", "") for r in results if r.get("memory")]
             return []
         except Exception as e:
             logger.debug(f"Mem0Service search 异常: {e}")

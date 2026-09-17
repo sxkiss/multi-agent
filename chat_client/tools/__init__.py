@@ -661,6 +661,7 @@ from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注�
     agent_tools,
     edit,
     mcp_tool,
+    mem0,
     scheduler,
     skill,
     summary,
