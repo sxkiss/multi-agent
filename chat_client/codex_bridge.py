@@ -384,6 +384,7 @@ def query_codex_history(thread_id: str, workspace: str = "") -> list[dict]:
         return []
 
     history = []
+    tool_results_cache = {}  # call_id -> output（function_call_output）
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fp:
             for line in fp:
@@ -394,6 +395,12 @@ def query_codex_history(thread_id: str, workspace: str = "") -> list[dict]:
                 if d.get("type") != "response_item":
                     continue
                 payload = d.get("payload", {})
+                # 提前收集 function_call_output，按 call_id 索引
+                if payload.get("type") == "function_call_output":
+                    cid = payload.get("call_id", "")
+                    if cid:
+                        tool_results_cache[cid] = str(payload.get("output", "") or "")
+                    continue
                 if payload.get("type") != "message":
                     continue
                 role = payload.get("role", "")
@@ -421,7 +428,6 @@ def query_codex_history(thread_id: str, workspace: str = "") -> list[dict]:
                 elif role in ("developer", "assistant"):
                     text = ""
                     tool_calls = []
-                    tool_results = {}
                     for c in payload.get("content", []):
                         if isinstance(c, dict):
                             ctype = c.get("type", "")
@@ -443,6 +449,16 @@ def query_codex_history(thread_id: str, workspace: str = "") -> list[dict]:
                         "tool_calls": tool_calls,
                         "timestamp": ts,
                     })
+                    # 补发 tool 结果（用 call_id 匹配 codex 的 function_call_output）
+                    for tc in tool_calls:
+                        tid = tc["id"]
+                        out = tool_results_cache.get(tid, "")
+                        history.append({
+                            "role": "tool",
+                            "tool_call_id": tid,
+                            "content": out,
+                            "timestamp": ts + 0.001,
+                        })
     except Exception:
         logger.warning("codex 历史查询失败: %s", path, exc_info=True)
         return []

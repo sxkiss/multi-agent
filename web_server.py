@@ -2120,6 +2120,7 @@ class AgentMain:
 
             # ── 扫描集团模式子代理会话（读 meta.json 判断来源，避免误判）────
             if os.path.exists(sessions_dir):
+                jobs_dir = os.path.join(self.plugin_path, 'jobs')
                 try:
                     dirs2 = os.listdir(sessions_dir)
                     for session_id in dirs2:

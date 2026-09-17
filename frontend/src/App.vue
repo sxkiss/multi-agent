@@ -933,7 +933,9 @@ function loadConversations() {
   // mode 参数（后端严格按 mode 过滤，group 不会拉到 opencode/claude/codex）
   params.set('mode', mode)
   // workspace 过滤
-  const ws = (['opencode', 'claude', 'codex', 'single'].includes(mode) && ocWorkspace.value.trim()) ? ocWorkspace.value.trim() : ''
+  const isCliMode = ['opencode', 'claude', 'codex', 'single'].includes(mode)
+  const ws = (isCliMode && ocWorkspace.value.trim()) ? ocWorkspace.value.trim()
+    : (mode === 'group' && groupWorkspace.value.trim()) ? groupWorkspace.value.trim() : ''
   if (ws) params.set('workspace', ws)
   const url = '/api/chat/history' + (params.toString() ? '?' + params.toString() : '')
   apiGet(url, (result) => {

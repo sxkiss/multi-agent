@@ -491,6 +491,7 @@ def query_claude_history(session_id: str, workspace: str = "") -> list[dict]:
         return []
 
     history = []
+    tool_results_cache = {}  # tool_use_id -> output text（跨消息累积）
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fp:
             for line in fp:
@@ -515,6 +516,12 @@ def query_claude_history(session_id: str, workspace: str = "") -> list[dict]:
                                 txt = c.get("text") or ""
                                 if txt.strip() and not txt.startswith("<local-command"):
                                     texts.append(txt)
+                            elif c.get("type") == "tool_result":
+                                # Claude 把工具结果存在 user 消息的 content 数组里
+                                tid = c.get("tool_use_id", "")
+                                txt = c.get("content", "") or ""
+                                if tid:
+                                    tool_results_cache[tid] = txt
                     elif isinstance(content, str) and content.strip():
                         texts.append(content)
                     if texts:
@@ -528,10 +535,9 @@ def query_claude_history(session_id: str, workspace: str = "") -> list[dict]:
                     content = d.get("message", {}).get("content", [])
                     text = ""
                     tool_calls = []
-                    tool_results = {}
-                    if isinstance(content, list):
-                        for c in content:
-                            ctype = c.get("type", "") if isinstance(c, dict) else ""
+                    for c in content:
+                        if isinstance(c, dict):
+                            ctype = c.get("type", "")
                             if ctype == "text":
                                 text += c.get("text", "")
                             elif ctype == "thinking":
@@ -556,7 +562,7 @@ def query_claude_history(session_id: str, workspace: str = "") -> list[dict]:
                         history.append({
                             "role": "tool",
                             "tool_call_id": tc["id"],
-                            "content": tool_results.get(tc["id"], ""),
+                            "content": tool_results_cache.get(tc["id"], ""),
                             "timestamp": ts + 0.001,
                         })
     except Exception:
