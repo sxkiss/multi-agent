@@ -2025,36 +2025,24 @@ class AgentMain:
             _cli_prefixes = ('ses_', 'agent-', 'rollout-')
 
             def _is_crew_session(sid: str, history, session_path) -> bool:
-                """可靠识别集团会话：子代理 UUID 子目录 / crew 工具调用 / jobs 含 crew_plan"""
-                # 1) 子代理 UUID 子目录（最可靠）
-                try:
-                    for sub in os.listdir(session_path):
-                        sp = os.path.join(session_path, sub)
-                        if not os.path.isdir(sp):
-                            continue
-                        # UUID 形式（36 字符，含 4 个连字符）的子目录 + 内含 sessions.json
-                        if len(sub) >= 32 and sub.count('-') >= 2 and os.path.exists(os.path.join(sp, 'sessions.json')):
+                """严格识别集团会话：必须有 CreateDepartment/RecruitMember（建立部门结构）或 meta.json source=crew"""
+                # 1) meta.json source=crew（最可靠）
+                mf = os.path.join(session_path, 'meta.json')
+                if os.path.exists(mf):
+                    try:
+                        if json.load(open(mf)).get('source') == 'crew':
                             return True
-                except Exception:
-                    pass
-                # 2) 历史里调用过 crew 工具
+                    except Exception:
+                        pass
+                # 2) history 里有 CreateDepartment 或 RecruitMember（建立部门结构的关键工具）
                 if history:
                     for m in history:
                         for tc in (m.get('tool_calls') or []):
                             if not isinstance(tc, dict):
                                 continue
                             name = (tc.get('function') or {}).get('name', '') or tc.get('name', '')
-                            if name in ('RunCrew', 'Task', 'CreateDepartment', 'RecruitMember'):
+                            if name in ('CreateDepartment', 'RecruitMember'):
                                 return True
-                # 3) jobs 文件含 crew_plan（兜底）
-                try:
-                    import glob
-                    jobs_dir = os.path.join(self.plugin_path, 'jobs')
-                    for jf in glob.glob(os.path.join(jobs_dir, f'{sid}::*')):
-                        if 'crew_plan' in open(jf, encoding='utf-8', errors='ignore').read():
-                            return True
-                except Exception:
-                    pass
                 return False
 
             if os.path.exists(sessions_dir):
@@ -2134,14 +2122,8 @@ class AgentMain:
                                 continue
                             meta_file = os.path.join(sub_path, 'meta.json')
                             sub_file = os.path.join(sub_path, 'sessions.json')
-                            is_crew = os.path.exists(meta_file)
-                            if not is_crew and os.path.exists(sub_file):
-                                try:
-                                    job_files = glob.glob(os.path.join(jobs_dir, f'{session_id}::*'))
-                                    is_crew = any('crew_plan' in open(jf, encoding='utf-8', errors='ignore').read() for jf in job_files)
-                                except Exception:
-                                    pass
-                            if not is_crew:
+                            # 子代理必须有 meta.json（明确标记 source/agent/dept），不能仅靠父 jobs crew_plan 推断
+                            if not os.path.exists(meta_file):
                                 continue
                             try:
                                 if os.path.exists(meta_file):

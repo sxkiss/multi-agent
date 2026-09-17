@@ -27,7 +27,7 @@
         "max_tool_iterations": 999999,
         "temperature": 1,
         "top_p": 0.95,
-        "reasoning_effort": "max",
+        "reasoning_effort": "high",
         "max_retries": 5,
         "api_max_retry": 3,
         "api_retry_base_wait": 1,
