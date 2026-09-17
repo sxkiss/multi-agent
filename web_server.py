@@ -1237,6 +1237,29 @@ class AgentMain:
                 "started": True,
             })
 
+        # ── codex 模式 ──────────────────────────────────────────────
+        if mode == 'codex':
+            from chat_client.codex_bridge import run_codex_chat
+            model = str(get.get('model', 'auto')).strip() or 'auto'
+            system_prompt = self._resolve_template_system_prompt(get, cfg_key='opencode')
+            workspace = str(get.get('workspace', '')).strip()
+            reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
+            custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
+            custom_api_key = str(get.get('api_key', '')).strip() or self.config.get('api_key', '')
+            t = threading.Thread(
+                target=run_codex_chat,
+                args=(session_id, user_input, job, model, system_prompt, workspace, reasoning_effort, custom_base_url, custom_api_key),
+                name=f"codex-chat-{job.key}",
+                daemon=True,
+            )
+            t.start()
+            logger.info("[chat_start][codex] sp=%r ws=%r base=%s", (system_prompt or '')[:60], workspace, custom_base_url)
+            return public.return_data(True, data={
+                "session_id": session_id,
+                "job": job.key,
+                "started": True,
+            })
+
         # ── native 模式（默认） ──────────────────────────────────────
         _t0 = time.time()
         agent, user_input, err = self._build_chat_agent(get)
@@ -1553,6 +1576,103 @@ class AgentMain:
         except Exception as e:
             return public.returnMsg(False, f"保存失败: {e!s}")
 
+    # ── codex 管理面板：~/.codex/config.toml 读写 + 状态探测 ────────────────
+    _CODEX_CFG_PATH = os.path.expanduser("~/.codex/config.toml")
+
+    def codex_cli_get_config(self, get=None):
+        """读取 ~/.codex/config.toml（简化 TOML 解析）+ codex 二进制状态"""
+        import shutil as _shutil
+        from chat_client.codex_bridge import _codex_path
+        bin_path = _codex_path()
+        available = bool(bin_path) and (os.path.exists(bin_path) if os.path.isabs(bin_path) else bool(_shutil.which(bin_path)))
+        cfg = {"model": "auto", "reasoning_effort": "max", "base_url": "", "api_key": "", "config_path": self._CODEX_CFG_PATH}
+        try:
+            if os.path.exists(self._CODEX_CFG_PATH):
+                with open(self._CODEX_CFG_PATH, 'r', encoding='utf-8') as f:
+                    txt = f.read()
+                import re as _re
+                for m in _re.finditer(r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"([^"]*)"|([^#\n]+))', txt, _re.MULTILINE):
+                    k, v_quoted, v_raw = m.group(1), m.group(2), m.group(3)
+                    v = v_quoted if v_quoted is not None else (v_raw or '').strip()
+                    if k == "model":
+                        cfg["model"] = v
+                    elif k == "model_reasoning_effort":
+                        cfg["reasoning_effort"] = v
+                    elif k == "base_url":
+                        cfg["base_url"] = v
+                    elif k == "api_key":
+                        cfg["api_key"] = v
+                env_m = _re.search(r'\[env\](.*?)(?=\n\[|$)', txt, _re.DOTALL)
+                if env_m:
+                    for m in _re.finditer(r'^\s*([A-Z_][A-Z0-9_]*)\s*=\s*"([^"]*)"', env_m.group(1), _re.MULTILINE):
+                        if m.group(1) == "OPENAI_BASE_URL" and not cfg["base_url"]:
+                            cfg["base_url"] = m.group(2)
+                        elif m.group(1) == "OPENAI_API_KEY" and not cfg["api_key"]:
+                            cfg["api_key"] = m.group(2)
+        except Exception as e:
+            logger.warning("读取 codex config.toml 失败: %s", e)
+        cfg["binary"] = bin_path
+        cfg["available"] = bool(available)
+        return public.return_data(True, data=cfg)
+
+    def codex_cli_save_config(self, get):
+        """写入 ~/.codex/config.toml"""
+        model = str(get.get('model', 'auto')).strip() or 'auto'
+        effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
+        if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
+            return public.returnMsg(False, "reasoning_effort 非法")
+        base_url = str(get.get('base_url', '')).strip()
+        api_key = str(get.get('api_key', '')).strip()
+        try:
+            bak = ""
+            if os.path.exists(self._CODEX_CFG_PATH):
+                import shutil as _shutil
+                bak = self._CODEX_CFG_PATH + f".bak.{int(time.time())}"
+                _shutil.copy2(self._CODEX_CFG_PATH, bak)
+            os.makedirs(os.path.dirname(self._CODEX_CFG_PATH), exist_ok=True)
+            body = (
+                f'model = "{model}"\n'
+                f'model_reasoning_effort = "{effort}"\n\n'
+                f'[env]\n'
+                f'OPENAI_BASE_URL = "{base_url}"\n'
+                f'OPENAI_API_KEY = "{api_key}"\n'
+            )
+            with open(self._CODEX_CFG_PATH, 'w', encoding='utf-8') as f:
+                f.write(body)
+            import stat as _stat
+            os.chmod(self._CODEX_CFG_PATH, _stat.S_IRUSR | _stat.S_IWUSR)
+            return public.return_data(True, data={"saved": True, "backup": bak})
+        except Exception as e:
+            return public.returnMsg(False, f"保存失败: {e!s}")
+
+    def codex_get_status(self, get=None):
+        """探测 codex 二进制状态"""
+        import shutil as _shutil
+        from chat_client.codex_bridge import _codex_path
+        bin_path = _codex_path()
+        available = False
+        if bin_path and os.path.isabs(bin_path) and os.path.exists(bin_path):
+            available = os.access(bin_path, os.X_OK)
+        elif bin_path and _shutil.which(bin_path):
+            available = True
+        return public.return_data(True, data={"binary": bin_path, "available": bool(available)})
+
+    def codex_test_exec(self, get=None):
+        """跑 codex --version 验证二进制可用"""
+        import shutil as _shutil
+        from chat_client.codex_bridge import _codex_path
+        bin_path = _codex_path()
+        if not bin_path:
+            return public.returnMsg(False, "未定位到 codex 二进制")
+        try:
+            proc = subprocess.run(
+                [bin_path, "--version"], capture_output=True, text=True, timeout=10
+            )
+            ver = (proc.stdout or proc.stderr or "").strip().splitlines()[0] if (proc.stdout or proc.stderr) else ""
+            return public.return_data(True, data={"version": ver, "returncode": proc.returncode})
+        except Exception as e:
+            return public.returnMsg(False, f"codex 测试失败: {e!s}")
+
     def simple_chat(self, get):
         if self.plugin_path not in sys.path:
             sys.path.append(self.plugin_path)
@@ -1752,169 +1872,201 @@ class AgentMain:
 
     def get_chat_historys(self, get):
         workspace_filter = str(get.get('workspace', '')).strip()
+        # mode 过滤：group 只查 native(single+crew)，其他模式只查自己 source
+        raw_mode = str(get.get('mode', '')).strip().lower() or 'group'
+        mode = raw_mode if raw_mode in ('group', 'single', 'opencode', 'claude', 'codex') else 'group'
+        # source 参数（旧兼容，保留）
+        source_param = str(get.get('source', '')).strip().lower()
+        # mode 优先；如果同时传了 source，按 source 过滤（兼容单源调用）
         sessions = []
 
         # ── opencode 全局历史（从 opencode.db 读取）─────────────────────────
-        try:
-            from chat_client.opencode_bridge import query_opencode_sessions
-            oc_sessions = query_opencode_sessions(workspace_filter)
-            for s in oc_sessions:
-                title = s.get("title", "")
-                # 提取 title 中有意义的文本（去掉 "New session - " 前缀）
-                if title.startswith("New session"):
-                    title = "opencode 会话"
-                sessions.append({
-                    "session_id": s["id"],
-                    "title": title,
-                    "timestamp": s.get("time_updated", 0),
-                    "time_str": datetime.datetime.fromtimestamp(s.get("time_updated", 0) / 1000).astimezone().strftime('%Y-%m-%d %H:%M:%S') if s.get("time_updated") else "",
-                    "workspace": s.get("directory", ""),
-                    "source": "opencode",
-                })
-        except Exception:
-            logger.warning("opencode 历史查询异常，跳过", exc_info=True)
+        if source_param in ('opencode', '') and mode in ('group', 'opencode'):
+            try:
+                from chat_client.opencode_bridge import query_opencode_sessions
+                oc_sessions = query_opencode_sessions(workspace_filter)
+                for s in oc_sessions:
+                    title = s.get("title", "")
+                    if title.startswith("New session"):
+                        title = "opencode 会话"
+                    sessions.append({
+                        "session_id": s["id"],
+                        "title": title,
+                        "timestamp": s.get("time_updated", 0),
+                        "time_str": datetime.datetime.fromtimestamp(s.get("time_updated", 0) / 1000).astimezone().strftime('%Y-%m-%d %H:%M:%S') if s.get("time_updated") else "",
+                        "workspace": s.get("directory", ""),
+                        "source": "opencode",
+                    })
+            except Exception:
+                logger.warning("opencode 历史查询异常，跳过", exc_info=True)
 
-        # ── claude 全局历史（从 ~/.claude/projects/ 读取）─────────────────────
-        try:
-            from chat_client.claude_bridge import query_claude_sessions
-            cl_sessions = query_claude_sessions(workspace_filter)
-            for s in cl_sessions:
-                sessions.append({
-                    "session_id": s["id"],
-                    "title": s.get("title", "claude 会话"),
-                    "timestamp": s.get("time_updated", 0),
-                    "time_str": datetime.datetime.fromtimestamp(s.get("time_updated", 0) / 1000).astimezone().strftime('%Y-%m-%d %H:%M:%S') if s.get("time_updated") else "",
-                    "workspace": s.get("directory", ""),
-                    "source": "claude",
-                })
-        except Exception:
-            logger.warning("claude 历史查询异常，跳过", exc_info=True)
+# ── claude 全局历史（从 ~/.claude/projects/ 读取）─────────────────────
+        if source_param in ('claude', '') and mode in ('group', 'claude'):
+            try:
+                from chat_client.claude_bridge import query_claude_sessions
+                cl_sessions = query_claude_sessions(workspace_filter)
+                for s in cl_sessions:
+                    sessions.append({
+                        "session_id": s["id"],
+                        "title": s.get("title", "claude 会话"),
+                        "timestamp": s.get("time_updated", 0),
+                        "time_str": datetime.datetime.fromtimestamp(s.get("time_updated", 0) / 1000).astimezone().strftime('%Y-%m-%d %H:%M:%S') if s.get("time_updated") else "",
+                        "workspace": s.get("directory", ""),
+                        "source": "claude",
+                    })
+            except Exception:
+                logger.warning("claude 历史查询异常，跳过", exc_info=True)
+
+        # ── codex 全局历史（从 ~/.codex/sessions/ rollout jsonl 读取）─────────
+        if source_param in ('codex', '') and mode in ('group', 'codex'):
+            try:
+                from chat_client.codex_bridge import query_codex_sessions
+                cd_sessions = query_codex_sessions(workspace_filter)
+                for s in cd_sessions:
+                    ts = s.get("time_updated", 0)
+                    sessions.append({
+                        "session_id": s["id"],
+                        "title": s.get("title", "codex 会话"),
+                        "timestamp": ts,
+                        "time_str": datetime.datetime.fromtimestamp(ts / 1000).astimezone().strftime('%Y-%m-%d %H:%M:%S') if ts else "",
+                        "workspace": s.get("directory", ""),
+                        "source": "codex",
+                    })
+            except Exception:
+                logger.warning("codex 历史查询异常，跳过", exc_info=True)
 
         # ── native 历史（从 sessions.json 读取，集团模式）─────────────────────
-        sessions_dir = os.path.join(self.plugin_path, 'sessions')
-        if os.path.exists(sessions_dir):
-            try:
-                dirs = os.listdir(sessions_dir)
-                dirs.sort(key=lambda x: os.path.getmtime(os.path.join(sessions_dir, x)), reverse=True)
-                for session_id in dirs:
-                    session_path = os.path.join(sessions_dir, session_id)
-                    if not os.path.isdir(session_path):
-                        continue
-                    session_file = os.path.join(session_path, 'sessions.json')
-                    if not os.path.exists(session_file):
-                        continue
-                    try:
-                        mtime = os.path.getmtime(session_file)
-                        time_str = datetime.datetime.fromtimestamp(mtime).astimezone().strftime('%Y-%m-%d %H:%M:%S')
-                        title = session_id
-                        with open(session_file, 'r', encoding='utf-8') as f:
-                            history = json.load(f)
-                            if history:
-                                for msg in history:
-                                    if msg.get('role') == 'user':
-                                        content = msg.get('content', '')
-                                        if isinstance(content, list):
-                                            text_item = next(
-                                                (item for item in content
-                                                 if isinstance(item, dict) and item.get('type') == 'text'),
-                                                None
-                                            )
-                                            content = text_item.get('text', '') if text_item else ''
-                                        if not isinstance(content, str):
-                                            content = ''
-                                        title = content[:20] + '...' if len(content) > 20 else content
-                                        break
-                        sessions.append({"session_id": session_id, "title": title, "timestamp": int(mtime), "time_str": time_str, "workspace": "", "source": "single"})
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-
-        # ── 标记集团主对话（通过 job jsonl 是否有 crew_plan 判断）────
-        try:
-            import glob
-            jobs_dir = os.path.join(self.plugin_path, 'jobs')
-            for s in sessions:
-                if s.get('source') != 'single':
-                    continue
-                sid = s.get('session_id', '')
-                job_files = glob.glob(os.path.join(jobs_dir, f'{sid}::*'))
-                if any('crew_plan' in open(jf, encoding='utf-8', errors='ignore').read() for jf in job_files):
-                    s['is_group'] = True
-        except Exception:
+        # 只有 group/single 模式才读本地 native 会话（集团对话 + 单 Agent + 子代理）
+        if mode in ('group', 'single'):
             pass
 
-        # ── 扫描集团模式子代理会话（读 meta.json 判断来源，避免误判）────
-        if os.path.exists(sessions_dir):
-            try:
-                dirs2 = os.listdir(sessions_dir)
-                for session_id in dirs2:
-                    parent_path = os.path.join(sessions_dir, session_id)
-                    if not os.path.isdir(parent_path):
-                        continue
-                    sub_dirs = os.listdir(parent_path)
-                    for sub_dir in sub_dirs:
-                        sub_path = os.path.join(parent_path, sub_dir)
-                        if not os.path.isdir(sub_path):
+        # ── native 历史（从 sessions.json 读取，集团模式）─────────────────────
+        # 只有 group/single 模式才读本地 native 会话（集团对话 + 单 Agent + 子代理）
+        if mode in ('group', 'single'):
+            sessions_dir = os.path.join(self.plugin_path, 'sessions')
+            if os.path.exists(sessions_dir):
+                try:
+                    dirs = os.listdir(sessions_dir)
+                    dirs.sort(key=lambda x: os.path.getmtime(os.path.join(sessions_dir, x)), reverse=True)
+                    for session_id in dirs:
+                        session_path = os.path.join(sessions_dir, session_id)
+                        if not os.path.isdir(session_path):
                             continue
-                        meta_file = os.path.join(sub_path, 'meta.json')
-                        sub_file = os.path.join(sub_path, 'sessions.json')
-                        is_crew = os.path.exists(meta_file)
-                        if not is_crew and os.path.exists(sub_file):
-                            try:
-                                job_files = glob.glob(os.path.join(jobs_dir, f'{session_id}::*'))
-                                is_crew = any('crew_plan' in open(jf, encoding='utf-8', errors='ignore').read() for jf in job_files)
-                            except Exception:
-                                pass
-                        if not is_crew:
+                        session_file = os.path.join(session_path, 'sessions.json')
+                        if not os.path.exists(session_file):
                             continue
                         try:
-                            if os.path.exists(meta_file):
-                                mtime = os.path.getmtime(meta_file)
-                            else:
-                                mtime = 0
-                            if os.path.exists(sub_file):
-                                mtime = max(mtime, os.path.getmtime(sub_file))
+                            mtime = os.path.getmtime(session_file)
                             time_str = datetime.datetime.fromtimestamp(mtime).astimezone().strftime('%Y-%m-%d %H:%M:%S')
-                            if os.path.exists(meta_file):
-                                with open(meta_file, 'r', encoding='utf-8') as f:
-                                    meta = json.load(f)
-                            else:
-                                meta = {"source": "crew", "parent": session_id, "agent": "", "dept": ""}
-                            title = sub_dir[:36]
-                            if os.path.exists(sub_file):
-                                with open(sub_file, 'r', encoding='utf-8') as sf:
-                                    history = json.load(sf)
-                                    if history:
-                                        for msg in history:
-                                            if msg.get('role') == 'user':
-                                                content = msg.get('content', '')
-                                                if isinstance(content, list):
-                                                    text_item = next(
-                                                        (item for item in content
-                                                         if isinstance(item, dict) and item.get('type') == 'text'),
-                                                        None
-                                                    )
-                                                    content = text_item.get('text', '') if text_item else ''
-                                                if not isinstance(content, str):
-                                                    content = ''
-                                                title = content[:20] + '...' if len(content) > 20 else content
-                                                break
-                            sessions.append({
-                                "session_id": sub_dir,
-                                "title": title,
-                                "timestamp": int(mtime),
-                                "time_str": time_str,
-                                "workspace": "",
-                                "source": meta.get("source", "crew"),
-                                "parent": session_id,
-                                "agent": meta.get("agent", ""),
-                                "dept": meta.get("dept", ""),
-                            })
+                            title = session_id
+                            with open(session_file, 'r', encoding='utf-8') as f:
+                                history = json.load(f)
+                                if history:
+                                    for msg in history:
+                                        if msg.get('role') == 'user':
+                                            content = msg.get('content', '')
+                                            if isinstance(content, list):
+                                                text_item = next(
+                                                    (item for item in content
+                                                     if isinstance(item, dict) and item.get('type') == 'text'),
+                                                    None
+                                                )
+                                                content = text_item.get('text', '') if text_item else ''
+                                            if not isinstance(content, str):
+                                                content = ''
+                                            title = content[:20] + '...' if len(content) > 20 else content
+                                            break
+                            sessions.append({"session_id": session_id, "title": title, "timestamp": int(mtime), "time_str": time_str, "workspace": "", "source": "single"})
                         except Exception:
                             continue
+                except Exception:
+                    pass
+
+            # ── 标记集团主对话（通过 job jsonl 是否有 crew_plan 判断）────
+            try:
+                import glob
+                jobs_dir = os.path.join(self.plugin_path, 'jobs')
+                for s in sessions:
+                    if s.get('source') != 'single':
+                        continue
+                    sid = s.get('session_id', '')
+                    job_files = glob.glob(os.path.join(jobs_dir, f'{sid}::*'))
+                    if any('crew_plan' in open(jf, encoding='utf-8', errors='ignore').read() for jf in job_files):
+                        s['is_group'] = True
             except Exception:
                 pass
+
+            # ── 扫描集团模式子代理会话（读 meta.json 判断来源，避免误判）────
+            if os.path.exists(sessions_dir):
+                try:
+                    dirs2 = os.listdir(sessions_dir)
+                    for session_id in dirs2:
+                        parent_path = os.path.join(sessions_dir, session_id)
+                        if not os.path.isdir(parent_path):
+                            continue
+                        sub_dirs = os.listdir(parent_path)
+                        for sub_dir in sub_dirs:
+                            sub_path = os.path.join(parent_path, sub_dir)
+                            if not os.path.isdir(sub_path):
+                                continue
+                            meta_file = os.path.join(sub_path, 'meta.json')
+                            sub_file = os.path.join(sub_path, 'sessions.json')
+                            is_crew = os.path.exists(meta_file)
+                            if not is_crew and os.path.exists(sub_file):
+                                try:
+                                    job_files = glob.glob(os.path.join(jobs_dir, f'{session_id}::*'))
+                                    is_crew = any('crew_plan' in open(jf, encoding='utf-8', errors='ignore').read() for jf in job_files)
+                                except Exception:
+                                    pass
+                            if not is_crew:
+                                continue
+                            try:
+                                if os.path.exists(meta_file):
+                                    mtime = os.path.getmtime(meta_file)
+                                else:
+                                    mtime = 0
+                                if os.path.exists(sub_file):
+                                    mtime = max(mtime, os.path.getmtime(sub_file))
+                                time_str = datetime.datetime.fromtimestamp(mtime).astimezone().strftime('%Y-%m-%d %H:%M:%S')
+                                if os.path.exists(meta_file):
+                                    with open(meta_file, 'r', encoding='utf-8') as f:
+                                        meta = json.load(f)
+                                else:
+                                    meta = {"source": "crew", "parent": session_id, "agent": "", "dept": ""}
+                                title = sub_dir[:36]
+                                if os.path.exists(sub_file):
+                                    with open(sub_file, 'r', encoding='utf-8') as sf:
+                                        history = json.load(sf)
+                                        if history:
+                                            for msg in history:
+                                                if msg.get('role') == 'user':
+                                                    content = msg.get('content', '')
+                                                    if isinstance(content, list):
+                                                        text_item = next(
+                                                            (item for item in content
+                                                             if isinstance(item, dict) and item.get('type') == 'text'),
+                                                            None
+                                                        )
+                                                        content = text_item.get('text', '') if text_item else ''
+                                                    if not isinstance(content, str):
+                                                        content = ''
+                                                    title = content[:20] + '...' if len(content) > 20 else content
+                                                    break
+                                sessions.append({
+                                    "session_id": sub_dir,
+                                    "title": title,
+                                    "timestamp": int(mtime),
+                                    "time_str": time_str,
+                                    "workspace": "",
+                                    "source": meta.get("source", "crew"),
+                                    "parent": session_id,
+                                    "agent": meta.get("agent", ""),
+                                    "dept": meta.get("dept", ""),
+                                })
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
 
         # 去重       # 去重：同一 session_id 可能同时出现在 native 和 opencode/claude 历史
         # 优先保留有 is_group 标记或 source=crew 的记录
@@ -1985,6 +2137,15 @@ class AgentMain:
             except Exception:
                 return public.return_data(True, data=[])
 
+# ── codex 全局历史：从 ~/.codex/sessions/ rollout jsonl 读取 ─────────
+        if session_id.startswith("rollout-"):
+            try:
+                from chat_client.codex_bridge import query_codex_history
+                history = query_codex_history(session_id)
+                return public.return_data(True, data=history)
+            except Exception:
+                return public.return_data(True, data=[])
+
     def del_chat(self, get):
         session_id = get.get('session_id')
         if not session_id:
@@ -2022,6 +2183,18 @@ class AgentMain:
                 except Exception as e:
                     return public.returnMsg(False, f"删除失败: {e!s}")
             return public.returnMsg(False, "claude 会话文件不存在")
+
+# ── codex 会话：从 ~/.codex/sessions/ 删除对应 rollout jsonl ──────
+        if session_id.startswith("rollout-"):
+            import glob as _glob
+            hits = _glob.glob(os.path.expanduser(f"~/.codex/sessions/**/{session_id}.jsonl"), recursive=True)
+            for p in hits:
+                try:
+                    os.remove(p)
+                    return public.returnMsg(True, "删除成功")
+                except Exception as e:
+                    return public.returnMsg(False, f"删除失败: {e!s}")
+            return public.returnMsg(False, "codex 会话文件不存在")
 
         # ── native 会话：删除本地 sessions 目录 ──────────────────────────
         import shutil
@@ -2597,6 +2770,34 @@ async def api_opencode_cli_config_post(request: Request):
     except Exception:
         logger.warning("plugin opencode_cli_save 参数提取异常", exc_info=True)
     return JSONResponse(agent_main.opencode_cli_save_config(params))
+
+
+# ── codex 管理面板路由（与 static/codex_panel.html 对应）─────────────────
+@app.get("/api/codex/cli-config")
+async def api_codex_cli_config_get(request: Request):
+    return JSONResponse(agent_main.codex_cli_get_config({}))
+
+
+@app.post("/api/codex/cli-config")
+async def api_codex_cli_config_post(request: Request):
+    params = {}
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            params = body
+    except Exception:
+        logger.warning("plugin codex_cli_save 参数提取异常", exc_info=True)
+    return JSONResponse(agent_main.codex_cli_save_config(params))
+
+
+@app.get("/api/codex/status")
+async def api_codex_status(request: Request):
+    return JSONResponse(agent_main.codex_get_status({}))
+
+
+@app.post("/api/codex/test")
+async def api_codex_test(request: Request):
+    return JSONResponse(agent_main.codex_test_exec({}))
 
 
 @app.get("/api/chat/history")

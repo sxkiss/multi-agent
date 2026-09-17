@@ -293,6 +293,13 @@ def _codex_sessions_dir() -> str:
 
 
 def query_codex_sessions(workspace_filter: str = "") -> list[dict]:
+    """扫描 ~/.codex/sessions/<date>/rollout-*.jsonl，提取标题/时间/目录。
+
+    workspace_filter 非空时：
+      1) 仅显示该 workspace 下的会话（按 cwd 字段精确匹配）
+      2) 标记 workspace 字段供前端使用
+    rollout 文件顶层包含 cwd + session_meta，可直接读出
+    """
     import glob
     sessions = []
     base = _codex_sessions_dir()
@@ -302,6 +309,7 @@ def query_codex_sessions(workspace_filter: str = "") -> list[dict]:
         try:
             mtime = os.path.getmtime(f)
             tid = os.path.basename(f).replace(".jsonl", "")  # rollout-YYYY-MM-DDTHH-MM-SS-UUID
+            file_cwd = ""
             first_user = ""
             with open(f, "r", encoding="utf-8", errors="replace") as fp:
                 for line in fp:
@@ -309,6 +317,10 @@ def query_codex_sessions(workspace_filter: str = "") -> list[dict]:
                         d = json.loads(line)
                     except Exception:
                         continue
+                    # rollout 顶层带 cwd / session_meta
+                    if not file_cwd and d.get("type") == "session_meta":
+                        sm = d.get("payload", {}) or {}
+                        file_cwd = sm.get("cwd", "") or ""
                     if d.get("type") != "response_item":
                         continue
                     payload = d.get("payload", {})
@@ -327,11 +339,14 @@ def query_codex_sessions(workspace_filter: str = "") -> list[dict]:
                         break
             if not first_user:
                 first_user = "codex 会话"
+            # workspace 过滤：空 = 全部；非空 = 严格匹配 cwd
+            if workspace_filter and file_cwd != workspace_filter:
+                continue
             sessions.append({
                 "id": tid,
                 "title": first_user,
                 "time_updated": int(mtime * 1000),
-                "directory": "",
+                "directory": file_cwd,
                 "source": "codex",
             })
         except Exception:
