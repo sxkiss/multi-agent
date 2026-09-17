@@ -97,7 +97,7 @@
         <summary>自定义系统提示词（可选，覆盖模板）</summary>
         <textarea v-model="ocInstructions" placeholder="留空则使用所选模板；填写则作为系统提示词完全自定义"></textarea>
       </details>
-      <a class="codex-manage" href="/static/opencode_panel.html" target="_blank">opencode 管理面板</a>
+      <a class="codex-manage" href="/static/opencode_panel.html" target="_blank" v-if="chatMode === 'opencode'">opencode 管理面板</a>
       <a class="codex-manage" href="/static/claude_panel.html" target="_blank" v-if="chatMode === 'claude'">claude 管理面板</a>
     </div>
     <ChatInput
