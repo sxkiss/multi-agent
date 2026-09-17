@@ -249,6 +249,7 @@
               <option value="low">low - 轻量推理</option>
               <option value="medium">medium - 中等推理</option>
               <option value="high">high - 深度推理</option>
+              <option value="xhigh">xhigh - 超深度推理</option>
               <option value="max">max - 最大深度推理</option>
             </select>
           </div>

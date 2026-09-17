@@ -70,6 +70,15 @@
       </span>
       <span class="mode-info">Skills: {{ skillsCount }} 个可用</span>
     </div>
+    <!-- 集团模式：工作目录 -->
+    <div class="codex-bar" v-if="chatMode === 'group'">
+      <div class="codex-field">
+        <label>工作目录</label>
+        <input v-model="groupWorkspace" placeholder="填入目标项目路径，如 /path/to/project" @change="onWorkspaceChange">
+        <span class="small" v-if="groupWorkspace">{{ groupWorkspace }}</span>
+        <span class="small" v-else>留空则使用项目默认目录</span>
+      </div>
+    </div>
     <!-- opencode / claude / 单 Agent 模式：目录 / 提示词模板 / 自定义指令 -->
     <div class="codex-bar" v-if="['opencode', 'claude', 'single'].includes(chatMode)">
       <div class="codex-field">
@@ -246,6 +255,7 @@ watch(chatMode, (v) => { try { if (v) localStorage.setItem('ai_chat_mode', v) } 
 
 // opencode 模式状态：工作目录 / 提示词模板 / 自定义指令
 const ocWorkspace = ref(localStorage.getItem('ai_oc_workspace') || '')
+const groupWorkspace = ref(localStorage.getItem('ai_group_workspace') || '')
 const ocTemplate = ref('')
 const ocInstructions = ref('')
 const ocBuiltinTemplates = ref([])
@@ -257,6 +267,7 @@ const ocTemplateOptions = computed(() => {
   return [...none, ...builtin, ...custom]
 })
 watch(ocWorkspace, (v) => { try { localStorage.setItem('ai_oc_workspace', v) } catch (e) {} })
+watch(groupWorkspace, (v) => { try { localStorage.setItem('ai_group_workspace', v) } catch (e) {} })
 
 function onWorkspaceChange() {
   // 目录切换后重新拉取该目录下的历史会话
@@ -435,7 +446,8 @@ const globalConfig = ref({
     max_tool_iterations: 10,
     temperature: 1,
     top_p: 1,
-    max_retries: 5
+    max_retries: 5,
+    reasoning_effort: 'max'
   },
   default_headers: {},
   questions: []
@@ -778,10 +790,12 @@ async function getAIResponseStream(message, sessionId, model, tools, webSearch, 
           tools: Array.isArray(tools) ? tools.map(t => (t && t.id) || t).filter(Boolean) : [],
         }),
     ...(webSearch ? { web_search: true } : {}),
-    // 传递工作目录（仅非 opencode/claude 模式使用全局 workspace，避免覆盖用户设置）
-    ...((chatMode.value !== 'opencode' && chatMode.value !== 'claude' && globalConfig.value?.workspace)
-      ? { workspace: globalConfig.value.workspace }
-      : {})
+    // 传递工作目录：优先使用当前模式下的 workspace 输入框，其次回退到全局配置
+    ...((groupWorkspace.value.trim() && chatMode.value === 'group')
+      ? { workspace: groupWorkspace.value.trim() }
+      : ((chatMode.value !== 'opencode' && chatMode.value !== 'claude' && globalConfig.value?.workspace)
+        ? { workspace: globalConfig.value.workspace }
+        : {}))
   }
 
   queueStarting.value = true
@@ -1708,12 +1722,13 @@ function handleSaveConfig(newConfig) {
           rag_final_count: e.config?.rag?.rag_final_count || 5
         },
         context_window_kb: e.config?.context_window_kb || 512,
-      workspace: e.config?.workspace || '',
+        workspace: e.config?.workspace || '',
         agent: {
           max_tool_iterations: e.config?.agent?.max_tool_iterations || 10,
           temperature: e.config?.agent?.temperature ?? 1,
           top_p: e.config?.agent?.top_p ?? 1,
-          max_retries: e.config?.agent?.max_retries ?? 5
+          max_retries: e.config?.agent?.max_retries ?? 5,
+          reasoning_effort: e.config?.agent?.reasoning_effort || 'max'
         },
         default_headers: e.config?.default_headers || {},
         questions: e.questions || []
