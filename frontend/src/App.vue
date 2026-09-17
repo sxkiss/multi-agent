@@ -975,16 +975,22 @@ function loadConversation(id) {
   const seq = ++loadConversationSeq
   const idx = conversations.value.findIndex(c => c.id === id)
   const convo = idx >= 0 ? conversations.value[idx] : null
-  // opencode / claude 会话：自动切换到对应模式并回填工作目录
+  // opencode / claude / codex / single 会话：回填到对应模式的 workspace 输入框
   if (convo) {
     if (convo.workspace) {
-      ocWorkspace.value = convo.workspace
+      const m = chatMode.value || 'group'
+      if (['opencode', 'claude', 'codex', 'single'].includes(m)) {
+        ocWorkspace.value = convo.workspace
+      } else if (m === 'group') {
+        groupWorkspace.value = convo.workspace
+      }
     }
     // 注意：不根据会话 source 自动切换 chatMode —— 模式完全由顶部按钮控制，
     // 避免点开历史会话时被强制切回 opencode/claude/codex/single，导致集团模式失灵。
     const src = convo.source || ''
     // 若 workspace 已回填或会话源为 opencode/claude/codex/single，按当前模式+目录重查历史
-    if (ocWorkspace.value.trim() || (['opencode', 'claude', 'codex', 'single'].includes(src))) {
+    const curWs = (['opencode', 'claude', 'codex', 'single'].includes(chatMode.value) ? ocWorkspace.value : groupWorkspace.value).trim()
+    if (curWs || (['opencode', 'claude', 'codex', 'single'].includes(src))) {
       loadConversations()
     }
   }
