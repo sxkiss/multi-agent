@@ -790,6 +790,10 @@ async function getAIResponseStream(message, sessionId, model, tools, webSearch, 
           tools: Array.isArray(tools) ? tools.map(t => (t && t.id) || t).filter(Boolean) : [],
         }),
     ...(webSearch ? { web_search: true } : {}),
+    // 传递推理深度（集团模式和单 Agent 模式都支持）
+    ...(globalConfig.value?.agent?.reasoning_effort
+      ? { reasoning_effort: globalConfig.value.agent.reasoning_effort }
+      : {}),
     // 传递工作目录：优先使用当前模式下的 workspace 输入框，其次回退到全局配置
     ...((groupWorkspace.value.trim() && chatMode.value === 'group')
       ? { workspace: groupWorkspace.value.trim() }
