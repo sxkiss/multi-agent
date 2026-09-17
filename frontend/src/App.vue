@@ -930,11 +930,8 @@ function loadConversations() {
   // single → 查 native source=single（只看非 is_group 的）
   // opencode/claude/codex → 查对应 source
   const params = new URLSearchParams()
-  if (['opencode', 'claude', 'codex'].includes(mode)) {
-    params.set('source', mode)
-  } else if (mode === 'single') {
-    params.set('source', 'single')
-  }
+  // mode 参数（后端严格按 mode 过滤，group 不会拉到 opencode/claude/codex）
+  params.set('mode', mode)
   // workspace 过滤
   const ws = (['opencode', 'claude', 'codex', 'single'].includes(mode) && ocWorkspace.value.trim()) ? ocWorkspace.value.trim() : ''
   if (ws) params.set('workspace', ws)

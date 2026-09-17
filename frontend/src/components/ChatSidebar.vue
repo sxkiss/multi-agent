@@ -76,49 +76,88 @@
         <p>暂无对话</p>
       </div>
 
-      <!-- 文件夹分组渲染 -->
+      <!-- 文件夹分组渲染（一级 = 主对话/子代理；二级 = 工作目录） -->
       <div v-else class="folder-groups">
         <div
           v-for="folder in folderGroups"
           :key="folder.path"
           class="folder-group"
         >
-          <!-- 文件夹头 -->
+          <!-- 一级 folder 头 -->
           <div class="folder-header" @click="toggleFolder(folder.path)">
             <span class="folder-arrow" :class="{ expanded: folderOpenState[folder.path] }">▶</span>
             <svg class="folder-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
             </svg>
             <span class="folder-name">{{ folder.name }}</span>
-            <span class="folder-count">{{ folder.items.length }}</span>
+            <span class="folder-count">{{ (folder.children || folder.items).length }}</span>
           </div>
 
-          <!-- 会话列表（展开时显示） -->
+          <!-- 一级 folder 内容：二级 folder 列表 或 直接会话列表 -->
           <div v-show="folderOpenState[folder.path]" class="folder-items">
-            <div
-              v-for="conv in folder.items"
-              :key="conv.id"
-              class="conversation-item"
-              :class="{ active: currentConversationId === conv.id, selected: isSelected(conv.id), 'in-select': selectMode }"
-              @click="selectConv(conv)"
-            >
-              <label v-if="selectMode" class="conv-check" @click.stop>
-                <input type="checkbox" :checked="isSelected(conv.id)" @change="toggleSelect(conv.id)" />
-              </label>
-              <div class="conv-title">{{ conv.title || '新对话' }}</div>
-              <div class="conv-time">{{ conv.timeStr }}</div>
-              <button
-                v-if="!selectMode"
-                class="delete-btn"
-                title="删除对话"
-                @click.stop="$emit('delete-conversation', conv.id)"
+            <!-- 二级 folder（按工作目录）-->
+            <template v-if="folder.children">
+              <div v-for="sub in folder.children" :key="sub.path" class="folder-group sub-folder">
+                <div class="folder-header sub-folder-header" @click.stop="toggleFolder(sub.path)">
+                  <span class="folder-arrow" :class="{ expanded: folderOpenState[sub.path] }">▶</span>
+                  <span class="folder-name">{{ sub.name }}</span>
+                  <span class="folder-count">{{ sub.items.length }}</span>
+                </div>
+                <div v-show="folderOpenState[sub.path]" class="folder-items">
+                  <div
+                    v-for="conv in sub.items"
+                    :key="conv.id"
+                    class="conversation-item"
+                    :class="{ active: currentConversationId === conv.id, selected: isSelected(conv.id), 'in-select': selectMode }"
+                    @click="selectConv(conv)"
+                  >
+                    <label v-if="selectMode" class="conv-check" @click.stop>
+                      <input type="checkbox" :checked="isSelected(conv.id)" @change="toggleSelect(conv.id)" />
+                    </label>
+                    <div class="conv-title">{{ conv.title || '新对话' }}</div>
+                    <div class="conv-time">{{ conv.timeStr }}</div>
+                    <button
+                      v-if="!selectMode"
+                      class="delete-btn"
+                      title="删除对话"
+                      @click.stop="$emit('delete-conversation', conv.id)"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <!-- 无二级：直接会话列表（兜底分支） -->
+            <template v-else>
+              <div
+                v-for="conv in folder.items"
+                :key="conv.id"
+                class="conversation-item"
+                :class="{ active: currentConversationId === conv.id, selected: isSelected(conv.id), 'in-select': selectMode }"
+                @click="selectConv(conv)"
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="3 6 5 6 21 6"></polyline>
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
-                </svg>
-              </button>
-            </div>
+                <label v-if="selectMode" class="conv-check" @click.stop>
+                  <input type="checkbox" :checked="isSelected(conv.id)" @change="toggleSelect(conv.id)" />
+                </label>
+                <div class="conv-title">{{ conv.title || '新对话' }}</div>
+                <div class="conv-time">{{ conv.timeStr }}</div>
+                <button
+                  v-if="!selectMode"
+                  class="delete-btn"
+                  title="删除对话"
+                  @click.stop="$emit('delete-conversation', conv.id)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+                  </svg>
+                </button>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -162,93 +201,127 @@ export default {
       return this.conversations.length > 0 && this.selectedIds.length === this.conversations.length
     },
     folderGroups() {
-      // 分类规则（按当前 chatMode 决定显示哪些会话）：
-      //  - group 模式：source=crew → "集团子代理"，source=single && is_group=true → "集团对话"
-      //  - single 模式：source=single && is_group=false → "单 Agent 主对话"
-      //  - opencode/claude/codex 模式：source=<mode>，按工作目录分组
-      //  - 其他：全部显示
+      // 统一分类规则：一级 = 主对话 / 子代理；二级 = 工作目录
+      //  - group 模式：source=single && is_group → 集团对话(主)；source=crew → 集团子代理；其余 single → 单 Agent
+      //  - single 模式：source=single && !is_group → 单 Agent 主对话；其余 → 子代理
+      //  - opencode/claude/codex 模式：source=<mode> → 主对话（CLI 无子代理概念）
+      // 每个一级分类下，按 workspace（工作目录）再细分二级，未指定目录归入「未分类目录」
       const folders = []
       const mode = this.chatMode || 'group'
 
+      // 把一组会话按工作目录分组，返回二级 folder 列表
+      const byWorkspace = (items, label) => {
+        const groups = {}
+        const order = []
+        for (const conv of items) {
+          const ws = (conv.workspace || '').trim()
+          const key = ws ? ws : '未分类目录'
+          if (!groups[key]) {
+            groups[key] = []
+            order.push(key)
+          }
+          groups[key].push(conv)
+        }
+        // 二级 folder 的 path 用一级 path 前缀，避免展开态冲突
+        return order.map(k => ({
+          path: `${label}::${k}`,
+          name: k,
+          isSub: true,
+          parent: label,
+          items: groups[k],
+        }))
+      }
+
       if (mode === 'group') {
-        const crew = this.conversations.filter(c => c.source === 'crew')
-        const groupChats = this.conversations.filter(c => c.source === 'single' && c.is_group)
-        const singleChats = this.conversations.filter(c => c.source === 'single' && !c.is_group)
-        // 集团子代理
-        if (crew.length > 0) {
-          folders.push({ path: '__crew__', name: '集团子代理', items: crew })
+        // 主对话（集团对话） + 单 Agent（主对话）
+        const mainChats = this.conversations.filter(
+          c => c.source === 'single' && c.is_group
+        )
+        const singleChats = this.conversations.filter(
+          c => c.source === 'single' && !c.is_group
+        )
+        // 子代理（集团子代理）
+        const subChats = this.conversations.filter(c => c.source === 'crew')
+
+        if (mainChats.length > 0) {
+          folders.push({
+            path: '__group_main__',
+            name: '集团对话（主对话）',
+            items: [],
+            children: byWorkspace(mainChats, '__group_main__'),
+          })
         }
-        // 集团对话（主）
-        if (groupChats.length > 0) {
-          folders.unshift({ path: '__group__', name: '集团对话', items: groupChats })
-        }
-        // 未归类的单 Agent（兜底）
         if (singleChats.length > 0) {
-          folders.push({ path: '__single__', name: '单 Agent', items: singleChats })
+          folders.push({
+            path: '__single_main__',
+            name: '单 Agent（主对话）',
+            items: [],
+            children: byWorkspace(singleChats, '__single_main__'),
+          })
+        }
+        if (subChats.length > 0) {
+          folders.push({
+            path: '__group_sub__',
+            name: '集团子代理',
+            items: [],
+            children: byWorkspace(subChats, '__group_sub__'),
+          })
         }
       } else if (mode === 'single') {
-        // 单 Agent 模式：只显示非 is_group 的 single 会话
-        const singleChats = this.conversations.filter(c => c.source === 'single' && !c.is_group)
-        if (singleChats.length > 0) {
-          folders.push({ path: '__single__', name: '单 Agent', items: singleChats })
+        const mainChats = this.conversations.filter(
+          c => c.source === 'single' && !c.is_group
+        )
+        const subChats = this.conversations.filter(
+          c => c.source !== 'single' || c.is_group
+        )
+        if (mainChats.length > 0) {
+          folders.push({
+            path: '__single_main__',
+            name: '单 Agent 主对话',
+            items: [],
+            children: byWorkspace(mainChats, '__single_main__'),
+          })
+        }
+        if (subChats.length > 0) {
+          folders.push({
+            path: '__single_sub__',
+            name: '子代理',
+            items: [],
+            children: byWorkspace(subChats, '__single_sub__'),
+          })
         }
       } else if (['opencode', 'claude', 'codex'].includes(mode)) {
-        // CLI 模式：按工作目录分组
-        const modeConv = this.conversations.filter(c => c.source === mode)
-        const groups = {}
-        const order = []
-        for (const conv of modeConv) {
-          const ws = (conv.workspace || '').trim()
-          const key = ws ? `${mode} · ${ws}` : `${mode} · 未分类`
-          if (!groups[key]) {
-            groups[key] = []
-            order.push(key)
-          }
-          groups[key].push(conv)
+        // CLI 模式：source=<mode> 全部作为主对话；其它来源（如历史混合）作子代理
+        const mainChats = this.conversations.filter(c => c.source === mode)
+        const subChats = this.conversations.filter(c => c.source !== mode && c.source)
+        if (mainChats.length > 0) {
+          folders.push({
+            path: `__${mode}_main__`,
+            name: `${mode} 主对话`,
+            items: [],
+            children: byWorkspace(mainChats, `__${mode}_main__`),
+          })
         }
-        for (const path of order) {
-          folders.push({ path, name: this._folderName(path), items: groups[path] })
+        if (subChats.length > 0) {
+          folders.push({
+            path: `__${mode}_sub__`,
+            name: '子代理',
+            items: [],
+            children: byWorkspace(subChats, `__${mode}_sub__`),
+          })
         }
       } else {
-        // 默认：按原逻辑
-        const crew = this.conversations.filter(c => c.source === 'crew')
-        const groupChats = this.conversations.filter(c => c.source === 'single' && c.is_group)
-        const singleChats = this.conversations.filter(c => c.source === 'single' && !c.is_group)
-        const groups = {}
-        const order = []
-        for (const conv of this.conversations) {
-          if (conv.source === 'crew') {
-            crew.push(conv)
-            continue
-          }
-          if (conv.source === 'single') {
-            if (conv.is_group) {
-              groupChats.push(conv)
-            } else {
-              singleChats.push(conv)
-            }
-            continue
-          }
-          const ws = (conv.workspace || '').trim()
-          const key = ws ? `${conv.source} · ${ws}` : `${conv.source} · 未分类`
-          if (!groups[key]) {
-            groups[key] = []
-            order.push(key)
-          }
-          groups[key].push(conv)
-        }
-        if (groupChats.length > 0) {
-          folders.unshift({ path: '__group__', name: '集团对话', items: groupChats })
-        }
-        if (singleChats.length > 0) {
-          folders.unshift({ path: '__single__', name: '单 Agent', items: singleChats })
-        }
-        if (crew.length > 0) {
-          folders.push({ path: '__crew__', name: '集团子代理', items: crew })
-        }
-        for (const path of order) {
-          folders.push({ path, name: this._folderName(path), items: groups[path] })
-        }
+        // 兜底：按原逻辑
+        const mainChats = this.conversations.filter(
+          c => c.source === 'single' && c.is_group
+        )
+        const singleChats = this.conversations.filter(
+          c => c.source === 'single' && !c.is_group
+        )
+        const subChats = this.conversations.filter(c => c.source === 'crew')
+        if (mainChats.length > 0) folders.push({ path: '__group_main__', name: '集团对话（主对话）', items: mainChats })
+        if (singleChats.length > 0) folders.push({ path: '__single_main__', name: '单 Agent（主对话）', items: singleChats })
+        if (subChats.length > 0) folders.push({ path: '__group_sub__', name: '集团子代理', items: subChats })
       }
       return folders
     }
@@ -533,7 +606,19 @@ export default {
 }
 
 .folder-items {
-  padding: 2px 0 2px 16px;
+  padding-left: 8px;
+}
+.sub-folder {
+  margin-top: 2px;
+}
+.sub-folder-header {
+  padding: 4px 8px 4px 16px;
+  font-size: 12px;
+  color: #6b7280;
+  background: transparent;
+}
+.sub-folder-header:hover {
+  background: #f9fafb;
 }
 
 /* 会话条目 */
