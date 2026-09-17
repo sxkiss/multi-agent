@@ -310,6 +310,8 @@ def run_opencode_chat(
     system_prompt: str | None = None,
     workspace: str = "",
     reasoning_effort: str = "max",
+    base_url: str = "",
+    api_key: str = "",
 ) -> None:
     """
     opencode 模式的对话入口（在后台线程中运行）。
@@ -331,7 +333,17 @@ def run_opencode_chat(
                 ws = row[0]
         except Exception:
             pass
-    logger.info("opencode 模式启动 model=%s workspace=%s", model, ws)
+    logger.info("opencode 模式启动 model=%s workspace=%s base=%s", model, ws, base_url)
+
+    # 自定义 API 配置：写入全局 opencode.json（保留用户其他配置）
+    if base_url or api_key:
+        from chat_client.opencode_config import generate_opencode_config
+        try:
+            generate_opencode_config(session_id, "", workspace=ws, system_prompt=system_prompt,
+                                     reasoning_effort=reasoning_effort,
+                                     custom_base_url=base_url, custom_api_key=api_key)
+        except Exception as e:
+            logger.warning("opencode 配置写入失败，已记录: %s", e)
 
     def _on_ev(ev, data):
         job.append(ev, data)

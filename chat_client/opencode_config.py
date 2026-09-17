@@ -45,18 +45,23 @@ def generate_opencode_config(
     workspace: str = "",
     system_prompt: str | None = None,
     reasoning_effort: str = "max",
+    custom_base_url: str = "",
+    custom_api_key: str = "",
 ) -> dict:
     """
     将 gateway provider 合并写入用户全局 ~/.config/opencode/opencode.json。
     仅覆盖 gateway provider 和 agent.default.prompt，保留用户现有 MCP 和其他 provider。
     auth.json 同步更新（只写 gateway key）。
 
+    如果 custom_base_url/custom_api_key 非空，优先使用这些值；否则回退到 config.json。
+
     Returns: {"opencode_json": path, "auth_path": path}
     """
     cfg = _build_gateway_config()
     model = _resolve_model(cfg)
-    base_url = cfg.get("api_base_url", "")
-    api_key = cfg.get("api_key", "")
+    # 优先使用前端传入的自定义配置，否则回退到 config.json
+    base_url = custom_base_url or cfg.get("api_base_url", "")
+    api_key = custom_api_key or cfg.get("api_key", "")
 
     os.makedirs(os.path.dirname(_GLOBAL_OC_PATH), exist_ok=True)
 

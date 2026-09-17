@@ -44,7 +44,8 @@ class ClaudeProcess:
     def __init__(self, workspace: str, effort: str = "max",
                  system_prompt: str = "", tools: str = "",
                  allowed_tools: str = "", disallowed_tools: str = "",
-                 reuse_sid: str = ""):
+                 reuse_sid: str = "",
+                 api_key: str = "", base_url: str = ""):
         self.workspace = workspace
         self.effort = effort
         self.system_prompt = system_prompt
@@ -52,6 +53,8 @@ class ClaudeProcess:
         self.allowed_tools = allowed_tools
         self.disallowed_tools = disallowed_tools
         self.reuse_sid = reuse_sid
+        self.api_key = api_key
+        self.base_url = base_url
         self._proc: subprocess.Popen | None = None
         self._start_time: float = 0.0
 
@@ -59,7 +62,11 @@ class ClaudeProcess:
         env = os.environ.copy()
         # Claude Code 从环境变量读取认证信息
         # ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL
-        # 保持当前环境中的值（settings.json 里已配置的 env 会被 claude 自身加载）
+        # 优先使用自定义配置，否则保持当前环境中的值
+        if self.api_key:
+            env["ANTHROPIC_API_KEY"] = self.api_key
+        if self.base_url:
+            env["ANTHROPIC_BASE_URL"] = self.base_url
 
         cmd = [
             _claude_path(),
@@ -252,6 +259,8 @@ def run_claude_chat(
     system_prompt: str | None = None,
     workspace: str = "",
     reasoning_effort: str = "max",
+    base_url: str = "",
+    api_key: str = "",
 ) -> None:
     """
     Claude 模式的对话入口（在后台线程中运行）。
@@ -267,13 +276,15 @@ def run_claude_chat(
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", session_id or ""
     ) else ""
 
-    logger.info("claude 模式启动 model=%s workspace=%s reuse_sid=%s", model, ws, reuse_sid or "(新建)")
+    logger.info("claude 模式启动 model=%s workspace=%s base=%s reuse_sid=%s", model, ws, base_url, reuse_sid or "(新建)")
 
     proc = ClaudeProcess(
         workspace=ws,
         effort=reasoning_effort,
         system_prompt=system_prompt or "",
         reuse_sid=reuse_sid,
+        api_key=api_key,
+        base_url=base_url,
     )
 
     if hasattr(job, "attach_agent"):

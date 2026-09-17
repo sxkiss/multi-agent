@@ -1193,14 +1193,17 @@ class AgentMain:
 
             workspace = str(get.get('workspace', '')).strip()
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
+            # 自定义 API 配置（优先前端传入，回退全局配置）
+            custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
+            custom_api_key = str(get.get('api_key', '')).strip() or self.config.get('api_key', '')
             t = threading.Thread(
                 target=run_opencode_chat,
-                args=(session_id, user_input, job, model, system_prompt, workspace, reasoning_effort),
+                args=(session_id, user_input, job, model, system_prompt, workspace, reasoning_effort, custom_base_url, custom_api_key),
                 name=f"oc-chat-{job.key}",
                 daemon=True,
             )
             t.start()
-            logger.info("[chat_start][opencode] tpl=%r sp=%r ws=%r", get.get('template', ''), (system_prompt or '')[:60], workspace)
+            logger.info("[chat_start][opencode] tpl=%r sp=%r ws=%r base=%s", get.get('template', ''), (system_prompt or '')[:60], workspace, custom_base_url)
             return public.return_data(True, data={
                 "session_id": session_id,
                 "job": job.key,
@@ -1217,14 +1220,17 @@ class AgentMain:
 
             workspace = str(get.get('workspace', '')).strip()
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
+            # 自定义 API 配置（优先前端传入，回退全局配置）
+            custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
+            custom_api_key = str(get.get('api_key', '')).strip() or self.config.get('api_key', '')
             t = threading.Thread(
                 target=run_claude_chat,
-                args=(session_id, user_input, job, model, system_prompt, workspace, reasoning_effort),
+                args=(session_id, user_input, job, model, system_prompt, workspace, reasoning_effort, custom_base_url, custom_api_key),
                 name=f"claude-chat-{job.key}",
                 daemon=True,
             )
             t.start()
-            logger.info("[chat_start][claude] sp=%r ws=%r", (system_prompt or '')[:60], workspace)
+            logger.info("[chat_start][claude] sp=%r ws=%r base=%s", (system_prompt or '')[:60], workspace, custom_base_url)
             return public.return_data(True, data={
                 "session_id": session_id,
                 "job": job.key,
