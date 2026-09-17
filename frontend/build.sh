@@ -1,5 +1,9 @@
 #!/bin/bash
-# Build Vue frontend and deploy to plugin directory
+# Build Vue frontend and deploy to static directory
+#
+# Vite base is '/static/', so index.html references /static/assets/...
+# Correct deploy = copy dist/ contents to static/ (not static/frontend/)
+# Root index.html is the server entry; static/index.html is the standalone entry.
 
 set -e
 
@@ -15,16 +19,23 @@ if [ -f "../index.html" ]; then
   echo "Backed up existing index.html to $BACKUP"
 fi
 
-# Copy build output to plugin root
+# Deploy root index.html (references /static/assets/...)
 if [ -f "dist/index.html" ]; then
   cp "dist/index.html" "../index.html"
   echo "Updated: ../index.html"
 fi
 
+# Deploy to static/ (rsync with --delete to clean stale hash chunks)
 if [ -d "dist/assets" ]; then
-  mkdir -p "../static/frontend"
-  cp -r "dist/assets/"* "../static/frontend/"
-  echo "Updated: ../static/frontend/"
+  mkdir -p "../static/assets"
+  rsync -a --delete "dist/assets/" "../static/assets/"
+  echo "Updated: ../static/assets/"
+fi
+
+# Deploy standalone static/index.html
+if [ -f "dist/index.html" ]; then
+  cp "dist/index.html" "../static/index.html"
+  echo "Updated: ../static/index.html"
 fi
 
 echo "Build complete!"
