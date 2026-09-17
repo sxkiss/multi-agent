@@ -1430,6 +1430,54 @@ class AgentMain:
             "running_jobs": running,
         })
 
+    def claude_get_config(self, get=None):
+        """获取 Claude CLI 配置：effortLevel + env 环境变量"""
+        import shutil as _shutil
+        claude_dir = os.path.expanduser("~/.claude")
+        settings_path = os.path.join(claude_dir, "settings.json")
+        settings = {}
+        try:
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+        except Exception as e:
+            logger.warning("读取 Claude 配置失败: %s", e)
+        # 查找 claude 二进制路径
+        claude_bin = _shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+        return public.return_data(True, data={
+            "effortLevel": settings.get("effortLevel", "high"),
+            "env": settings.get("env", {}),
+            "claude_binary": claude_bin,
+            "settings_path": settings_path,
+        })
+
+    def claude_save_config(self, get):
+        """保存 Claude CLI 配置到 ~/.claude/settings.json"""
+        effort_level = str(get.get('effortLevel', 'high')).strip().lower()
+        if effort_level not in ('low', 'medium', 'high', 'max'):
+            return public.returnMsg(False, "effortLevel 必须是 low/medium/high/max 之一")
+        env = get.get('env', {})
+        if isinstance(env, str):
+            try:
+                env = json.loads(env)
+            except Exception:
+                return public.returnMsg(False, "env 格式错误")
+        if not isinstance(env, dict):
+            return public.returnMsg(False, "env 必须是 JSON 对象")
+
+        settings_path = os.path.expanduser("~/.claude/settings.json")
+        try:
+            existing = {}
+            if os.path.exists(settings_path):
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+            existing["effortLevel"] = effort_level
+            existing["env"] = {**existing.get("env", {}), **env}
+            with open(settings_path, 'w', encoding='utf-8') as f:
+                json.dump(existing, f, indent=2, ensure_ascii=False)
+            return public.return_data(True, data=existing)
+        except Exception as e:
+            return public.returnMsg(False, f"保存失败: {e!s}")
+
     def simple_chat(self, get):
         if self.plugin_path not in sys.path:
             sys.path.append(self.plugin_path)
@@ -2443,6 +2491,24 @@ async def api_opencode_config_post(request: Request):
     except Exception:
         logger.warning("plugin opencode_save 参数提取异常", exc_info=True)
     return JSONResponse(agent_main.opencode_save_config(params))
+
+
+@app.get("/api/claude/config")
+async def api_claude_config_get(request: Request):
+    params = dict(request.query_params)
+    return JSONResponse(agent_main.claude_get_config(params))
+
+
+@app.post("/api/claude/config")
+async def api_claude_config_post(request: Request):
+    params = dict(request.query_params)
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            params.update(body)
+    except Exception:
+        logger.warning("plugin claude_save 参数提取异常", exc_info=True)
+    return JSONResponse(agent_main.claude_save_config(params))
 
 
 @app.get("/api/chat/history")

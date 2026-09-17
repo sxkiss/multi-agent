@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude 管理面板</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; background: #0f1115; color: #e6e6e6; }
+  header { padding: 14px 20px; background: #1a1d23; border-bottom: 1px solid #2a2e37; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .tag { font-size: 12px; color: #8b93a1; }
+  .wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
+  .card { background: #16191f; border: 1px solid #2a2e37; border-radius: 10px; padding: 14px; }
+  .card h2 { font-size: 14px; margin: 0 0 12px; color: #a78bfa; }
+  .full { grid-column: 1 / -1; }
+  label { font-size: 12px; color: #9aa3b2; display: block; margin: 8px 0 3px; }
+  input, textarea, select { width: 100%; background: #0f1115; border: 1px solid #313640; color: #e6e6e6; border-radius: 6px; padding: 7px 9px; font-size: 13px; font-family: inherit; }
+  textarea { resize: vertical; min-height: 90px; }
+  button { background: #7c3aed; color: #fff; border: none; border-radius: 6px; padding: 7px 13px; cursor: pointer; font-size: 13px; margin-top: 8px; }
+  button:hover { background: #6d28d9; }
+  button.ghost { background: #2a2e37; }
+  button.danger { background: #7f1d1d; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #23272f; vertical-align: top; }
+  th { color: #8b93a1; font-weight: 600; }
+  .small { font-size: 11.5px; color: #6b7280; }
+  .pill { display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 10px; background: #164e63; color: #67e8f9; margin: 2px 4px 2px 0; }
+  .saved { color: #4ade80; }
+  .err { color: #f87171; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .status-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; margin-top: 6px; }
+  .status-row .ok { color: #4ade80; }
+  .status-row .bad { color: #f87171; }
+  .env-item { display: grid; grid-template-columns: 1fr 2fr auto; gap: 8px; align-items: start; margin-bottom: 8px; }
+  .env-item input { margin-top: 0; }
+  .btn-remove { background: #7f1d1d; padding: 7px 10px; margin-top: 0; }
+  .btn-add { background: #2a2e37; margin-top: 0; }
+  .radio-group { display: flex; gap: 12px; margin-top: 8px; }
+  .radio-group label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claude 管理面板</h1>
+  <span class="tag">CLI 模式 · 配置管理</span>
+  <span class="tag" id="status"></span>
+</header>
+
+<div class="wrap">
+  <!-- 运行状态 -->
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="status-row" id="statusRow">加载中...</div>
+  </div>
+
+  <!-- 推理深度 -->
+  <div class="card">
+    <h2>推理深度 (effortLevel)</h2>
+    <div class="radio-group">
+      <label><input type="radio" name="effort" value="low"> low</label>
+      <label><input type="radio" name="effort" value="medium"> medium</label>
+      <label><input type="radio" name="effort" value="high"> high</label>
+      <label><input type="radio" name="effort" value="max"> max</label>
+    </div>
+    <p class="small" style="margin-top:8px">控制模型的推理深度，max=最大深度思考</p>
+  </div>
+
+  <!-- 环境变量 -->
+  <div class="card full">
+    <h2>环境变量 (env)</h2>
+    <div id="envList"></div>
+    <div class="toolbar">
+      <button class="btn-add" onclick="addEnv()">+ 新增变量</button>
+      <button onclick="saveAll()">保存全部</button>
+      <span class="small" id="saveMsg"></span>
+    </div>
+    <p class="small" style="margin-top:10px">说明：常用的有 ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL、CLAUDE_CODE_EFFORT_LEVEL 等</p>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let settings = { effortLevel: 'high', env: {} };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  try { return await r.json(); } catch (e) { return { status: false, raw: await r.text() }; }
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function setStatus(msg, cls) {
+  const s = $('status'); s.textContent = msg; s.className = 'tag ' + (cls || '');
+}
+
+async function load() {
+  const d = await api('/api/claude/config');
+  if (!d.status) { setStatus('加载配置失败', 'err'); return; }
+  settings = d.data;
+  renderEffort();
+  renderEnv();
+  await loadStatus();
+  setStatus('已加载', 'saved');
+}
+
+async function loadStatus() {
+  const row = $('statusRow');
+  const binary = esc(settings.claude_binary || '未找到');
+  const path = esc(settings.settings_path || '~/.claude/settings.json');
+  row.innerHTML = `
+    <span class="ok">Claude 二进制: ${binary}</span>
+    <span class="small">配置文件: ${path}</span>`;
+}
+
+function renderEffort() {
+  const current = settings.effortLevel || 'high';
+  document.querySelectorAll('input[name="effort"]').forEach(r => {
+    r.checked = r.value === current;
+  });
+}
+
+function renderEnv() {
+  const env = settings.env || {};
+  const keys = Object.keys(env);
+  let html = '';
+  keys.forEach((key, i) => {
+    html += `<div class="env-item">
+      <input value="${esc(key)}" data-i="${i}" data-k="key" placeholder="变量名">
+      <input value="${esc(env[key])}" data-i="${i}" data-k="value" placeholder="变量值">
+      <button class="btn-remove" onclick="removeEnv(${i})">删</button>
+    </div>`;
+  });
+  if (!keys.length) html += '<p class="small">暂无环境变量</p>';
+  $('envList').innerHTML = html;
+}
+
+function addEnv() {
+  const key = prompt('变量名（如 ANTHROPIC_API_KEY）：');
+  if (!key) return;
+  const val = prompt('变量值：') || '';
+  settings.env[key] = val;
+  renderEnv();
+}
+
+function removeEnv(i) {
+  const keys = Object.keys(settings.env);
+  if (keys[i]) {
+    delete settings.env[keys[i]];
+    renderEnv();
+  }
+}
+
+async function saveAll() {
+  // 收集单选框
+  const effortRadio = document.querySelector('input[name="effort"]:checked');
+  if (effortRadio) settings.effortLevel = effortRadio.value;
+
+  // 收集环境变量
+  const newEnv = {};
+  document.querySelectorAll('#envList input[data-k="key"]').forEach((inp, idx) => {
+    const key = inp.value.trim();
+    const valInput = document.querySelector(`#envList input[data-i="${idx}"][data-k="value"]`);
+    if (key) newEnv[key] = valInput ? valInput.value : '';
+  });
+  settings.env = newEnv;
+
+  const d = await api('/api/claude/config', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(settings)
+  });
+  if (d.status) {
+    $('saveMsg').textContent = '已保存 ✓';
+    $('saveMsg').className = 'small saved';
+    await load();
+  } else {
+    $('saveMsg').textContent = '保存失败: ' + (d.msg||'');
+    $('saveMsg').className = 'small err';
+  }
+}
+
+load();
+</script>
+</body>
+</html>
