@@ -394,18 +394,37 @@ def _claude_project_dir(workspace: str = "") -> str:
 
 
 def query_claude_sessions(workspace_filter: str = "") -> list[dict]:
-    """查询 claude 会话列表（从 ~/.claude/projects/ 下的 jsonl 文件）"""
+    """查询 claude 会话列表（从 ~/.claude/projects/ 下扫描 jsonl）。
+
+    注意：claude 的实际结构是 <project>/<sid>/ 目录里只有 subagents/ 和
+    tool-results/，主会话 jsonl 不在第一层。这里递归扫描所有 *.jsonl
+    （包括 subagents/agent-*.jsonl），按文件 mtime 排序，统一作为 session
+    候选，确保历史不丢。
+    """
     import glob
     if workspace_filter:
         base = _claude_project_dir(workspace_filter)
+        # 指定 workspace 时递归扫该 project 下全部 jsonl（含 subagents）
+        all_files = glob.glob(os.path.join(base, "**", "*.jsonl"), recursive=True)
     else:
-        # 扫描所有项目目录（路径形如 ~/.claude/projects/-home-user-bt/*.jsonl）
-        base = os.path.expanduser("~/.claude/projects/*")
+        # 递归扫所有 project 目录下的 jsonl
+        all_files = glob.glob(
+            os.path.expanduser("~/.claude/projects/**/*.jsonl"),
+            recursive=True,
+        )
     sessions = []
-    for f in glob.glob(os.path.join(base, "*.jsonl")):
+    for f in all_files:
         try:
             mtime = os.path.getmtime(f)
-            sid = os.path.basename(f)[:-6]  # 去掉 .jsonl
+            # 跳过 tool-results 目录下的文件（那是工具结果片段，不是主会话）
+            if "/tool-results/" in f:
+                continue
+            # 文件名：subagents/agent-xxx.jsonl 取 agent-xxx；其它用 .jsonl 去后缀
+            base_name = os.path.basename(f)[:-6]
+            if base_name.startswith("agent-"):
+                sid = base_name
+            else:
+                sid = base_name
             first_user = ""
             with open(f, "r", encoding="utf-8", errors="replace") as fp:
                 for line in fp:
@@ -419,7 +438,6 @@ def query_claude_sessions(workspace_filter: str = "") -> list[dict]:
                             for c in content:
                                 if isinstance(c, dict) and c.get("type") == "text":
                                     txt = (c.get("text") or "").strip()
-                                    # 跳过系统注入文本（local-command-caveat / command-name 等）
                                     if txt and not txt.startswith("<"):
                                         first_user = txt[:50]
                                         break

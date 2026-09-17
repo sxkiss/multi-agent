@@ -1872,16 +1872,18 @@ class AgentMain:
 
     def get_chat_historys(self, get):
         workspace_filter = str(get.get('workspace', '')).strip()
-        # mode 过滤：group 只查 native(single+crew)，其他模式只查自己 source
+        # mode 隔离：每个 mode 只返回自己 source 的历史，互不串
+        #   group   → 仅 native（集团对话 + 集团子代理）
+        #   single  → 仅 native（单 Agent 主对话）
+        #   opencode/claude/codex → 各自 db 全量
         raw_mode = str(get.get('mode', '')).strip().lower() or 'group'
         mode = raw_mode if raw_mode in ('group', 'single', 'opencode', 'claude', 'codex') else 'group'
         # source 参数（旧兼容，保留）
         source_param = str(get.get('source', '')).strip().lower()
-        # mode 优先；如果同时传了 source，按 source 过滤（兼容单源调用）
         sessions = []
 
-        # ── opencode 全局历史（从 opencode.db 读取）─────────────────────────
-        if source_param in ('opencode', '') and mode in ('group', 'opencode'):
+        # ── opencode 全局历史（仅 opencode 模式）─────────────────────────
+        if source_param in ('opencode', '') and mode == 'opencode':
             try:
                 from chat_client.opencode_bridge import query_opencode_sessions
                 oc_sessions = query_opencode_sessions(workspace_filter)
@@ -1900,8 +1902,8 @@ class AgentMain:
             except Exception:
                 logger.warning("opencode 历史查询异常，跳过", exc_info=True)
 
-# ── claude 全局历史（从 ~/.claude/projects/ 读取）─────────────────────
-        if source_param in ('claude', '') and mode in ('group', 'claude'):
+        # ── claude 全局历史（仅 claude 模式）──────────────────────
+        if source_param in ('claude', '') and mode == 'claude':
             try:
                 from chat_client.claude_bridge import query_claude_sessions
                 cl_sessions = query_claude_sessions(workspace_filter)
@@ -1917,8 +1919,8 @@ class AgentMain:
             except Exception:
                 logger.warning("claude 历史查询异常，跳过", exc_info=True)
 
-        # ── codex 全局历史（从 ~/.codex/sessions/ rollout jsonl 读取）─────────
-        if source_param in ('codex', '') and mode in ('group', 'codex'):
+        # ── codex 全局历史（仅 codex 模式）──────────────────────────
+        if source_param in ('codex', '') and mode == 'codex':
             try:
                 from chat_client.codex_bridge import query_codex_sessions
                 cd_sessions = query_codex_sessions(workspace_filter)
@@ -1935,8 +1937,7 @@ class AgentMain:
             except Exception:
                 logger.warning("codex 历史查询异常，跳过", exc_info=True)
 
-        # ── native 历史（从 sessions.json 读取，集团模式）─────────────────────
-        # 只有 group/single 模式才读本地 native 会话（集团对话 + 单 Agent + 子代理）
+        # ── native 历史（group / single 模式各自过滤）─────────────────────
         if mode in ('group', 'single'):
             pass
 
@@ -2080,6 +2081,17 @@ class AgentMain:
                 if s.get("is_group") or s.get("source") == "crew":
                     seen[sid] = s
         sessions = list(seen.values())
+
+        # 按 mode 二次过滤：native 模式下按 is_group / source 切分，CLI 模式只留自己 source
+        if mode == 'group':
+            # group 只要：集团主对话(is_group=True) + 集团子代理(source=crew)
+            sessions = [s for s in sessions if (s.get('source') == 'crew') or (s.get('source') == 'single' and s.get('is_group'))]
+        elif mode == 'single':
+            # single 只要：单 Agent 主对话（source=single 且 !is_group）
+            sessions = [s for s in sessions if s.get('source') == 'single' and not s.get('is_group')]
+        else:
+            # CLI 模式（opencode/claude/codex）：只留对应 source
+            sessions = [s for s in sessions if s.get('source') == mode]
 
         # 按时间正序排序，返回前 200 条（旧在前，新在后，匹配文件夹模式）
         sessions.sort(key=lambda s: s.get("timestamp", 0))

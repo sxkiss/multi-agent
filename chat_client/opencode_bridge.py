@@ -418,7 +418,12 @@ def _get_opencode_db_path() -> str:
 
 
 def query_opencode_sessions(workspace_filter: str = "") -> list[dict]:
-    """从全局 opencode.db 查询会话列表（按 directory 过滤）"""
+    """从全局 opencode.db 查询会话列表（按 directory 过滤）。
+
+    注意：opencode 某些版本会出现 `session` 元数据表被清空但 `message`/`part`
+    表仍有数据的情况。这里优先从 `session` 表取，缺失时回退到用 `message`
+    表的 session_id 反查会话，保证历史不丢。
+    """
     import sqlite3
     db_path = _get_opencode_db_path()
     if not os.path.exists(db_path):
@@ -426,19 +431,74 @@ def query_opencode_sessions(workspace_filter: str = "") -> list[dict]:
     try:
         conn = sqlite3.connect(db_path, timeout=5)
         conn.row_factory = sqlite3.Row
-        if workspace_filter:
-            rows = conn.execute(
-                "SELECT id, directory, title, time_updated, tokens_input, tokens_output "
-                "FROM session WHERE directory = ? ORDER BY time_updated DESC LIMIT 200",
-                (workspace_filter,),
+
+        # 1) 优先尝试 session 表
+        session_rows = []
+        try:
+            if workspace_filter:
+                session_rows = conn.execute(
+                    "SELECT id, directory, title, time_updated, tokens_input, tokens_output "
+                    "FROM session WHERE directory = ? ORDER BY time_updated DESC LIMIT 200",
+                    (workspace_filter,),
+                ).fetchall()
+            else:
+                session_rows = conn.execute(
+                    "SELECT id, directory, title, time_updated, tokens_input, tokens_output "
+                    "FROM session ORDER BY time_updated DESC LIMIT 200",
+                ).fetchall()
+        except Exception:
+            session_rows = []
+
+        sessions = [dict(r) for r in session_rows]
+
+        # 2) session 表为空（被清）时，用 message 表反查 session_id + 最近时间
+        if not sessions:
+            # 从 message 表聚合出所有 session_id
+            wc = "WHERE m.session_id IN (SELECT session_id FROM message GROUP BY session_id)"
+            if workspace_filter:
+                # 没有 directory 情况下只能按全部 session 反查（opencode 多 session 共用 cwd）
+                pass
+            agg = conn.execute(
+                "SELECT m.session_id AS sid, "
+                "MAX(CAST(m.time_created AS INTEGER)) AS last_t, "
+                "MIN(CAST(m.time_created AS INTEGER)) AS first_t "
+                "FROM message m "
+                "GROUP BY m.session_id ORDER BY last_t DESC LIMIT 200"
             ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, directory, title, time_updated, tokens_input, tokens_output "
-                "FROM session ORDER BY time_updated DESC LIMIT 200",
-            ).fetchall()
+            for r in agg:
+                sid = r["sid"]
+                last_t = int(r["last_t"] or 0)
+                # 取该 session 首条 user 消息作标题
+                first_user = ""
+                try:
+                    um = conn.execute(
+                        "SELECT data FROM message WHERE session_id = ? AND data LIKE '%\"role\":\"user\"%' "
+                        "ORDER BY CAST(time_created AS INTEGER) ASC LIMIT 1",
+                        (sid,),
+                    ).fetchone()
+                    if um:
+                        d = json.loads(um["data"])
+                        content = d.get("content", "")
+                        if isinstance(content, list):
+                            for c in content:
+                                if isinstance(c, dict) and c.get("type") == "text":
+                                    first_user = c.get("text", "")
+                                    break
+                        elif isinstance(content, str):
+                            first_user = content
+                except Exception:
+                    first_user = ""
+                sessions.append({
+                    "id": sid,
+                    "directory": "",  # session 表缺失，无法拿到 directory
+                    "title": (first_user[:50].strip() or "opencode 会话"),
+                    "time_updated": last_t,
+                    "tokens_input": 0,
+                    "tokens_output": 0,
+                })
+
         conn.close()
-        return [dict(r) for r in rows]
+        return sessions
     except Exception:
         logger.warning("opencode.db 查询失败", exc_info=True)
         return []
