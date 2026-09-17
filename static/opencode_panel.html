@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>opencode 管理面板</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; background: #0f1115; color: #e6e6e6; }
+  header { padding: 14px 20px; background: #1a1d23; border-bottom: 1px solid #2a2e37; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .tag { font-size: 12px; color: #8b93a1; }
+  .wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
+  .card { background: #16191f; border: 1px solid #2a2e37; border-radius: 10px; padding: 14px; }
+  .card h2 { font-size: 14px; margin: 0 0 12px; color: #67e8f9; }
+  .full { grid-column: 1 / -1; }
+  label { font-size: 12px; color: #9aa3b2; display: block; margin: 8px 0 3px; }
+  input, textarea, select { width: 100%; background: #0f1115; border: 1px solid #313640; color: #e6e6e6; border-radius: 6px; padding: 7px 9px; font-size: 13px; font-family: inherit; }
+  textarea { resize: vertical; min-height: 90px; }
+  button { background: #0891b2; color: #fff; border: none; border-radius: 6px; padding: 7px 13px; cursor: pointer; font-size: 13px; margin-top: 8px; }
+  button:hover { background: #0e7490; }
+  button.ghost { background: #2a2e37; }
+  button.danger { background: #7f1d1d; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #23272f; vertical-align: top; }
+  th { color: #8b93a1; font-weight: 600; }
+  .small { font-size: 11.5px; color: #6b7280; }
+  .pill { display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 10px; background: #164e63; color: #67e8f9; margin: 2px 4px 2px 0; }
+  .saved { color: #4ade80; }
+  .err { color: #f87171; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .status-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; margin-top: 6px; }
+  .status-row .ok { color: #4ade80; }
+  .status-row .bad { color: #f87171; }
+</style>
+</head>
+<body>
+<header>
+  <h1>opencode 管理面板</h1>
+  <span class="tag">CLI 模式 · 提示词模板管理</span>
+  <span class="tag" id="status"></span>
+</header>
+
+<div class="wrap">
+  <!-- 运行状态 -->
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="status-row" id="statusRow">加载中...</div>
+  </div>
+
+  <!-- 内置模板 -->
+  <div class="card">
+    <h2>内置模板（只读）</h2>
+    <div id="builtin"></div>
+  </div>
+
+  <!-- 自定义模板 -->
+  <div class="card full">
+    <h2>自定义提示词模板</h2>
+    <div id="templates"></div>
+    <div class="toolbar">
+      <button onclick="addTemplate()">+ 新增模板</button>
+      <button onclick="saveAll()">保存全部</button>
+      <span class="small" id="saveMsg"></span>
+    </div>
+    <p class="small" style="margin-top:10px">说明：默认模板在对话开始时自动应用；自定义指令在前端「自定义系统提示词」填写时覆盖模板。</p>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let OC = { templates: {}, default_template: '' };
+let BUILTIN = [];
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  try { return await r.json(); } catch (e) { return { status: false, raw: await r.text() }; }
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function setStatus(msg, cls) {
+  const s = $('status'); s.textContent = msg; s.className = 'tag ' + (cls || '');
+}
+
+async function load() {
+  const d = await api('/api/opencode/config');
+  if (!d.status) { setStatus('加载配置失败', 'err'); return; }
+  OC = d.data.opencode || {};
+  OC.templates = OC.templates || {};
+  OC.default_template = OC.default_template || '';
+  BUILTIN = d.data.builtin_templates || [];
+  renderTemplates(); renderBuiltin();
+  await loadStatus();
+  setStatus('已加载', 'saved');
+}
+
+async function loadStatus() {
+  const d = await api('/api/opencode/status');
+  const row = $('statusRow');
+  if (!d.status) { row.innerHTML = '<span class="bad">状态接口不可用</span>'; return; }
+  const s = d.data;
+  row.innerHTML = `
+    <span class="${s.available ? 'ok' : 'bad'}">opencode 二进制: ${s.available ? '可用' : '不可用'}</span>
+    <span class="small">路径: ${esc(s.binary)}</span>
+    <span>运行中任务: ${s.running_jobs.length}</span>`;
+}
+
+function renderBuiltin() {
+  $('builtin').innerHTML = BUILTIN.length
+    ? BUILTIN.map(n => `<span class="pill">${esc(n)}</span>`).join('')
+    : '<span class="small">无内置模板</span>';
+}
+
+function renderTemplates() {
+  const tpl = OC.templates || {};
+  let html = '<table><tr><th style="width:160px">名称</th><th>提示词内容</th><th style="width:60px">默认</th><th style="width:50px"></th></tr>';
+  for (const [name, content] of Object.entries(tpl)) {
+    html += `<tr>
+      <td><input value="${esc(name)}" data-t="${esc(name)}" data-k="name" readonly></td>
+      <td><textarea data-t="${esc(name)}" data-k="content">${esc(content||'')}</textarea></td>
+      <td><input type="radio" name="deftpl" ${name===OC.default_template?'checked':''} onchange="OC.default_template='${esc(name)}'"></td>
+      <td><button class="danger" onclick="delTemplate('${esc(name)}')">删</button></td>
+    </tr>`;
+  }
+  html += '</table>';
+  if (!Object.keys(tpl).length) html += '<p class="small">暂无自定义模板，点击下方「新增模板」创建</p>';
+  $('templates').innerHTML = html;
+}
+
+function addTemplate() {
+  const name = prompt('新模板名称：');
+  if (!name) return;
+  if (OC.templates[name] !== undefined) { alert('模板已存在'); return; }
+  OC.templates[name] = '';
+  renderTemplates();
+}
+function delTemplate(n) { delete OC.templates[n]; if (OC.default_template === n) OC.default_template = ''; renderTemplates(); }
+
+async function saveAll() {
+  // 收集模板编辑
+  document.querySelectorAll('#templates textarea[data-t]').forEach(ta => {
+    const t = ta.dataset.t;
+    OC.templates[t] = ta.value;
+  });
+  const d = await api('/api/opencode/config', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ opencode: OC })
+  });
+  if (d.status) { $('saveMsg').textContent = '已保存 ✓'; $('saveMsg').className = 'small saved'; await load(); }
+  else { $('saveMsg').textContent = '保存失败: ' + (d.msg||''); $('saveMsg').className = 'small err'; }
+}
+
+load();
+</script>
+</body>
+</html>

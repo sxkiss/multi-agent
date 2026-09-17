@@ -1,0 +1,126 @@
+{
+  "mcpServers": {
+    "microsoft/playwright-mcp": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest"
+      ]
+    },
+    "io.github.upstash/context7": {
+      "command": "npx",
+      "args": [
+        "@upstash/context7-mcp@1.0.31"
+      ],
+      "env": {
+        "CONTEXT7_API_KEY": "${input:CONTEXT7_API_KEY}"
+      }
+    },
+    "codacy/codacy-mcp-server": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@codacy/codacy-mcp@latest"
+      ],
+      "env": {
+        "CODACY_ACCOUNT_TOKEN": "${input:codacy_account_token}",
+        "CODACY_CLI_VERSION": "${input:codacy_cli_version}"
+      }
+    },
+    "desktop-commander": {
+      "args": [
+        "-y",
+        "@wonderwhy-er/desktop-commander"
+      ],
+      "command": "npx",
+      "type": "stdio"
+    },
+    "fetch": {
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "command": "uvx",
+      "type": "stdio"
+    },
+    "mcp-server-time": {
+      "args": [
+        "mcp-server-time",
+        "--local-timezone=Asia/Shanghai"
+      ],
+      "command": "uvx",
+      "type": "stdio"
+    },
+    "mcp-shrimp-task-manager": {
+      "args": [
+        "-y",
+        "mcp-shrimp-task-manager"
+      ],
+      "command": "npx",
+      "env": {
+        "ENABLE_GUI": "false",
+        "TEMPLATES_USE": "zh"
+      },
+      "type": "stdio"
+    },
+    "memory": {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "command": "npx",
+      "type": "stdio"
+    },
+    "open-websearch": {
+      "args": [
+        "-y",
+        "open-websearch@latest"
+      ],
+      "command": "npx",
+      "env": {
+        "ALLOWED_SEARCH_ENGINES": "duckduckgo,bing,brave",
+        "DEFAULT_SEARCH_ENGINE": "duckduckgo",
+        "MODE": "stdio"
+      },
+      "type": "stdio"
+    },
+    "sequential-thinking": {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "command": "npx",
+      "type": "stdio"
+    },
+    "serena": {
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide-assistant",
+        "--enable-web-dashboard",
+        "false"
+      ],
+      "command": "uvx",
+      "env": {},
+      "type": "stdio"
+    },
+    "spec-workflow": {
+      "args": [
+        "-y",
+        "@pimzino/spec-workflow-mcp@latest"
+      ],
+      "command": "npx",
+      "env": {},
+      "type": "stdio"
+    },
+    "xxtui": {
+      "url": "https://mcp.xxtui.com",
+      "type": "http",
+      "headers": {
+        "API-KEY": "0163b310f0969e41"
+      }
+    }
+  },
+  "imports": []
+}

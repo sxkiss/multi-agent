@@ -1,0 +1,81 @@
+# ===== 运行时产物 =====
+.server.log
+.server.pid
+sessions/
+__pycache__/
+*.pyc
+
+# ===== 环境 / 依赖 =====
+.venv/
+node_modules/
+
+# ===== 构建产物 =====
+frontend/dist/
+static/frontend/
+deploy_backup/
+
+# ===== 工具数据 =====
+.spec-workflow/
+.playwright-mcp/
+jobs/
+
+# ===== 遗留 / 副本目录 =====
+ai_agent_legacy_btapp/
+ai_agent_legacy_copy/
+
+# ===== 调试截图 =====
+debug_*.png
+final_screenshot.png
+out.png
+homepage_*.png
+bottom_*.png
+fullwidth_*.png
+org_homepage.png
+
+# ===== 备份文件 =====
+*.bak
+*.bak.*
+*.before_*
+index_clean.html
+index.html.backup
+
+# ===== 日志 =====
+*.log
+logs/
+
+# ===== 运行时数据 =====
+uploads/
+fn_unpack/
+test_zips/
+workspace/
+.opencode-sessions/
+.ruff_cache/
+
+# ===== 无引用杂文件 =====
+crewai_article.txt
+crewai_full.txt
+info.json
+doubao_page.png
+page_now.png
+ppt_page.png
+
+# ===== 前端构建产物（旧版本 hash 文件） =====
+static/vue/
+static/js/
+static/assets/
+skills/*
+!skills/review-agent/
+
+# ===== 运行时技能状态 / 市场缓存（外部数据，不入库） =====
+skills_state.json
+skills_market_cache.json
+skills_market_cache.json.tmp
+mcp_market_cache.json
+mcp_market_cache.json.tmp
+
+# ===== 符号链接（指向外部技能目录） =====
+chat_client/skills
+
+# ===== 大文件（超 GitHub 100MB 限制）=====
+uploads/
+fn_unpack/

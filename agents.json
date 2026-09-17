@@ -1,0 +1,47 @@
+[
+  {
+    "id": "agent_001",
+    "title": "分析服务器进程状态",
+    "description": "一键分析服务器关键进程的CPU/内存/服务状态与异常迹象。",
+    "agent": "process_analyzer",
+    "args": {}
+  },
+  {
+    "id": "agent_002",
+    "title": "分析指定网站访问情况",
+    "description": "选择网站，分析访问量、PV、UV等数据信息。",
+    "agent": "site_analyzer",
+    "args": {
+      "site_name": {
+        "description": "网站名",
+        "required": true
+      }
+    }
+  },
+  {
+    "id": "agent_003",
+    "title": "网站安全分析",
+    "description": "全方位分析指定网站的代码安全与访问日志，发现潜在漏洞与威胁。",
+    "agent": "site_safe_analyzer",
+      "args": {
+      "site_name": {
+        "description": "网站名",
+        "required": true
+      }
+    }
+  },
+  {
+    "id": "agent_004",
+    "title": "网络安全专家报告助手",
+    "description": "为你的服务器安全，生成亲民、口语化的网络安全分析报告。",
+    "agent": "security_expert",
+    "args": {}
+  },
+  {
+    "id": "agent_005",
+    "title": "病毒查杀助手",
+    "description": "为高占用资源进程进行AI分析，输出结构化病毒查杀建议报告。",
+    "agent": "virus_scanner",
+    "args": {}
+  }
+]

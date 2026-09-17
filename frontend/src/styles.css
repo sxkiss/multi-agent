@@ -1,0 +1,319 @@
+/* Global styles - extracted from original index.html */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #f5f5f5;
+}
+
+.ai-chat-container {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+  background: #fff;
+  position: relative;
+  overflow: hidden;
+}
+
+.chat-main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* Top actions bar */
+.top-actions {
+  justify-content: space-between;
+  display: flex;
+  gap: 8px;
+  z-index: 10;
+  padding-bottom: 10px;
+}
+
+.top-actions button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 14px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.top-actions button:hover {
+  background: #f0fdf4;
+  border-color: #20a53a;
+  color: #20a53a;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(32, 165, 58, 0.2);
+}
+
+.top-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #f9fafb;
+  border-color: #e5e7eb;
+  color: #9ca3af;
+  transform: none;
+  box-shadow: none;
+}
+
+/* History panel */
+.history-panel {
+  position: absolute;
+  top: 44px;
+  right: 0;
+  width: 280px;
+  max-height: 420px;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 100;
+  animation: slideIn 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.history-panel.show {
+  display: flex;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.history-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid #f0f1f3;
+  background: linear-gradient(to bottom, #fafbfc, #fff);
+}
+
+.history-panel-header h4 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0;
+}
+
+.close-panel-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.close-panel-btn:hover {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.history-list {
+  flex: 1;
+  height: 367px;
+  overflow-y: auto;
+  padding: 8px 12px 12px;
+  background: transparent;
+}
+
+.history-empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: #9ca3af;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  background: #fafbfc;
+  border-radius: 12px;
+}
+
+/* Settings drawer */
+.settings-drawer-overlay {
+  position: fixed;
+  inset: 42px 0 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+}
+
+.settings-drawer-overlay.show {
+  opacity: 1;
+  visibility: visible;
+}
+
+.settings-drawer {
+  position: fixed;
+  top: 42px;
+  right: 0;
+  bottom: 0;
+  width: 500px;
+  height: calc(100% - 42px);
+  background: #fff;
+  display: none;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15);
+  flex-direction: column;
+  transform: translate(100%);
+  transition: transform 0.3s ease;
+  z-index: 1001;
+}
+
+.settings-drawer.show {
+  transform: translate(0);
+  display: flex;
+}
+
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: linear-gradient(to bottom, #fafbfc, #fff);
+}
+
+.drawer-header h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0;
+}
+
+.close-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.close-btn:hover {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.drawer-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  height: calc(100% - 114px);
+}
+
+.form-section {
+  margin-bottom: 20px;
+}
+
+.form-section-group {
+  margin-bottom: 32px;
+  padding: 20px;
+  background: #f9fafb;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+}
+
+.form-section-group:last-child {
+  margin-bottom: 0;
+}
+
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #374151;
+  margin: 0 0 16px;
+}
+
+.form-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 6px;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 8px;
+}
+
+.form-input, .form-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #1f2937;
+  transition: all 0.2s;
+}
+
+.form-input:focus, .form-textarea:focus {
+  outline: none;
+  border-color: #20a53a;
+  box-shadow: 0 0 0 3px rgba(32, 165, 58, 0.1);
+}
+
+.form-textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+/* 历史消息头像与名字（仅针对带 .message-content 的 MessageItem 历史消息） */
+.ai-chat-container .message.user .message-content {
+  background: #e3f2fd;
+  border: 1px solid #d3e8ff;
+}
+
+/* 助手历史消息气泡 + 名字 */
+.ai-chat-container .message.assistant .assistant-content {
+  width: 100%;
+  padding: 10px 14px;
+  background: #f7f8fa;
+  border: 1px solid #eceef1;
+  border-radius: 12px;
+}
+
+.ai-chat-container .message.assistant .assistant-content::before {
+  content: "AI 助手";
+  display: block;
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
