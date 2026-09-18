@@ -280,7 +280,6 @@ GET /api/chat/events?session_id=xxx&job=xxx&last_id=42
 | POST | `/api/crew/dept_save` | 创建部门 |
 | POST | `/api/crew/dept_delete` | 删除部门 |
 | POST | `/api/hotreload` | 热重载工具/技能/子代理 |
-| GET | `/api/simple_chat` | 简易同步聊天（流式返回） |
 | GET | `/mcp/health` | MCP 服务健康检查 |
 | GET | `/mcp/tools` | MCP 工具列表 |
 | POST | `/mcp/tools/{tool_name}/call` | MCP 工具调用 |

@@ -1,5 +1,5 @@
 """
-API 重试公共模块：agent.py / simple_agent.py / single_agent.py 三处共用。
+API 重试公共模块：agent.py / single_agent.py 两处共用。
 
 背景：openai SDK 3.x 基于 httpx2（重命名版），流式中断抛 httpx2.RemoteProtocolError
 等异常，这些异常不是 openai.OpenAIError 的子类；部分断流场景还会直接抛裸 OSError

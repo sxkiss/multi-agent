@@ -10,8 +10,7 @@ AI Agent 核心运行时：主循环、会话记忆、检索增强、MCP 接入�
 |------|------|----------|
 | `__init__.py` | Package | 包入口，导出 AgentConfig |
 | `agent.py` | Core | 主 Agent 循环（流式/重试/续写/工具执行） |
-| `simple_agent.py` | Core | 轻量代理（单轮调用） |
-| `single_agent.py` | Core | 单轮调用（JSON 模式等） |
+| `single_agent.py` | Core | 单轮调用（JSON 模式等，供 retrieval.py RAG 使用） |
 | `memory.py` | Memory | 会话历史持久化（原子写，损坏自动备份） |
 | `retrieval.py` | RAG | SimpleVectorDB + RAG + Mem0 记忆 |
 | `mcp_client.py` | MCP | MCP stdio 客户端（单例+锁） |

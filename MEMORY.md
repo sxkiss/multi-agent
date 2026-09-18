@@ -16,7 +16,7 @@
 - **部署形态**：服务端口 9876；systemd 单元 `multi-agent.service`；工作目录为项目根目录（git 仓库）；**`Restart=always` + `RestartSec=5`，杀进程后 5 秒自动重启，无需 sudo systemctl restart**。
 - **架构分层**：
   - API 层：`web_server.py`（FastAPI 入口，全部端点）
-  - 业务层：`chat_client/agent.py`（主 Agent 循环）、`simple_agent.py`、`single_agent.py`
+  - 业务层：`chat_client/agent.py`（主 Agent 循环）、`single_agent.py`（仅 retrieval.py RAG 使用）
   - 工具层：`chat_client/tools/*`；多智能体：`task.py`
   - 记忆/RAG：`memory.py`、`retrieval.py`；MCP：`mcp_client.py`；Skills：`skills.py` + `skills/*/SKILL.md`
   - 调度：`tools/scheduler.py`；热重载：`hotreload.py`
