@@ -220,19 +220,14 @@
               placeholder="http://localhost:8000"
             />
           </div>
-          <div class="form-section form-section-inline">
-            <label class="switch-label">
-              <input type="checkbox" class="switch-input" v-model="formData.use_global_rag" />
-              <span class="switch-text">启用全局记忆检索</span>
-            </label>
-            <p class="form-hint">开启后，对话前先从 mem0 检索相关记忆注入上下文</p>
-          </div>
-          <div class="form-section form-section-inline">
-            <label class="switch-label">
-              <input type="checkbox" class="switch-input" v-model="formData.use_external_kb" />
-              <span class="switch-text">使用外部知识库 (External RAG)</span>
-            </label>
-            <p class="form-hint">开启后改用 ai-assistant.cn 外部知识库，关闭则使用本机 mem0</p>
+          <div class="form-section">
+            <label class="form-label">RAG 记忆检索模式</label>
+            <p class="form-hint">控制对话前是否从知识库检索相关记忆注入上下文</p>
+            <select class="form-input" v-model="formData.rag_mode">
+              <option value="disabled">关闭 - 不使用记忆检索</option>
+              <option value="global_only">启用全局记忆检索（仅本机 mem0）</option>
+              <option value="external_only">启用外部知识库检索（ai-assistant.cn）</option>
+            </select>
           </div>
         </div>
 
@@ -478,6 +473,7 @@ export default {
       mem0_api_url: 'http://localhost:8000',
       use_global_rag: false,
       use_external_kb: false,
+      rag_mode: 'disabled',
       agent: {
         temperature: 0.9,
         top_p: 0.8,
@@ -575,8 +571,9 @@ export default {
         context_window_kb: newConfig.context_window_kb || 512,
         global_kb_agent_id: newConfig.global_kb_agent_id || 'ai-agent',
         mem0_api_url: newConfig.mem0_api_url || 'http://localhost:8000',
-        use_global_rag: newConfig.use_global_rag === true || newConfig.use_global_rag === 'true',
-        use_external_kb: newConfig.use_external_kb === true || newConfig.use_external_kb === 'true',
+        use_global_rag: newConfig.rag_mode === 'global_only' || newConfig.use_global_rag === true || newConfig.use_global_rag === 'true',
+        use_external_kb: newConfig.rag_mode === 'external_only' || newConfig.use_external_kb === true || newConfig.use_external_kb === 'true',
+        rag_mode: newConfig.rag_mode || (newConfig.use_external_kb ? 'external_only' : newConfig.use_global_rag ? 'global_only' : 'disabled'),
         agent: {
           temperature: newConfig.agent?.temperature || 0.9,
           top_p: newConfig.agent?.top_p || 0.8,
@@ -589,6 +586,12 @@ export default {
       if (props.visible) return
       syncFormData(newConfig)
     }, { immediate: true })
+
+    // 切换下拉框时同步派生字段，保证后端 use_global_rag / use_external_kb 语义不变
+    watch(() => formData.value.rag_mode, (mode) => {
+      formData.value.use_global_rag = mode === 'global_only'
+      formData.value.use_external_kb = mode === 'external_only'
+    })
 
     // Watch visible prop
     watch(() => props.visible, (visible) => {

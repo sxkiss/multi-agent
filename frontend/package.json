@@ -4,7 +4,7 @@
   "description": " Multi-agent AI Assistant - Vue 3 Source",
   "scripts": {
     "dev": "vite",
-    "build": "vite build --emptyOutDir",
+    "build": "vite build --emptyOutDir && cp -f dist/index.html ../index.html && cp -f dist/index.html ../static/index.html && cp -rf dist/assets/* ../static/assets/",
     "preview": "vite preview"
   },
   "dependencies": {
