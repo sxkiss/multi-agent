@@ -785,6 +785,12 @@ Here is some useful information about the environment you are running in:
                             args["session_id"] = self.session_id
                             args["sessions_dir"] = self.config.get("sessions_dir", "sessions")
 
+                        # Inject cwd for Bash/Terminal tools
+                        if func_name in ("Bash", "CheckCommandStatus", "StopCommand"):
+                            cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else None
+                            if cwd and "cwd" not in args:
+                                args["cwd"] = cwd
+
                         func = registry.get_tool_func(func_name)
                         if func:
                             result_str = func(**args)

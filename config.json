@@ -27,7 +27,7 @@
         "max_tool_iterations": 999999,
         "temperature": 1,
         "top_p": 0.95,
-        "reasoning_effort": "high",
+        "reasoning_effort": "max",
         "max_retries": 5,
         "api_max_retry": 3,
         "api_retry_base_wait": 1,
@@ -80,6 +80,7 @@
     },
     "global_kb_agent_id": "ai-agent",
     "mem0_api_url": "http://localhost:8000",
-    "use_global_rag": true,
-    "use_external_kb": false
+    "use_global_rag": false,
+    "use_external_kb": false,
+    "rag_mode": "disabled"
 }

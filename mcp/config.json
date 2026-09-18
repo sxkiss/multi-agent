@@ -1,20 +1,5 @@
 {
   "mcpServers": {
-    "microsoft/playwright-mcp": {
-      "command": "npx",
-      "args": [
-        "@playwright/mcp@latest"
-      ]
-    },
-    "io.github.upstash/context7": {
-      "command": "npx",
-      "args": [
-        "@upstash/context7-mcp@1.0.31"
-      ],
-      "env": {
-        "CONTEXT7_API_KEY": "${input:CONTEXT7_API_KEY}"
-      }
-    },
     "codacy/codacy-mcp-server": {
       "command": "npx",
       "args": [

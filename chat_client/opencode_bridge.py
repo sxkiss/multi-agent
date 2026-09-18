@@ -300,6 +300,45 @@ async def _create_and_send(base_url: str, user_input: str, model: str, oc_sid: s
         return oc_sid
 
 
+# ── 前端会话 ↔ opencode 会话映射（meta.json） ───────────────────────────
+
+def _meta_path(session_id: str) -> str:
+    """前端会话 meta.json 路径（sessions/<id>/meta.json）"""
+    return os.path.join(_PROJECT_ROOT, "sessions", session_id, "meta.json")
+
+
+def _load_meta(session_id: str) -> dict:
+    try:
+        with open(_meta_path(session_id), "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _save_meta(session_id: str, meta: dict) -> None:
+    try:
+        p = _meta_path(session_id)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+    except Exception:
+        logger.warning("meta.json 写入失败 session=%s", session_id, exc_info=True)
+
+
+def _resolve_reuse_sid(session_id: str) -> str:
+    """解析可复用的 opencode 会话 ID：
+    - session_id 本身以 ses_ 开头 → 直接复用
+    - 否则查 meta.json 里上次写入的 opencode_sid 映射
+    返回 "" 表示需要新建。
+    """
+    if session_id.startswith("ses_"):
+        return session_id
+    mapped = _load_meta(session_id).get("opencode_sid", "")
+    if mapped and str(mapped).startswith("ses_"):
+        return str(mapped)
+    return ""
+
+
 # ── 同步入口：在后台线程中运行 ──────────────────────────────────────────
 
 def run_opencode_chat(
@@ -320,7 +359,8 @@ def run_opencode_chat(
     配置文件直接读写用户全局 ~/.config/opencode/opencode.json，不隔离。
     """
     # 历史会话续聊：ses_ 开头即为 opencode 全局会话 ID，复用之（不新建）
-    reuse_sid = session_id if session_id.startswith("ses_") else ""
+    # 或从 meta.json 读取上次映射的 opencode_sid（前端 Date.now() 会话复用同一 opencode 会话）
+    reuse_sid = _resolve_reuse_sid(session_id)
     ws = workspace or _PROJECT_ROOT
     if reuse_sid and not workspace:
         # 对齐历史会话的工作目录
@@ -370,6 +410,11 @@ def run_opencode_chat(
                 logger.info("opencode 会话已复用: %s", oc_sid)
             else:
                 logger.info("opencode 会话已创建: %s", oc_sid)
+            # 回写 opencode 会话 ID 到 meta.json，后续消息复用同一会话（而非每次新建）
+            if oc_sid and not reuse_sid:
+                meta = _load_meta(session_id)
+                meta["opencode_sid"] = oc_sid
+                _save_meta(session_id, meta)
             # P2-36: _subscribe_events 300s 超时后自动重连，避免长回复被截断为"done"
             # 注意：httpx timeout 抛 httpx.TimeoutException，不是 asyncio.TimeoutError
             max_retries = 2
@@ -437,13 +482,13 @@ def query_opencode_sessions(workspace_filter: str = "") -> list[dict]:
         try:
             if workspace_filter:
                 session_rows = conn.execute(
-                    "SELECT id, slug AS directory, title, time_updated, tokens_input, tokens_output "
+                    "SELECT id, directory, title, time_updated, tokens_input, tokens_output "
                     "FROM session WHERE directory = ? ORDER BY time_updated DESC LIMIT 200",
                     (workspace_filter,),
                 ).fetchall()
             else:
                 session_rows = conn.execute(
-                    "SELECT id, slug AS directory, title, time_updated, tokens_input, tokens_output "
+                    "SELECT id, directory, title, time_updated, tokens_input, tokens_output "
                     "FROM session ORDER BY time_updated DESC LIMIT 200",
                 ).fetchall()
         except Exception:
