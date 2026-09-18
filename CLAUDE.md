@@ -20,11 +20,20 @@
 - 风格：专业、直接、可落地
 
 ## 最近操作记录
-（代理应在此处记录最近的关键操作，便于上下文压缩后恢复）
+- **2026-09-19** 诊断所有模式（opencode/claude/codex/native）工作目录读取与历史续对话：
+  - opencode 工作目录读取 ✅、历史 167 条 ✅、会话复用 ✅
+  - claude 工作目录 ✅、主会话历史 ✅；但 subagent(agent-*) 混入历史列表无法续聊
+  - codex 工作目录 ✅、历史 ✅；但历史列表点击续聊因 session_id 为 rollout-文件名、
+    run_codex_chat 只认纯 UUID → 每次新建会话（丢上下文）❌
+  - native group/early single 历史 workspace 多为空（历史遗留）
+- **2026-09-19** 修复 3 处并重启 bt-agent.service（注意：系统单元是 `bt-agent.service`，非文档中的 multi-agent.service）：
+  1. `chat_client/codex_bridge.py:196` 续聊判定改为 `re.search` 提取 rollout 文件名末尾 UUID → 历史列表点击可真正 resume
+  2. `chat_client/claude_bridge.py:query_claude_sessions` 跳过 `/subagents/` 目录 → 列表只剩主会话
+  3. `chat_client/opencode_bridge.py:query_history` 残留 `slug AS directory` → 改为 `directory`
 
 ## 待办事项
-（代理应在此处记录待办事项，便于跟踪进度）
+- （无）
 
 ---
-*最后更新：2026-09-03*
+*最后更新：2026-09-19*
 *代理应定期更新此文件以保持上下文连续性*

@@ -193,10 +193,13 @@ def run_codex_chat(
 ) -> None:
     ws = workspace or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # 续聊判定：UUID 格式即为 codex thread_id
-    reuse_tid = session_id if re.fullmatch(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", session_id or ""
-    ) else ""
+    # 续聊判定：UUID 格式即为 codex thread_id；历史列表点击进入时 session_id
+    # 是 rollout-YYYY-MM-DDTHH-MM-SS-<uuid> 文件名形态，需提取末尾 UUID 用于 resume。
+    u = re.search(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        str(session_id or ""),
+    )
+    reuse_tid = u.group(0) if u else ""
 
     logger.info("codex 模式启动 model=%s workspace=%s reuse=%s", model, ws, reuse_tid or "(新建)")
 

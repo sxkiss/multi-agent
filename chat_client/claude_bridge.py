@@ -419,6 +419,10 @@ def query_claude_sessions(workspace_filter: str = "") -> list[dict]:
             # 跳过 tool-results 目录下的文件（那是工具结果片段，不是主会话）
             if "/tool-results/" in f:
                 continue
+            # 跳过 subagents/ 下的文件（子代理会话无法单独续聊，避免污染历史列表；
+            # 其内容属于父主会话，父会话仍在项目根层 *.jsonl 中）
+            if "/subagents/" in f:
+                continue
             # 文件名：subagents/agent-xxx.jsonl 取 agent-xxx；其它用 .jsonl 去后缀
             base_name = os.path.basename(f)[:-6]
             if base_name.startswith("agent-"):

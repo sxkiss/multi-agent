@@ -599,7 +599,7 @@ def query_opencode_history(session_id: str) -> list[dict]:
 
         # session 表可能被清空（会话从 message 表反查而来），查不到也继续用 message/part 表
         sess = conn.execute(
-            "SELECT slug AS directory, title FROM session WHERE id = ?", (session_id,)
+            "SELECT directory, title FROM session WHERE id = ?", (session_id,)
         ).fetchone()
 
         # 全部消息按时间排序（一条 user 对应一条 assistant）
