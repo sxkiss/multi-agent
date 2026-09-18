@@ -349,6 +349,128 @@ class RAGService:
                 final_context.append(f"{c['text']}")
         return final_context
 
+class _RAGJudgmentClient:
+    """RAG 判断专用 OpenAI 客户端，封装 chat completion + 自动重试逻辑"""
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model_name: str,
+        default_headers: dict[str, str] | None = None,
+        temperature: float = 0.1,
+        timeout: float = 30.0,
+        max_retries: int = 5,
+        retry_base_wait: float = 1.0,
+        retry_max_wait: float = 10.0,
+    ):
+        self.model_name = model_name
+        self.temperature = temperature
+        self.max_retries = max_retries
+        self.retry_base_wait = retry_base_wait
+        self.retry_max_wait = retry_max_wait
+        self.client = openai.OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            default_headers=default_headers or {},
+            max_retries=max_retries,
+            timeout=timeout,
+        )
+
+    def close(self):
+        self.client.close()
+
+    def chat(
+        self,
+        prompt: str | None = None,
+        input_text: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        json_response: bool = False,
+        temperature: float | None = None,
+        model: str | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        try:
+            if messages is not None:
+                if prompt is not None:
+                    request_messages = [{"role": "system", "content": prompt}] + messages
+                else:
+                    request_messages = messages
+                if input_text is not None:
+                    request_messages.append({"role": "user", "content": input_text})
+            elif prompt is not None and input_text is not None:
+                request_messages = [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": input_text},
+                ]
+            elif prompt is not None:
+                request_messages = [{"role": "system", "content": prompt}]
+            else:
+                return {"success": False, "error": "必须提供 prompt + input_text 或 messages 参数"}
+
+            params = {
+                "model": model or self.model_name,
+                "messages": request_messages,
+                "temperature": temperature if temperature is not None else self.temperature,
+                "top_p": 1.0,
+                **kwargs,
+            }
+            if json_response:
+                params["response_format"] = {"type": "json_object"}
+
+            api_max_retry = max(0, int(self.max_retries))
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    msgs = params.get("messages")
+                    if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system":
+                        params = {**params, "messages": [dict(msgs[0], cache_control={"type": "ephemeral"})] + msgs[1:]}
+                    response = self.client.chat.completions.create(**params)
+                    break
+                except Exception as api_err:
+                    from chat_client.api_retry import is_retryable_api_err
+                    if not is_retryable_api_err(api_err) or attempt > api_max_retry:
+                        return {
+                            "success": False,
+                            "error": f"接口调用失败（重试 {api_max_retry} 次仍失败）: {api_err!s}",
+                            "error_code": getattr(api_err, "status_code", 503),
+                        }
+                    wait_s = min(self.retry_base_wait * (2 ** (attempt - 1)), self.retry_max_wait)
+                    logger.warning("[RAG] judgment retry %s, %.1fs wait: %s", attempt, wait_s, str(api_err)[:200])
+                    time.sleep(wait_s)
+
+            if not response.choices:
+                return {"success": False, "error": "API 返回空响应"}
+
+            content = response.choices[0].message.content
+            usage = None
+            if response.usage:
+                usage = {
+                    "total_tokens": response.usage.total_tokens,
+                    "input_tokens": response.usage.prompt_tokens,
+                    "output_tokens": response.usage.completion_tokens,
+                }
+
+            if json_response:
+                try:
+                    return {"success": True, "data": json.loads(content), "response": content, "usage": usage}
+                except json.JSONDecodeError as e:
+                    return {"success": False, "error": f"JSON 解析失败: {e!s}", "response": content, "usage": usage}
+            return {"success": True, "response": content, "usage": usage}
+
+        except openai.AuthenticationError:
+            return {"success": False, "error": "API 密钥错误或无效", "error_code": 401}
+        except openai.RateLimitError:
+            return {"success": False, "error": "接口调用频率超限，请稍后重试", "error_code": 429}
+        except openai.APIConnectionError as e:
+            return {"success": False, "error": f"无法连接到 API 服务器: {e!s}", "error_code": getattr(e, "status_code", 502)}
+        except openai.APIError as e:
+            return {"success": False, "error": f"API 返回错误: {e!s}", "error_code": getattr(e, "status_code", 500)}
+        except Exception as e:
+            return {"success": False, "error": f"未知错误: {e!s}"}
+
+
 class ExternalRAGService:
     API_URL = "https://www.ai-assistant.cn/plugin_api/chat/api/knowledge-base/retrieve"
 
@@ -396,9 +518,9 @@ class ExternalRAGService:
     def _get_judgment_agent(self):
         """P2-32: 懒加载单例，避免每次 _should_use_rag 都创建新 OpenAI client"""
         if self._judgment_agent is None:
-            from chat_client.single_agent import SingleAgent
+            from chat_client.rag_judgment import RAGJudgmentClient
             try:
-                self._judgment_agent = SingleAgent(
+                self._judgment_agent = RAGJudgmentClient(
                     api_key=self.judgment_api_key,
                     base_url=self.judgment_base_url,
                     model_name=self.judgment_model_name,
@@ -407,7 +529,7 @@ class ExternalRAGService:
                     timeout=30,
                 )
             except Exception as e:
-                logger.warning("[RAG] judgment agent 初始化失败，将跳过 RAG 判断: %s", e)
+                logger.warning("[RAG] judgment client 初始化失败，将跳过 RAG 判断: %s", e)
                 return None
         return self._judgment_agent
 
@@ -431,9 +553,9 @@ class ExternalRAGService:
     "reason": "判断理由"
 }"""
 
-        # P2-32: 使用缓存的 judgment agent，避免每次新建连接
-        single_agent = self._get_judgment_agent()
-        if single_agent is None:
+        # P2-32: 使用缓存的 judgment client，避免每次新建连接
+        judgment_client = self._get_judgment_agent()
+        if judgment_client is None:
             return {"use_rag": True, "confidence": 0.0, "reason": "判断器不可用，默认检索"}
 
         try:
@@ -457,22 +579,21 @@ class ExternalRAGService:
                         if not content:
                             continue
                         formatted_history.append({"role": role, "content": str(content)})
-                # logger.info(f"RAG Judgment Session History:{formatted_history}")
-                result = single_agent.chat(
+                result = judgment_client.chat(
                     prompt=prompt,
                     messages=formatted_history,
                     input_text=f"当前用户输入：{user_input}",
                     json_response=True,
                     temperature=0.1,
-                    extra_body={"enable_thinking":False}
+                    extra_body={"enable_thinking": False},
                 )
             else:
-                result = single_agent.chat(
+                result = judgment_client.chat(
                     prompt=prompt,
                     input_text=user_input,
                     json_response=True,
                     temperature=0.1,
-                    extra_body={"enable_thinking":False}
+                    extra_body={"enable_thinking": False},
                 )
 
             # logger.info(f"RAG Judgment Result:{time.time()-notime} {result}")
@@ -494,11 +615,6 @@ class ExternalRAGService:
                 "confidence": 0.0,
                 "reason": f"判断异常: {e!s}，默认检索"
             }
-        finally:
-            try:
-                single_agent.close()
-            except Exception:
-                logger.warning("未处理的异常", exc_info=True)
     def search(self, query: str, score: float = 0.2, scope: str = "session", full_text: bool = True, enable_rag_judgment: bool | None = None, session_history: list[dict[str, Any]] | None = None) -> list[str]:
         """
         从外部知识库检索与查询最相关的上下文信息。

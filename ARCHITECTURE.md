@@ -27,7 +27,7 @@ Boss（用户）——只下达目标
 | 层 | 文件 | 职责 | 热加载 |
 |---|---|---|---|
 | API 层 | `web_server.py` | 全部 HTTP/SSE 路由、参数解析、集团模式装配 | ❌ 核心 |
-| 业务层 | `chat_client/agent.py`、`chat_client/single_agent.py`（仅 retrieval.py RAG 使用） | 主循环、流式重试、工具执行编排 | ❌ 核心 |
+| 业务层 | `chat_client/agent.py` | 主循环、流式重试、工具执行编排 | ❌ 核心 |
 | 工具层 | `chat_client/tools/*` | registry 统一封装：schema/校验/超时/审计/护栏 | ✅ |
 | 多智能体 | `chat_client/tools/task.py` | Task 子代理 + RunCrew 集团模式 + 组织扩张工具 | ✅ |
 | 记忆/RAG | `memory.py` `retrieval.py` | 会话持久化、向量检索 | ❌ 核心 |
@@ -52,7 +52,6 @@ Boss（用户）——只下达目标
 ├── requirements.txt         # Python 依赖
 ├── chat_client/
 │   ├── agent.py             # 主 Agent 循环（流式/重试/续写/工具执行）
-│   ├── single_agent.py      # 单轮调用（JSON 模式等，供 retrieval.py RAG 使用）
 │   ├── memory.py            # 会话历史（原子写）
 │   ├── retrieval.py         # SimpleVectorDB + RAG + ExternalRAG
 │   ├── mcp_client.py        # MCP stdio 客户端（单例+锁）
