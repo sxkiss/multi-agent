@@ -45,6 +45,45 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
+# ---- 应用日志配置（必须在任何 logger 创建之前调用）----
+_LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+
+_LOG_FMT = "[%(asctime)s] %(levelname)-8s %(name)s: %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+def _setup_app_logging():
+    """配置应用级日志：文件轮转 + stderr（journactl）"""
+    fmt = logging.Formatter(_LOG_FMT, datefmt=_LOG_DATEFMT)
+
+    handlers = []
+    # 文件：最大 10MB，保留 5 个备份
+    fh = logging.handlers.RotatingFileHandler(
+        os.path.join(_LOG_DIR, "app.log"),
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    fh.setFormatter(fmt)
+    handlers.append(fh)
+
+    # stderr：被 journactl 采集
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    handlers.append(sh)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    # 清空已有 handler，避免重复
+    root.handlers.clear()
+    for h in handlers:
+        root.addHandler(h)
+
+_setup_app_logging()
+del _setup_app_logging  # 不再需要，清理局部名称
+
+logger = logging.getLogger(__name__)
+
 # ---- opencode 残留清理（服务启动时执行）----
 import subprocess as _subp
 try:
@@ -61,8 +100,6 @@ from typing import ClassVar
 import public
 from chat_client.skills import skill_manager
 from chat_client.tools import registry
-
-logger = logging.getLogger(__name__)
 
 # claude 会话 ID 格式（UUID），用于区分 opencode（ses_ 前缀）/ claude / native 会话
 _CLAUDE_SID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)

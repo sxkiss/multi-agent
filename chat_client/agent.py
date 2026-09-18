@@ -460,6 +460,7 @@ Here is some useful information about the environment you are running in:
                 )
                 if global_docs:
                     context_str += "[Global Knowledge Base(for reference only)]:\n" + "\n".join(global_docs) + "\n\n"
+                logger.info("[RAG] Global context injected, docs count: %d", len(global_docs))
 
             # 检查触发条件
             if self.memory.get_total_rounds() > self.rag_trigger_threshold:
@@ -478,6 +479,7 @@ Here is some useful information about the environment you are running in:
                 if retrieved_docs:
                     if context_str:
                          context_str += "[Session History(for reference only)]:\n"
+                    logger.info("[RAG] Session context injected, docs count: %d", len(retrieved_docs))
                     context_str += "\n".join(retrieved_docs)
 
             # 3. 构建消息
