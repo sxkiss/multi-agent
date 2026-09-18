@@ -958,6 +958,48 @@ class AgentMain:
         except Exception:
             return None
 
+    def _inject_rag_context(self, get, system_prompt, user_input):
+        """
+        为 opencode/claude/codex 模式注入全局 RAG 上下文。
+        这些模式走子进程桥接，不经过 agent.py 的 RAG 注入逻辑，
+        因此需要在此处手动查询 Mem0Service 并拼接到 system_prompt。
+        """
+        use_global_rag = self._get_priority_value(
+            'use_global_rag', get, {}, self.config.get('use_global_rag', False)
+        )
+        if not use_global_rag:
+            return system_prompt
+
+        try:
+            from chat_client.retrieval import Mem0Service
+            agent_id = self._get_priority_value(
+                'global_kb_agent_id', get, {}, self.config.get('global_kb_agent_id', 'ai-agent')
+            )
+            mem0_url = self._get_priority_value(
+                'mem0_api_url', get, {}, self.config.get('mem0_api_url', 'http://localhost:8000')
+            )
+            rag_final_count = self.config.get('rag', {}).get('rag_final_count', 5)
+
+            mem0 = Mem0Service(
+                agent_id=agent_id,
+                rag_final_count=rag_final_count,
+                mem0_api_url=mem0_url
+            )
+            docs = mem0.search(user_input)
+            mem0.close()
+
+            if docs:
+                context_block = "[Global Knowledge Base(for reference only)]:\n" + "\n".join(docs) + "\n\n"
+                if system_prompt:
+                    system_prompt = system_prompt + "\n\n" + context_block
+                else:
+                    system_prompt = context_block
+                logger.info("[RAG] Global context injected for %s mode, docs count: %d", "opencode/claude/codex", len(docs))
+        except Exception as e:
+            logger.debug("RAG 上下文注入失败（已记录）: %s", e)
+
+        return system_prompt
+
     def _build_chat_agent(self, get):
         """
         构建聊天 Agent（chat 与后台任务共用）。
@@ -1228,6 +1270,8 @@ class AgentMain:
 
             # 提示词：system_prompt 直接传 → 模板选择 → 配置默认（三模式共用）
             system_prompt = self._resolve_template_system_prompt(get, cfg_key='opencode')
+            # RAG 上下文注入（全局 Mem0，适用于子进程模式）
+            system_prompt = self._inject_rag_context(get, system_prompt, user_input)
 
             workspace = str(get.get('workspace', '')).strip()
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
@@ -1274,6 +1318,8 @@ class AgentMain:
 
             # 提示词：system_prompt 直接传 → 模板选择 → 配置默认（三模式共用）
             system_prompt = self._resolve_template_system_prompt(get, cfg_key='opencode')
+            # RAG 上下文注入（全局 Mem0，适用于子进程模式）
+            system_prompt = self._inject_rag_context(get, system_prompt, user_input)
 
             workspace = str(get.get('workspace', '')).strip()
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
@@ -1317,6 +1363,8 @@ class AgentMain:
             from chat_client.codex_bridge import run_codex_chat
             model = str(get.get('model', 'auto')).strip() or 'auto'
             system_prompt = self._resolve_template_system_prompt(get, cfg_key='opencode')
+            # RAG 上下文注入（全局 Mem0，适用于子进程模式）
+            system_prompt = self._inject_rag_context(get, system_prompt, user_input)
             workspace = str(get.get('workspace', '')).strip()
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
             custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
