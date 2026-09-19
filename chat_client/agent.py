@@ -33,6 +33,9 @@ from .tools.base import _xml_response
 
 logger = logging.getLogger(__name__)
 
+# L-1: tiktoken 编码器缓存在模块级，避免每次调用重复导入
+_TIKTOKEN_ENC = None
+
 BINARY_EXTENSIONS = {
     '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.class', '.jar', '.war', '.7z',
     '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.pdf', '.doc', '.docx', '.xls', '.xlsx',
@@ -263,8 +266,10 @@ Here is some useful information about the environment you are running in:
                 chunk = f.read(8192)
                 if b'\x00' in chunk:
                     return True
-        except Exception:
-            logger.warning("未处理的异常", exc_info=True)
+        except Exception as e:
+            # L-9: 明确记录异常类型，便于排查读文件失败原因
+            logger.debug("判断二进制文件失败 %s: %s", file_path, e)
+            return False
         return False
 
     def _process_file_reference(self, file_path: str) -> tuple:
@@ -986,8 +991,28 @@ Here is some useful information about the environment you are running in:
             return content
 
         def _estimate_tokens(text: str) -> int:
-            """估算 token 数量（中英文混合：保守按 2 字符/token，避免低估）"""
-            return len(text) // 2
+            """估算 token 数量（CJK-aware：尽量贴近实际，避免高估/低估）。
+            策略：优先尝试 tiktoken；降级到启发式估算。
+            - CJK 字符（\u4e00-\u9fff）、全角标点、假名：约 1 字符/token（偏高，防截断过早）
+            - ASCII 字母/数字：约 4 字符/token（更接近真实比）
+            - 其余标点/空白：1 字符/token
+            总体上限与下限均合理，避免英文严重高估、中文严重低估。"""
+            try:
+                global _TIKTOKEN_ENC
+                if _TIKTOKEN_ENC is None:
+                    import tiktoken
+                    _TIKTOKEN_ENC = tiktoken.get_encoding("cl100k_base")
+                return max(1, len(_TIKTOKEN_ENC.encode(text)))
+            except Exception:
+                _TIKTOKEN_ENC = False  # 标记不可用，后续不再重试导入
+            # 启发式 fallback：区分 CJK 与 ASCII
+            cjk_count = sum(1 for ch in text
+                            if ('\u4e00' <= ch <= '\u9fff')
+                            or ('\u3000' <= ch <= '\u303f')
+                            or ('\uff00' <= ch <= '\uffef'))
+            ascii_chars = len(text) - cjk_count
+            # CJK ~1.0 token/char，ASCII ~0.25 token/char；偏保守取中间值
+            return max(1, int(cjk_count * 1.0 + ascii_chars * 0.35))
 
         if context_str:
             system_prompt += f"\n\n[History Context (Time-Ordered)]:\n{context_str}"

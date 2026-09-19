@@ -108,9 +108,27 @@ _CLAUDE_SID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[
 def _is_claude_session_id(session_id: str) -> bool:
     return bool(_CLAUDE_SID_RE.match(str(session_id or "")))
 
+
+# L-2: 统一 session_id 校验：仅允许安全字符，防注入与意外路径穿越
+_SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_\-]{1,128}$')
+
+
+def _validate_session_id(session_id) -> tuple:
+    """校验 session_id 格式；合法返回 (True, session_id)，非法返回 (False, 错误信息)"""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False, "缺少参数 session_id"
+    if not _SESSION_ID_RE.match(sid):
+        return False, "session_id 格式不合法（仅允许字母数字、下划线、短横线，最长128字符）"
+    return True, sid
+
 # ============================================================
 # Agent Main
 # ============================================================
+
+# 已知合法 SSE event 名集合：未知 type 一律降级到 message，避免污染客户端解析
+_KNOWN_SSE_EVENTS = {"content", "reasoning", "error", "stop", "meta_info"}
+
 
 def _map_agent_chunk(chunk):
     """将 agent.chat() 产出的 chunk 映射为 SSE (event, data) 列表"""
@@ -125,7 +143,10 @@ def _map_agent_chunk(chunk):
         return [("usage", {"usage": chunk.get("usage", {})})]
     if t == "meta_info":
         return [("meta_info", {"user_msg_id": chunk.get("user_msg_id"), "ai_msg_id": chunk.get("ai_msg_id")})]
-    return [(str(t or "message"), chunk)]
+    if t and t not in _KNOWN_SSE_EVENTS:
+        logger.warning("_map_agent_chunk 未知 type=%r，已降级为 message", t)
+        return [("message", str(chunk.get("response", "") or chunk))]
+    return [("message", str(chunk.get("response", "")))]
 
 
 class ChatJob:
@@ -133,11 +154,13 @@ class ChatJob:
     事件增量落盘到 jobs/<key>.jsonl，服务重启后可恢复为中断/完成状态回放。"""
     TERMINAL_STATUSES = ("done", "error", "stopped")
 
+    _MAX_EVENTS = int(os.environ.get("AI_AGENT_MAX_JOB_EVENTS", "2000"))
+
     def __init__(self, session_id, label="", persist=True, key=""):
         self.session_id = session_id
         self.label = (label or "")[:40]
         self.key = key or f"{session_id}::{uuid.uuid4().hex[:6]}"
-        self.events = []            # [{"id": seq, "event": name, "data": ...}]
+        self.events = []            # [{"id": seq, "event": name, "data": ...}]，回放按 id 过滤，超出上限会丢弃最旧的
         self.status = "running"     # running | done | error | stopped
         self.agent = None
         self.created_at = time.time()
@@ -154,6 +177,13 @@ class ChatJob:
     def append(self, event, data=None):
         with self._lock:
             self.events.append({"id": len(self.events), "event": event, "data": data})
+            # 限制事件缓存大小，避免长时间挂起的任务撑爆内存
+            if len(self.events) > self._MAX_EVENTS:
+                keep = self.events[-self._MAX_EVENTS:]
+                # 重编 id 保证前端能按连续 seq 回放
+                for i, e in enumerate(keep):
+                    e["id"] = i
+                self.events = keep
         # 增量落盘（原子追加）
         if self.persist:
             try:
@@ -1470,11 +1500,12 @@ class AgentMain:
         SSE 事件流：先回放 last_id 之后的事件，再实时跟随，直到任务终态。
         前端断开后可带 last_id 重连续传，后端任务不受影响。
         """
-        session_id = get.get('session_id', '')
-        job_key = get.get('job', '')
-        if not session_id:
-            yield self.sse_pack(event="error", data={"msg": "缺少参数 session_id"})
+        ok, sid = _validate_session_id(get.get('session_id'))
+        if not ok:
+            yield self.sse_pack(event="error", data={"msg": sid})
             return
+        session_id = sid
+        job_key = get.get('job', '')
         if job_key:
             job = chat_jobs.get(job_key)
         else:
@@ -1522,9 +1553,10 @@ class AgentMain:
             yield self.sse_pack(event="message_end", id=last_id + 1)
 
     def chat_status(self, get):
-        session_id = get.get('session_id', '')
-        if not session_id:
-            return public.returnMsg(False, "缺少参数 session_id")
+        ok, sid = _validate_session_id(get.get('session_id'))
+        if not ok:
+            return public.returnMsg(False, sid)
+        session_id = sid
         jobs = chat_jobs.active_for_session(session_id)
         if not jobs:
             return public.return_data(True, data={"running": False, "status": "none",
@@ -1556,7 +1588,10 @@ class AgentMain:
         })
 
     def chat_stop(self, get):
-        session_id = get.get('session_id', '')
+        ok, sid = _validate_session_id(get.get('session_id'))
+        if not ok:
+            return public.returnMsg(False, sid)
+        session_id = sid
         job_key = str(get.get('job', '') or '').strip()
         if not session_id:
             return public.returnMsg(False, "缺少参数 session_id")
@@ -2941,8 +2976,10 @@ async def api_files_raw(path: str = ""):
         return JSONResponse(public.returnMsg(False, "文件不存在或不在允许访问的范围内"))
     try:
         return FileResponse(real)
-    except Exception as e:
-        return JSONResponse(public.returnMsg(False, f"读取文件失败: {e!s}"))
+    except Exception:
+        # L-4: 详细原因（含服务器绝对路径）只留在日志，对外返回通用提示避免信息泄露
+        logger.warning("读取文件失败（路径已脱敏），详见日志", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "读取文件失败"))
 
 
 @app.get("/api/files/browse")
@@ -2984,8 +3021,10 @@ async def api_files_browse(path: str = ""):
             "preselect": preselect,
             "items": entries,
         }))
-    except Exception as e:
-        return JSONResponse(public.returnMsg(False, f"浏览失败: {e!s}"))
+    except Exception:
+        # L-4: 详细原因（含服务器绝对路径）只留在日志，对外返回通用提示
+        logger.warning("浏览目录失败（详情不返回客户端），详见日志", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "浏览失败"))
 
 
 @app.post("/api/files/upload")
@@ -3028,8 +3067,10 @@ async def api_files_upload(file: UploadFile = File(...)):
             "url": "/api/files/raw?path=" + urllib.parse.quote(rel),
             "size": size,
         }))
-    except Exception as e:
-        return JSONResponse(public.returnMsg(False, f"上传失败: {e!s}"))
+    except Exception:
+        # L-4: 详细原因（含服务器绝对路径）只留在日志，对外返回通用提示
+        logger.warning("上传文件失败（详情不返回客户端），详见日志", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "上传失败"))
 
 
 @app.get("/api/agent/run")
@@ -3066,10 +3107,26 @@ if os.path.exists(static_dir):
 
 if __name__ == '__main__':
     import argparse
+    import atexit
     parser = argparse.ArgumentParser(description="AI Agent Standalone Web Server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=9876, help="Listen port (default: 9876)")
     args = parser.parse_args()
 
     print(f"AI Agent Standalone starting on http://{args.host}:{args.port}")
+    # L-5: 进程退出时优雅停止所有仍在运行的聊天任务，避免 agent 数据丢失
+    def _graceful_shutdown():
+        running = [j for j in chat_jobs._jobs.values() if j.is_running]
+        if running:
+            logger.info(f"[Shutdown] 停止 {len(running)} 个运行中任务...")
+            for j in running:
+                j.finish("stopped")
+                try:
+                    if j.agent:
+                        j.agent.close()
+                except Exception:
+                    logger.warning("[Shutdown] 停止任务失败，已记录", exc_info=True)
+            logger.info("[Shutdown] 全部任务已停止")
+    atexit.register(_graceful_shutdown)
+
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

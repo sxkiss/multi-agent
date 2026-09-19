@@ -441,6 +441,14 @@ class SkillManager:
             if compress_size > 0 and zi.file_size > 0 \
                and zi.file_size / compress_size > self._ZIP_BOMB_RATIO:
                 return {"status": False, "msg": f"检测到压缩比异常成员（疑似 zip 炸弹）: {zi.filename}"}
+            if compress_size == 0 and zi.file_size > 0:
+                # M-8: compress_size=0 会跳过比例检测；此处显式告警，
+                # 并依赖下方 total_size / _MAX_SINGLE_FILE 与解压时实时写入累计作为兜底防线。
+                logger.warning(
+                    "[ZipBombGuard] 成员 %s compress_size=0（file_size=%d），"
+                    "无法做压缩比校验，改由总体积+实时累计兜底",
+                    zi.filename, zi.file_size,
+                )
 
         # 路径安全校验 + 确定公共前缀
         for n in names:

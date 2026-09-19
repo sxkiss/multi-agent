@@ -353,17 +353,32 @@ class ToolRegistry:
             try:
                 with open(self.STATE_FILE, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except Exception:
-                logger.warning("异常被静默吞掉，已记录", exc_info=True)
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning("工具状态文件损坏（%s），已回退空状态: %s", self.STATE_FILE, e)
+            except OSError as e:
+                logger.warning("读取工具状态文件失败（%s）: %s", self.STATE_FILE, e)
         return {}
 
     def _save_states(self):
-        """将工具状态保存到文件"""
+        """将工具状态保存到文件（原子写：tmp + os.replace）"""
+        tmp = self.STATE_FILE + ".tmp"
         try:
-            with open(self.STATE_FILE, 'w', encoding='utf-8') as f:
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(self._states, f, indent=4, ensure_ascii=False)
-        except Exception:
-            logger.warning("异常被静默吞掉，已记录", exc_info=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.STATE_FILE)
+        except OSError as e:
+            logger.warning("写入工具状态文件失败（%s）: %s", self.STATE_FILE, e)
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+        except (TypeError, ValueError) as e:
+            # 状态对象含不可序列化字段（如 set/datetime），降级为尽力序列化
+            logger.warning("工具状态含不可序列化字段，降级写入: %s", e)
+            self._states = json.loads(json.dumps(self._states, ensure_ascii=False, default=str))
     
     def tool_exists(self, name: str) -> bool:
         """检查工具是否存在"""
@@ -592,7 +607,11 @@ class ToolRegistry:
                         cur_desc.append(ln.strip())
                 if cur_name:
                     arg_docs[cur_name] = " ".join(cur_desc).strip()
+            except (re.error, AttributeError):
+                # 正则解析失败时降级为无参数描述，不影响工具注册
+                arg_docs = {}
             except Exception:
+                logger.warning("解析参数文档失败，已降级为无描述", exc_info=True)
                 arg_docs = {}
 
         for name, param in sig.parameters.items():

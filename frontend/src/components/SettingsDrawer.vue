@@ -428,7 +428,7 @@
   </div>
 </template>
 <script>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 
 export default {
   name: 'SettingsDrawer',
@@ -459,6 +459,17 @@ export default {
     }
     const apiGet = (url, cb) => apiCall('GET', url, null, cb)
     const apiPost = (url, body, cb) => apiCall('POST', url, body, cb)
+
+    // M-6: 集中登记所有 setTimeout 句柄，组件卸载时统一清理，避免回调操作已销毁的组件
+    const pendingTimers = new Set()
+    const safeTimeout = (fn, delay) => {
+      const id = setTimeout(() => {
+        pendingTimers.delete(id)
+        fn()
+      }, delay)
+      pendingTimers.add(id)
+      return id
+    }
 
     const formData = ref({
       api_base_url: '',
@@ -690,10 +701,10 @@ export default {
           newMcpName.value = ''
           newMcpConfig.value = ''
           newMcpOverwrite.value = false
-          fetchMcpServers()
-          setTimeout(() => {
-            if (window.layer) window.layer.msg('已写入配置，点「热重载」让 MCP 客户端重连生效', { icon: 0 })
-          }, 600)
+           fetchMcpServers()
+           safeTimeout(() => {
+             if (window.layer) window.layer.msg('已写入配置，点「热重载」让 MCP 客户端重连生效', { icon: 0 })
+           }, 600)
         }
       } catch {
         mcpMsgErr.value = true
@@ -749,10 +760,10 @@ export default {
         if (window.layer) window.layer.msg(res.msg || (res.status ? '安装成功' : '安装失败'), { icon: res.status ? 1 : 2 })
         if (res.status) {
           fetchMcpServers()
-          // 提示用户点热重载让 MCP 客户端重连
-          setTimeout(() => {
-            if (window.layer) window.layer.msg('已写入配置，请点「热重载」让 MCP 客户端重连生效', { icon: 0 })
-          }, 600)
+           // 提示用户点热重载让 MCP 客户端重连
+           safeTimeout(() => {
+             if (window.layer) window.layer.msg('已写入配置，请点「热重载」让 MCP 客户端重连生效', { icon: 0 })
+           }, 600)
         }
       } catch {
         if (window.layer) window.layer.msg('安装请求失败', { icon: 2 })
@@ -777,7 +788,7 @@ export default {
       } catch (e) {
         if (window.layer) window.layer.msg('热重载请求失败', { icon: 2 })
       } finally {
-        setTimeout(() => { reloading.value = false }, 800)
+           safeTimeout(() => { reloading.value = false }, 800)
       }
     }
 
@@ -1033,6 +1044,14 @@ export default {
       if (!key) return
       formData.value.default_headers[key] = newVal
     }
+
+    // M-6: 组件卸载时清理所有待执行的定时器，防止回调操作已销毁的响应式状态
+    onUnmounted(() => {
+      for (const id of pendingTimers) {
+        clearTimeout(id)
+      }
+      pendingTimers.clear()
+    })
 
     return {
       formData,
