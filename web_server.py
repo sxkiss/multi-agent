@@ -109,8 +109,12 @@ def _is_claude_session_id(session_id: str) -> bool:
     return bool(_CLAUDE_SID_RE.match(str(session_id or "")))
 
 
-# L-2: 统一 session_id 校验：仅允许安全字符，防注入与意外路径穿越
-_SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_\-]{1,128}$')
+# L-2: 统一 session_id 校验：仅允许安全字符，防注入与意外路径穿越。
+# 允许 : @ . 是因为真实会话 ID 形如：
+#   single:assistant:sxkiss_com:52806025813@chatroom
+#   claude:assistant:sxkiss_com:52806025813@chatroom
+# 这些字符不足以构成路径穿越（已排除 / \ .. 等），但必须放行否则单ag/微信会话无法删除。
+_SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_:\-.@]{1,128}$')
 
 
 def _validate_session_id(session_id) -> tuple:
@@ -118,16 +122,24 @@ def _validate_session_id(session_id) -> tuple:
     sid = str(session_id or "").strip()
     if not sid:
         return False, "缺少参数 session_id"
+    if ".." in sid or "/" in sid or "\\" in sid or "\x00" in sid:
+        return False, "session_id 含非法字符（路径穿越字符）"
     if not _SESSION_ID_RE.match(sid):
-        return False, "session_id 格式不合法（仅允许字母数字、下划线、短横线，最长128字符）"
+        return False, "session_id 格式不合法（仅允许字母数字、下划线、短横线、冒号、@、点，最长128字符）"
     return True, sid
 
 # ============================================================
 # Agent Main
 # ============================================================
 
-# 已知合法 SSE event 名集合：未知 type 一律降级到 message，避免污染客户端解析
-_KNOWN_SSE_EVENTS = {"content", "reasoning", "error", "stop", "meta_info"}
+# 已知合法 SSE event 名集合（以 agent.py/bridges 实际产出的 type 为准，勿随意删减）：
+# content/reasoning/error/stop/meta_info 为 agent 主链路，
+# tool_call/tool_result/message_end/usage 由各 bridge 直接 append。
+# 未知 type 一律降级到 message，避免非法事件名污染客户端解析。
+_KNOWN_SSE_EVENTS = {
+    "content", "reasoning", "error", "stop", "meta_info",
+    "tool_call", "tool_result", "message_end", "usage",
+}
 
 
 def _map_agent_chunk(chunk):
@@ -2202,8 +2214,11 @@ class AgentMain:
         if not session_id:
             return public.returnMsg(False, "缺少参数 session_id")
         # P2-28: session_id 必须只含安全字符，防路径穿越
-        if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', str(session_id)):
-            return public.returnMsg(False, "session_id 格式不合法（仅允许字母数字、下划线、短横线，最长128字符）")
+        # 统一用 _validate_session_id（放行 : @ .，以兼容 single:/claude: 前缀的会话）
+        ok, sid = _validate_session_id(session_id)
+        if not ok:
+            return public.returnMsg(False, sid)
+        session_id = sid
 
         # ── opencode 会话：从全局 opencode.db 删除 ──────────────────────
         if session_id.startswith("ses_"):
@@ -2288,9 +2303,11 @@ class AgentMain:
             return public.returnMsg(False, "缺少参数 session_id")
         if not message_id:
             return public.returnMsg(False, "缺少参数 id")
-        # 防路径穿越：session_id 仅允许安全字符
-        if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', str(session_id)):
-            return public.returnMsg(False, "session_id 格式不合法")
+        # 防路径穿越：统一用 _validate_session_id（放行 : @ .，兼容 single:/claude: 会话）
+        ok, sid = _validate_session_id(session_id)
+        if not ok:
+            return public.returnMsg(False, sid)
+        session_id = sid
         sessions_dir = get.get('sessions_dir', '') or 'sessions'
         session_file = os.path.join(self.plugin_path, sessions_dir, session_id, 'sessions.json')
         if not os.path.exists(session_file):
