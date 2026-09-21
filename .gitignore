@@ -92,3 +92,6 @@ frontend/AUDIT_REPORT.md
 
 # ===== 本地工作区（视频渲染等大体积中间产物，不入库） =====
 work/
+
+# 根目录审计报告：内含真实凭据片段，不入库
+AUDIT_REPORT.md
