@@ -103,7 +103,7 @@
       "url": "https://mcp.xxtui.com",
       "type": "http",
       "headers": {
-        "API-KEY": "0163b310f0969e41"
+        "API-KEY": "--请替换为你的 xxtui API-KEY--"
       }
     }
   },

@@ -95,3 +95,7 @@ work/
 
 # 根目录审计报告：内含真实凭据片段，不入库
 AUDIT_REPORT.md
+
+# mcp/config.json 含 xxtui 真实 API-KEY，不入库。
+# 新环境请复制 mcp/config.example.json 为 mcp/config.json 后填入自己的 key。
+mcp/config.json
