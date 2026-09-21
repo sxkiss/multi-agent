@@ -10,6 +10,7 @@ Standalone AI Agent Web Server
 """
 import ast
 import asyncio
+import contextlib
 import contextvars
 import datetime
 import importlib
@@ -156,9 +157,16 @@ def _map_agent_chunk(chunk):
     if t == "meta_info":
         return [("meta_info", {"user_msg_id": chunk.get("user_msg_id"), "ai_msg_id": chunk.get("ai_msg_id")})]
     if t and t not in _KNOWN_SSE_EVENTS:
+        # 仅对真正未知的 type 降级；降级时也必须保留完整 chunk 作 data，
+        # 不可取 chunk.get("response") —— tool_call/tool_result 等 chunk
+        # 使用 tool/args/result/id 字段，没有 response，取值会丢成空串。
         logger.warning("_map_agent_chunk 未知 type=%r，已降级为 message", t)
-        return [("message", str(chunk.get("response", "") or chunk))]
-    return [("message", str(chunk.get("response", "")))]
+        return [("message", chunk)]
+    # 已知但未在上面的分支中特化的事件（tool_call / tool_result / message_end / usage）：
+    # 保持原始事件名，并透传完整 chunk 作为 data。
+    # 前端按 event 名分发（App.vue case 'tool_call' → JSON.parse(data) 取 tool/args/id），
+    # 因此这里绝不能改事件名，也不能只取 response 字段。
+    return [(str(t or "message"), chunk)]
 
 
 class ChatJob:
@@ -264,6 +272,20 @@ class ChatJob:
                             job._lock.release()
         except Exception:
             return None
+        # 与 append() 一致的上限：磁盘上的 jsonl 是完整历史（无截断），
+        # 恢复时若全量灌入会把 105MB 级别的历史一次性读进内存。
+        # 只保留最近 _MAX_EVENTS 条，并重编 id 保证前端按连续 seq 回放。
+        if len(job.events) > cls._MAX_EVENTS:
+            keep = job.events[-cls._MAX_EVENTS:]
+            for i, e in enumerate(keep):
+                e["id"] = i
+            job.events = keep
+        # 进程重启后，写这个文件的 agent 线程已不存在，绝不可能仍在运行。
+        # 若文件没有 __status__ 行（任务被 kill 而非正常结束），job.status 会停在
+        # 构造时的 "running" 变成僵尸任务 —— 它会长期占用该会话的 MAX_PARALLEL
+        # 名额，导致同会话无法再创建新任务。恢复的 job 一律视为已终结。
+        if job.status == "running":
+            job.status = "stopped"
         job.created_at = int(time.time())
         return job
 
@@ -273,6 +295,13 @@ class ChatJobManager:
 
     JOB_TTL = 3600
     MAX_PARALLEL = int(os.environ.get("AI_AGENT_MAX_PARALLEL", "3"))
+    # 磁盘上 jobs/*.jsonl 的保留时长（秒）。jobs/ 只增不删，105MB 且无清理逻辑，
+    # 必须按 mtime 回收，否则磁盘无限增长。0 或负 = 不清理。
+    JOB_FILE_TTL = int(os.environ.get("AI_AGENT_JOB_FILE_TTL", str(7 * 24 * 3600)))
+    # 单次清理最多删除的文件数，避免首次运行时一次性 unlink 上千文件卡住事件循环
+    JOB_FILE_PRUNE_BATCH = int(os.environ.get("AI_AGENT_JOB_FILE_PRUNE_BATCH", "500"))
+    # 启动时最多恢复多少个 job（recover 会读盘，需与磁盘清理配合才有意义）
+    MAX_RECOVER = int(os.environ.get("AI_AGENT_MAX_RECOVER", "50"))
 
     def __init__(self):
         self._jobs = {}
@@ -335,13 +364,27 @@ class ChatJobManager:
         return targets
 
     def recover_all(self):
-        """启动时从 jobs/ 恢复未完成与近期完成的任务（供续播）"""
+        """启动时从 jobs/ 恢复近期任务（供续播）。
+
+        按 mtime 倒序只取最近的 MAX_RECOVER 个：磁盘历史可能上千个文件，
+        全量恢复会把每个 jsonl 都读进内存（recover 内部另有单任务事件上限，
+        但文件数本身仍是无界的）。
+        """
         import glob as _glob
         jobs_dir = os.path.join(BASE_DIR, "jobs")
         if not os.path.isdir(jobs_dir):
             return 0
         n = 0
-        for p in _glob.glob(os.path.join(jobs_dir, "*.jsonl")):
+        try:
+            files = _glob.glob(os.path.join(jobs_dir, "*.jsonl"))
+            # 只保留最近修改的一批，避免遍历+读盘上千个历史文件
+            files.sort(key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0,
+                       reverse=True)
+            files = files[:self.MAX_RECOVER]
+        except Exception:
+            logger.warning("[ChatJob] 枚举 jobs/ 失败", exc_info=True)
+            return 0
+        for p in files:
             key = os.path.basename(p)[:-6]
             # 已存在则不覆盖
             if key in self._jobs:
@@ -355,6 +398,54 @@ class ChatJobManager:
         if n:
             log_.info(f"[ChatJob] 启动恢复 {n} 个任务")
         return n
+
+    def prune_job_files(self):
+        """按 mtime 清理 jobs/ 下过期的 .jsonl 文件。
+
+        jobs/ 只有写入没有删除，磁盘占用只增不减；这里按 TTL 回收，
+        单批次上限 JOB_FILE_PRUNE_BATCH，剩余留到下一轮，避免首次运行时
+        一次性 unlink 上千文件卡住事件循环。
+        """
+        ttl = self.JOB_FILE_TTL
+        if ttl <= 0:
+            return 0
+        import glob as _glob
+        jobs_dir = os.path.join(BASE_DIR, "jobs")
+        if not os.path.isdir(jobs_dir):
+            return 0
+        now = time.time()
+        removed = 0
+        skipped = 0
+        try:
+            files = _glob.glob(os.path.join(jobs_dir, "*.jsonl"))
+            # 先按 mtime 升序：旧文件优先清理，保证「至少清掉最老的 N 个」
+            files.sort(key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0)
+        except Exception:
+            logger.warning("[ChatJob] 枚举 jobs/ 失败", exc_info=True)
+            return 0
+        for p in files:
+            try:
+                if now - os.path.getmtime(p) < ttl:
+                    continue
+                # 仅清理已终结/非活跃的任务：内存里的运行中任务正在写这个文件
+                key = os.path.basename(p)[:-6]
+                with self._lock:
+                    live = self._jobs.get(key)
+                if live is not None and live.is_running:
+                    continue
+                os.remove(p)
+                removed += 1
+                if removed >= self.JOB_FILE_PRUNE_BATCH:
+                    skipped = len(files) - removed
+                    break
+            except FileNotFoundError:
+                continue
+            except Exception:
+                logger.warning("[ChatJob] 清理 job 文件失败，已记录", exc_info=True)
+        if removed:
+            logging.info(f"[ChatJob] 清理过期 job 文件 {removed} 个"
+                         + (f"，剩余 {skipped} 个待下一轮" if skipped else ""))
+        return removed
 
     def _prune_locked(self):
         now = time.time()
@@ -2462,7 +2553,63 @@ class AgentMain:
 # FastAPI App
 # ============================================================
 
-app = FastAPI(title="AI Agent Standalone", version="1.0.0")
+async def _periodic_job_cleanup():
+    """周期性回收 jobs/ 下过期文件（服务长期运行时持续写入）。
+
+    prune_job_files 是同步阻塞 I/O（glob + stat + unlink），用 to_thread
+    丢到线程池，避免卡住事件循环。
+    """
+    interval = ChatJobManager.JOB_FILE_TTL
+    if interval <= 0:
+        return
+    # 清理间隔：TTL 的 1/4，但不少于 1 小时、不超过 24 小时
+    interval = max(3600, min(24 * 3600, interval // 4))
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await asyncio.to_thread(chat_jobs.prune_job_files)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.warning("[ChatJob] 周期性清理失败", exc_info=True)
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    """启动/退出钩子。
+
+    服务以 `uvicorn web_server:app` 运行，模块级 `if __name__ == '__main__'`
+    不会执行，因此 jobs/ 的磁盘清理必须挂在这里才能生效。
+    """
+    try:
+        chat_jobs.prune_job_files()
+    except Exception:
+        logger.warning("[startup] jobs/ 清理失败", exc_info=True)
+    try:
+        chat_jobs.recover_all()
+    except Exception:
+        logger.warning("[startup] job 恢复失败", exc_info=True)
+    # 长期运行的服务只靠启动清理不够：jobs/ 持续写入，需要周期性回收
+    _cleanup_task = asyncio.create_task(_periodic_job_cleanup())
+    try:
+        yield
+    finally:
+        _cleanup_task.cancel()
+        # 进程退出时优雅停止仍在运行的任务，避免 agent 数据丢失
+        # （原先只在 __main__ 路径注册 atexit，uvicorn 启动时不会生效）
+        running = [j for j in chat_jobs._jobs.values() if j.is_running]
+        if running:
+            logger.info(f"[Shutdown] 停止 {len(running)} 个运行中任务...")
+            for j in running:
+                try:
+                    j.finish("stopped")
+                    if j.agent:
+                        j.agent.close()
+                except Exception:
+                    logger.warning("[Shutdown] 停止任务失败，已记录", exc_info=True)
+
+
+app = FastAPI(title="AI Agent Standalone", version="1.0.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

@@ -76,6 +76,19 @@ mcp_market_cache.json.tmp
 # ===== 符号链接（指向外部技能目录） =====
 chat_client/skills
 
+# ===== 含真实密钥的配置文件：禁止入库 =====
+# config.json 含 api_key 等真实凭据，历史上曾泄露。
+# 新环境请复制 config.example.json 为 config.json 后填入。
+config.json
+agents_data/**/config.json
+
 # ===== 大文件（超 GitHub 100MB 限制）=====
 uploads/
 fn_unpack/
+
+# ===== 安全审计报告：含未修复漏洞清单，不入库 =====
+frontend/AUDIT_REPORT.md
+*_AUDIT_REPORT.md
+
+# ===== 本地工作区（视频渲染等大体积中间产物，不入库） =====
+work/
