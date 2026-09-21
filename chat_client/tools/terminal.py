@@ -150,9 +150,10 @@ class Bash:
     - language="shell"（默认）：在项目目录运行命令；blocking=False 时后台运行，用 CheckCommandStatus/StopCommand 管理。
     - language="python"/"node"：代码写入临时文件用对应解释器执行；禁止通过 os.system/subprocess/child_process 逃逸到系统 shell（安全黑名单拦截）。
     参数：command 必填（命令或代码）；blocking/cwd/timeout 仅 shell 生效；args 仅 python/node 生效。
+    默认超时 15s；长任务（pip install / 大范围 grep / git 历史）请显式调大 timeout。
     """
     def execute(self, command: str, language: str = "shell", blocking: bool = True,
-                cwd: str | None = None, timeout: int = 120000, description: str | None = None,
+                cwd: str | None = None, timeout: int = 15000, description: str | None = None,
                 args: list | None = None) -> str:
         import time as _time
         start_time = _time.time()

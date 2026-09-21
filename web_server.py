@@ -129,10 +129,43 @@ def _validate_session_id(session_id) -> tuple:
         return False, "session_id 格式不合法（仅允许字母数字、下划线、短横线、冒号、@、点，最长128字符）"
     return True, sid
 
+
+def _load_session_history(session_file: str) -> list:
+    """读取会话完整历史 = sessions.json 快照 + sessions.journal.jsonl 增量。
+
+    memory.py 的 add_message 只把新消息 append 到 journal（避免每次全量重写 5MB+ 快照），
+    快照仅在日志累积到阈值时才合并。因此这里凡是直接读 sessions.json 的地方都必须
+    补上 journal，否则会看不到最新消息。文件不存在返回 []。
+    """
+    history = []
+    if os.path.exists(session_file):
+        try:
+            with open(session_file, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+        except Exception:
+            logger.warning("会话快照读取失败: %s", session_file, exc_info=True)
+            history = []
+    jpath = session_file[: -len('sessions.json')] + 'sessions.journal.jsonl'
+    if os.path.exists(jpath):
+        try:
+            with open(jpath, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        history.append(json.loads(line))
+                    except ValueError:
+                        # 单行损坏只丢该条，不影响其余增量
+                        logger.warning("journal 行损坏已跳过: %s", line[:80])
+        except OSError:
+            logger.warning("journal 读取失败: %s", jpath, exc_info=True)
+    return history
+
+
 # ============================================================
 # Agent Main
 # ============================================================
-
 # 已知合法 SSE event 名集合（以 agent.py/bridges 实际产出的 type 为准，勿随意删减）：
 # content/reasoning/error/stop/meta_info 为 agent 主链路，
 # tool_call/tool_result/message_end/usage 由各 bridge 直接 append。
@@ -2090,23 +2123,22 @@ class AgentMain:
                             mtime = os.path.getmtime(session_file)
                             time_str = datetime.datetime.fromtimestamp(mtime).astimezone().strftime('%Y-%m-%d %H:%M:%S')
                             title = session_id
-                            with open(session_file, 'r', encoding='utf-8') as f:
-                                history = json.load(f)
-                                if history:
-                                    for msg in history:
-                                        if msg.get('role') == 'user':
-                                            content = msg.get('content', '')
-                                            if isinstance(content, list):
-                                                text_item = next(
-                                                    (item for item in content
-                                                     if isinstance(item, dict) and item.get('type') == 'text'),
-                                                    None
-                                                )
-                                                content = text_item.get('text', '') if text_item else ''
-                                            if not isinstance(content, str):
-                                                content = ''
-                                            title = content[:20] + '...' if len(content) > 20 else content
-                                            break
+                            history = _load_session_history(session_file)
+                            if history:
+                                for msg in history:
+                                    if msg.get('role') == 'user':
+                                        content = msg.get('content', '')
+                                        if isinstance(content, list):
+                                            text_item = next(
+                                                (item for item in content
+                                                 if isinstance(item, dict) and item.get('type') == 'text'),
+                                                None
+                                            )
+                                            content = text_item.get('text', '') if text_item else ''
+                                        if not isinstance(content, str):
+                                            content = ''
+                                        title = content[:20] + '...' if len(content) > 20 else content
+                                        break
                             # 从 meta.json 读 workspace（chat_start 时持久化）
                             ws = ''
                             meta_file = os.path.join(session_path, 'meta.json')
@@ -2167,23 +2199,22 @@ class AgentMain:
                                     meta = {"source": "crew", "parent": session_id, "agent": "", "dept": ""}
                                 title = sub_dir[:36]
                                 if os.path.exists(sub_file):
-                                    with open(sub_file, 'r', encoding='utf-8') as sf:
-                                        history = json.load(sf)
-                                        if history:
-                                            for msg in history:
-                                                if msg.get('role') == 'user':
-                                                    content = msg.get('content', '')
-                                                    if isinstance(content, list):
-                                                        text_item = next(
-                                                            (item for item in content
-                                                             if isinstance(item, dict) and item.get('type') == 'text'),
-                                                            None
-                                                        )
-                                                        content = text_item.get('text', '') if text_item else ''
-                                                    if not isinstance(content, str):
-                                                        content = ''
-                                                    title = content[:20] + '...' if len(content) > 20 else content
-                                                    break
+                                    history = _load_session_history(sub_file)
+                                    if history:
+                                        for msg in history:
+                                            if msg.get('role') == 'user':
+                                                content = msg.get('content', '')
+                                                if isinstance(content, list):
+                                                    text_item = next(
+                                                        (item for item in content
+                                                         if isinstance(item, dict) and item.get('type') == 'text'),
+                                                        None
+                                                    )
+                                                    content = text_item.get('text', '') if text_item else ''
+                                                if not isinstance(content, str):
+                                                    content = ''
+                                                title = content[:20] + '...' if len(content) > 20 else content
+                                                break
                                 sessions.append({
                                     "session_id": sub_dir,
                                     "title": title,
@@ -2257,8 +2288,7 @@ class AgentMain:
         # ── native 历史（包括集团子代理）：从 sessions.json 读取 ──────────────
         if os.path.exists(native_file):
             try:
-                with open(native_file, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
+                history = _load_session_history(native_file)
                 try:
                     for msg in history:
                         if msg.get('role') == 'tool':
@@ -2404,14 +2434,21 @@ class AgentMain:
         if not os.path.exists(session_file):
             return public.returnMsg(False, "会话记录不存在")
         try:
-            with open(session_file, 'r', encoding='utf-8') as f:
-                history = json.load(f)
+            history = _load_session_history(session_file)
             original_len = len(history)
             history = [m for m in history if m.get('id') != message_id]
             if len(history) == original_len:
                 return public.returnMsg(False, "未找到指定消息")
             with open(session_file, 'w', encoding='utf-8') as f:
                 json.dump(history, f, ensure_ascii=False, indent=4)
+            # 必须清掉 journal：删除是对全量历史的操作，结果已整体写回快照。
+            # 若残留 journal，下次加载会把刚删掉的消息重新追加回来（"复活"）。
+            jpath = os.path.join(self.plugin_path, sessions_dir, session_id, 'sessions.journal.jsonl')
+            try:
+                if os.path.exists(jpath):
+                    os.remove(jpath)
+            except OSError:
+                logger.warning("journal 清理失败: %s", jpath, exc_info=True)
             return public.returnMsg(True, "删除成功")
         except Exception as e:
             return public.returnMsg(False, f"删除失败: {e!s}")
