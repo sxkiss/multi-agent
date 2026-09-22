@@ -1,0 +1,26 @@
+<!--pages/login/login.wxml-->
+<view class="page">
+  <view class="box">
+    <view class="title">{{initialized ? '登录' : '设置管理员密码'}}</view>
+    <view class="sub">
+      {{initialized ? '请输入管理员密码以访问网关' : '首次访问，请设置管理员密码（将加密保存）'}}
+    </view>
+
+    <input
+      class="input"
+      type="password"
+      password="{{true}}"
+      placeholder="{{initialized ? '密码' : '新密码（至少 6 位）'}}"
+      value="{{password}}"
+      bindinput="onInput"
+      bindconfirm="submit"
+      focus="{{true}}"
+    />
+
+    <view wx:if="{{error}}" class="error">{{error}}</view>
+
+    <button class="btn" loading="{{loading}}" disabled="{{loading}}" bindtap="submit">
+      {{loading ? '处理中…' : (initialized ? '登录' : '设置并进入')}}
+    </button>
+  </view>
+</view>
