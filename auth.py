@@ -25,6 +25,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from typing import Optional
@@ -48,6 +49,9 @@ PBKDF2_ITERATIONS = 200_000
 PUBLIC_EXACT = {"/", "/index.html"}
 PUBLIC_PREFIX = (
     "/api/auth/login",
+    # 微信登录必须放行：用户此刻还没有 token，若要求先鉴权就形成
+    # "没 token → 不能登录 → 拿不到 token" 的死锁，多用户将完全无法进入。
+    "/api/auth/wxlogin",
     "/api/auth/status",
     "/api/auth/logout",
     "/favicon.png",
@@ -155,10 +159,15 @@ def _secret(base_dir: str) -> str:
     return sec
 
 
-def create_token(base_dir: str, ttl_hours: int) -> str:
+def create_token(base_dir: str, ttl_hours: int, sub: str = "admin") -> str:
+    """签发令牌。
+
+    sub 用于区分主体：管理员为 "admin"，微信用户为 "wx:<openid>"。
+    后续鉴权中间件据此判断请求来源。
+    """
     now = int(time.time())
     payload = {
-        "sub": "admin",
+        "sub": sub,
         "iat": now,
         "exp": now + int(ttl_hours) * 3600,
         "iss": TOKEN_ISSUER,
@@ -200,6 +209,82 @@ def is_public(path: str) -> bool:
 
 
 # ------------------------------------------------------------------
+# 微信登录（code2session）
+# ------------------------------------------------------------------
+
+WX_SECRET_FILE = os.path.join("miniprogram", ".wxsecret")
+_WX_CODE_RE = re.compile(r"^[0-9a-zA-Z_\-]{1,64}$")
+
+
+def load_wx_credentials(base_dir: str) -> tuple:
+    """读取小程序 AppID/AppSecret。返回 (appid, secret)；缺失返回 ("","")。"""
+    path = os.path.join(base_dir, WX_SECRET_FILE)
+    if not os.path.exists(path):
+        return "", ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return str(data.get("appid", "")).strip(), str(data.get("appsecret", "")).strip()
+    except Exception:
+        logger.warning("微信凭据读取失败", exc_info=True)
+        return "", ""
+
+
+def wx_code2session(base_dir: str, code: str) -> dict:
+    """用临时登录凭证 code 换取 openid/session_key。
+
+    调用微信 jscode2session 接口。失败时返回 {"ok": False, "msg": ...}，
+    成功返回 {"ok": True, "openid": ..., "unionid": ...}。
+    注意：session_key 绝不返回给客户端。
+    """
+    appid, secret = load_wx_credentials(base_dir)
+    if not appid or not secret:
+        return {"ok": False, "msg": "服务端未配置小程序凭据"}
+    if not code or not _WX_CODE_RE.match(code):
+        return {"ok": False, "msg": "code 格式不合法"}
+
+    url = "https://api.weixin.qq.com/sns/jscode2session"
+    params = {
+        "appid": appid,
+        "secret": secret,
+        "js_code": code,
+        "grant_type": "authorization_code",
+    }
+    try:
+        import requests
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json()
+    except Exception as e:
+        logger.warning("微信 code2session 请求失败: %s", e)
+        return {"ok": False, "msg": "微信接口请求失败"}
+
+    errcode = data.get("errcode")
+    if errcode:
+        # 常见：40029 无效 code、45011 频率限制、40125 无效 appsecret
+        logger.warning("微信登录失败 errcode=%s errmsg=%s", errcode, data.get("errmsg"))
+        return {"ok": False, "msg": f"微信登录失败({errcode})"}
+    openid = str(data.get("openid") or "").strip()
+    if not openid:
+        return {"ok": False, "msg": "未获取到 openid"}
+    return {
+        "ok": True,
+        "openid": openid,
+        "unionid": str(data.get("unionid") or "").strip(),
+    }
+
+
+def wx_session_id(openid: str) -> str:
+    """由 openid 派生稳定的会话 ID。
+
+    同一微信用户每次进入都映射回同一个会话目录，实现"会话绑定"。
+    前缀 wx_ 便于在 sessions/ 中识别来源；截 openid 前缀是因
+    session_id 最长 128 且需可读，openid 本身已足够唯一。
+    """
+    digest = hashlib.sha256(openid.encode("utf-8")).hexdigest()[:24]
+    return f"wx_{digest}"
+
+
+# ------------------------------------------------------------------
 # 注册：路由 + 中间件
 # ------------------------------------------------------------------
 
@@ -233,6 +318,38 @@ def register_auth(app: FastAPI, base_dir: str) -> None:
         return JSONResponse({
             "status": True,
             "data": {"token": token, "expires_in": ttl * 3600},
+            "msg": "登录成功",
+        })
+
+    # ---- 微信登录：code 换 openid，并绑定稳定会话 ----
+    @app.post("/api/auth/wxlogin")
+    async def api_auth_wxlogin(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        code = str(body.get("code", "")).strip()
+        if not code:
+            return JSONResponse({"status": False, "msg": "缺少参数 code"}, status_code=400)
+
+        result = wx_code2session(base_dir, code)
+        if not result.get("ok"):
+            return JSONResponse(
+                {"status": False, "msg": result.get("msg", "微信登录失败")}, status_code=401
+            )
+
+        openid = result["openid"]
+        cfg = load_auth(base_dir)
+        ttl = int(cfg.get("token_ttl_hours") or DEFAULT_TTL_HOURS)
+        token = create_token(base_dir, ttl, sub=f"wx:{openid}")
+        return JSONResponse({
+            "status": True,
+            "data": {
+                "token": token,
+                "expires_in": ttl * 3600,
+                # 返回绑定的会话 ID：小程序用它续聊，同一用户始终回到同一会话
+                "session_id": wx_session_id(openid),
+            },
             "msg": "登录成功",
         })
 
