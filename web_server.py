@@ -715,10 +715,11 @@ class AgentMain:
     _PLACEHOLDER = "--"  # 与 DEFAULT_CONFIG 中的占位约定一致
 
     def _redacted_config(self) -> dict:
-        """深拷贝配置并将凭据字段替换为占位符 + _set 布尔。
+        """深拷贝配置并将凭据字段清空 + _set 布尔（与 search 配置同一约定）。
 
         目的：GET /api/config 原先明文返回 api_key，任何人访问端口即可
-        拿到模型密钥。改为脱敏后，前端仍能判断"是否已配置"，但无法取值。
+        拿到模型密钥。改为脱敏后，前端仍能判断"是否已配置"（_set 布尔），
+        但永远拿不到任何原文片段；留空提交=不修改，由后端保留原值。
         """
         cfg = json.loads(json.dumps(self.config))
         default = self.DEFAULT_CONFIG or {}
@@ -726,9 +727,9 @@ class AgentMain:
             if key not in cfg:
                 continue
             raw = cfg.get(key) or ""
-            # 先依据原文算 _set，再覆盖为占位符（顺序不可颠倒）
+            # 先依据原文算 _set，再清空原文（顺序不可颠倒）
             cfg[f"{key}_set"] = bool(raw) and str(raw) != str(default.get(key, ""))
-            cfg[key] = self._PLACEHOLDER if raw else ""
+            cfg[key] = ""
         # embedding 为嵌套结构，单独处理
         emb = cfg.get("embedding")
         if isinstance(emb, dict) and "embedding_api_key" in emb:
@@ -736,14 +737,32 @@ class AgentMain:
             # 与顶层同逻辑：默认值占位符 "--" 视为未配置（_set=false）
             emb_default = (default.get("embedding") or {}).get("embedding_api_key", "")
             emb["embedding_api_key_set"] = bool(raw_emb) and str(raw_emb) != str(emb_default)
-            emb["embedding_api_key"] = self._PLACEHOLDER if raw_emb else ""
+            emb["embedding_api_key"] = ""
         return cfg
 
     def get_models(self, base_url='', key=''):
-        if not base_url or not key:
-            return public.returnMsg(False, '缺少参数 base_url 或 key')
+        """获取模型列表。
+
+        key 为空或为脱敏占位符时，回退服务端已存凭据；为防止凭据被诱导
+        发往任意地址，回退仅在 base_url 为空或与已存 api_base_url 一致时生效。
+        """
         import openai
-        client = openai.OpenAI(api_key=key, base_url=base_url, default_headers=self.config['default_headers'])
+        saved_base = str(self.config.get('api_base_url') or '').strip()
+        saved_key = str(self.config.get('api_key') or '').strip()
+        effective_base = str(base_url or '').strip()
+        effective_key = str(key or '').strip()
+        if not effective_key or effective_key == self._PLACEHOLDER:
+            if not saved_key or saved_key == self._PLACEHOLDER:
+                return public.returnMsg(False, '缺少参数 key')
+            if effective_base and effective_base.rstrip('/') != saved_base.rstrip('/'):
+                # 目标地址与已配置地址不符时拒绝回退，避免真实 key 被发往任意地址
+                return public.returnMsg(False, '目标地址与已配置地址不一致，需提供对应的 API Key')
+            effective_key = saved_key
+        if not effective_base:
+            effective_base = saved_base
+        if not effective_base:
+            return public.returnMsg(False, '缺少参数 base_url')
+        client = openai.OpenAI(api_key=effective_key, base_url=effective_base, default_headers=self.config['default_headers'])
         try:
             response = client.models.list()
             model_names = [model.id for model in response.data]
@@ -853,6 +872,10 @@ class AgentMain:
 
     def _merge_config_with_rules(self, base, update):
         for k, v in update.items():
+            # 前端辅助字段（api_key_set / api_key_hint 等）仅用于展示，不落库，
+            # 防止 GET 脱敏结果被原样回传时污染 config.json
+            if isinstance(k, str) and (k.endswith("_set") or k.endswith("_hint")):
+                continue
             if isinstance(v, str):
                 v = v.strip()
             # 前端保存时可能把 GET 返回的脱敏占位符原样回传；
