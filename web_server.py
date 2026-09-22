@@ -190,6 +190,15 @@ def _is_miniprogram(params) -> bool:
     return v == "miniprogram"
 
 
+# 终端用户渠道不下发的内部事件：模型思维链会复述系统提示词、暴露内部指令
+# 与部署信息（实测出现「渠道约束：小程序」等条款原文）。网页管理端保留原文
+# 便于调试，小程序等终端渠道直接剥掉。
+# 注意：必须定义在模块级——chat_events 属于 AgentMain 类，此前误将常量放进
+# ChatJob 类，导致 self._HIDDEN... 抛 AttributeError、SSE 生成器整体崩溃、
+# 小程序收不到任何回复。
+HIDDEN_EVENTS_FOR_TERMINAL = {"message_think", "compact_summary"}
+
+
 def _map_agent_chunk(chunk):
     """将 agent.chat() 产出的 chunk 映射为 SSE (event, data) 列表"""
     t = chunk.get("type")
@@ -267,11 +276,6 @@ class ChatJob:
                     f.write(json.dumps({"event": event, "data": data}, ensure_ascii=False, default=str) + "\n")
             except Exception:
                 logger.warning("ChatJob.append persist 写入失败", exc_info=True)
-
-    # 终端用户渠道不下发的内部事件：模型思维链会复述系统提示词、
-    # 暴露内部指令与部署信息（实测出现「渠道约束：小程序」等条款原文）。
-    # 网页端（管理界面）保留原文便于调试，小程序渠道直接剥掉。
-    _HIDDEN_EVENTS_FOR_TERMINAL = {"message_think", "compact_summary"}
 
     def snapshot_from(self, last_id, drop_events=None):
         """返回 (last_id 之后的事件, 当前状态)。
@@ -1862,7 +1866,7 @@ class AgentMain:
             session_id, job.key, get.get('last_id', -1),
         )
         # 小程序（终端用户）剥掉思维链等内部事件；网页管理端保留全部
-        drop = self._HIDDEN_EVENTS_FOR_TERMINAL if _mp else None
+        drop = HIDDEN_EVENTS_FOR_TERMINAL if _mp else None
 
         try:
             last_id = int(get.get('last_id', -1))
