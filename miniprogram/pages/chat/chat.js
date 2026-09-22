@@ -25,16 +25,22 @@ function unescapeSSEString(str) {
  * rich-text 的 nodes 模式不支持 wxss class，故输出 HTML 字符串并内联 style
  * （这种用法下 style 生效），避免引入第三方渲染库。
  */
+// 配色必须跟随小程序的深色主题（页面 #0f1115 / 气泡 #1a1d24，正文 #e8eaed）。
+// 早期版本误用了浅色主题的近黑色（#111827）与浅灰底（#f3f4f6），
+// 在深色气泡上会糊成一团、几乎看不清，这里统一改为深色适配。
 const MD_STYLE = {
-  p: 'margin:0 0 12rpx 0;line-height:1.7;',
-  h: 'margin:16rpx 0 8rpx 0;font-weight:bold;font-size:30rpx;color:#111827;',
-  li: 'margin:0 0 6rpx 0;line-height:1.7;padding-left:8rpx;',
-  quote: 'margin:8rpx 0;padding:8rpx 16rpx;border-left:6rpx solid #d1d5db;color:#6b7280;background:#f9fafb;',
-  code: 'margin:8rpx 0;padding:12rpx 16rpx;background:#f3f4f6;border-radius:8rpx;font-size:24rpx;color:#374151;white-space:pre-wrap;word-break:break-all;',
-  codeInline: 'padding:2rpx 8rpx;background:#f3f4f6;border-radius:6rpx;font-size:26rpx;color:#ef4444;',
-  strong: 'font-weight:bold;color:#111827;',
-  a: 'color:#2563eb;text-decoration:underline;'
+  p: 'margin:0 0 12rpx 0;line-height:1.7;color:#e8eaed;',
+  h: 'margin:16rpx 0 8rpx 0;font-weight:bold;font-size:30rpx;color:#ffffff;',
+  li: 'margin:0 0 6rpx 0;line-height:1.7;padding-left:8rpx;color:#e8eaed;',
+  quote: 'margin:8rpx 0;padding:8rpx 16rpx;border-left:6rpx solid #4a7cf7;color:#a8adb8;background:#20242c;',
+  code: 'margin:8rpx 0;padding:12rpx 16rpx;background:#12141a;border:1rpx solid #2c303a;border-radius:8rpx;font-size:24rpx;color:#7dd3a8;white-space:pre-wrap;word-break:break-all;',
+  codeInline: 'padding:2rpx 8rpx;background:#20242c;border-radius:6rpx;font-size:26rpx;color:#7dd3a8;',
+  strong: 'font-weight:bold;color:#ffffff;',
+  a: 'color:#6ea8fe;text-decoration:underline;'
 }
+
+// 分割线：深色底上用浅灰细线
+const MD_HR = '<div style="margin:12rpx 0;height:1rpx;background:#2c303a;"></div>'
 
 function escapeHtml(s) {
   return String(s)
@@ -105,7 +111,7 @@ function markdownToHtml(md) {
     }
     if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) {
       flushList()
-      html += '<div style="margin:12rpx 0;height:1rpx;background:#e5e7eb;"></div>'
+      html += MD_HR
       continue
     }
     if ((m = line.match(/^\s*(#{1,6})\s+(.*)$/))) {

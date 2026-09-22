@@ -134,6 +134,8 @@ function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd }) {
   const url =
     `${baseUrl}/api/chat/events?session_id=${encodeURIComponent(sessionId)}` +
     `&last_id=${lastId}` +
+    // 渠道标识：SSE 订阅同样需要，便于服务端按渠道审计与限流
+    `&client_type=miniprogram` +
     (token ? `&token=${encodeURIComponent(token)}` : '')
 
   // 跨块缓冲区：承载尚未构成完整事件（未遇到 \n\n）的残余文本
@@ -149,6 +151,10 @@ function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd }) {
     header: {
       Accept: 'text/event-stream',
       'Cache-Control': 'no-cache',
+      // 渠道标识：SSE 同样需要，便于服务端按渠道限流/审计
+      'X-Client-Type': 'miniprogram',
+      'X-Client-Version': '1.0.2',
+      'X-Client-Appid': 'wxbb9e77f84a643da8',
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     },
     success() {
