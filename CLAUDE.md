@@ -6,7 +6,7 @@
 - 项目：Multi-agent —— 通用型多智能体协作平台
 - 工作目录：`<项目根目录>`（部署时由 systemd `WorkingDirectory` 指定）
 - 服务端口：9876
-- 系统单元：`multi-agent.service`
+- 系统单元：`bt-agent.service`
 
 ## 关键规则（必须遵守）
 1. **安全第一**：执行危险命令前必须与用户确认
