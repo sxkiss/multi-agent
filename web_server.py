@@ -216,6 +216,7 @@ class ChatJob:
         self.events = []            # [{"id": seq, "event": name, "data": ...}]，回放按 id 过滤，超出上限会丢弃最旧的
         self.status = "running"     # running | done | error | stopped
         self.agent = None
+        self.cancel_event = threading.Event()  # chat_stop 置位；Agent 循环在检查点据此提前退出
         self.created_at = time.time()
         self._lock = threading.Lock()
         # 事件持久化（JSONL 追加）
@@ -226,6 +227,14 @@ class ChatJob:
 
     def attach_agent(self, agent):
         self.agent = agent
+
+    def request_stop(self):
+        """请求停止：置位取消标志，Agent 循环在检查点据此提前退出。
+
+        注意：Event 一旦置位不可撤销；chat_stop 停止的是正在运行的任务，
+        已终结的任务不会再被复用，因此无需重置。
+        """
+        self.cancel_event.set()
 
     def append(self, event, data=None):
         with self._lock:
@@ -388,6 +397,9 @@ class ChatJobManager:
                 targets = [j for _, j in self.active_for_session(session_id)]
         for j in targets:
             if j.is_running:
+                # 先置位取消标志（Agent 线程在检查点轮询），再置终态；顺序不可颠倒，
+                # 否则 Agent 可能在本线程 close() 之后仍继续下一轮请求
+                j.request_stop()
                 j.finish("stopped")
                 try:
                     if j.agent:
