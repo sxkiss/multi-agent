@@ -99,3 +99,18 @@ AUDIT_REPORT.md
 # mcp/config.json 含 xxtui 真实 API-KEY，不入库。
 # 新环境请复制 mcp/config.example.json 为 mcp/config.json 后填入自己的 key。
 mcp/config.json
+
+# auth.json 含管理员密码派生值与 JWT 签名密钥，绝不入库。
+# 新环境留空即可：首次登录会自动初始化密码与密钥。
+auth.json
+
+# 微信小程序 AppSecret（服务端专用，绝不可进客户端或 git）
+# 仅用于服务端 code2session 换取 openid。
+miniprogram/.wxsecret
+
+# 小程序上传密钥（miniprogram-ci 专用，等同部署凭据，绝不入库）
+miniprogram/private.key
+miniprogram/node_modules/
+miniprogram/package.json
+miniprogram/package-lock.json
+miniprogram/project.private.config.json

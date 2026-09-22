@@ -3,7 +3,7 @@
 # 系统开发文档
 
 > 项目：Multi-agent —— 通用型多智能体协作平台（集团模式）
-> 版本基准：2026-08-23 · 服务端口 9876 · systemd 单元 `multi-agent.service`
+> 版本基准：2026-08-23 · 服务端口 9876 · systemd 单元 `bt-agent.service`
 > 配套文档：`REVIEW.md`（历次审核与修复记录）
 
 ---
@@ -271,11 +271,11 @@ watcher：10s 轮询各 watch 文件 mtime，变更自动重载对应目标。
 # 构建+部署前端
 ./deploy.sh
 # 重启服务（改了 Python 后必须）
-sudo systemctl restart multi-agent.service
+sudo systemctl restart bt-agent.service
 # 无 sudo 替代（Restart=always）
-kill $(systemctl show multi-agent.service -p MainPID --value)   # 5s 后自动拉起
+kill $(systemctl show bt-agent.service -p MainPID --value)   # 5s 后自动拉起
 ```
-日志：`journalctl -u multi-agent.service`（需权限）。健康检查：`curl :9876/api/config`。
+日志：`journalctl -u bt-agent.service`（需权限）。健康检查：`curl :9876/api/config`。
 
 ---
 

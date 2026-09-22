@@ -182,6 +182,7 @@
 
 <script>
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { authOpts } from '../auth.js'
 import MessageItem from './MessageItem.vue'
 
 export default {
@@ -204,7 +205,7 @@ export default {
     const orgLoaded = ref(false)
     async function fetchOrg() {
       try {
-        const r = await fetch('/api/org')
+        const r = await fetch('/api/org', authOpts())
         const res = await r.json()
         if (res.status && Array.isArray(res.data?.departments)) {
           orgData.value = res.data

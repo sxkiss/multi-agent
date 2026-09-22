@@ -38,7 +38,7 @@ https://github.com/sxkiss/multi-agent/blob/main/docs/media/intro.mp4
 |------|------|
 | 后端 | Python 3.12 · FastAPI · Uvicorn · openai SDK 3.x |
 | 前端 | Vue 3 · Vite 5 · marked |
-| 部署 | systemd（multi-agent.service） |
+| 部署 | systemd（bt-agent.service） |
 
 ## 目录结构
 
@@ -77,7 +77,7 @@ python3 -m venv .venv
 # 参考配置：
 #   WorkingDirectory=<项目根目录>
 #   ExecStart=<项目根目录>/.venv/bin/python -m uvicorn web_server:app --host 0.0.0.0 --port 9876
-sudo systemctl daemon-reload && sudo systemctl restart multi-agent.service
+sudo systemctl daemon-reload && sudo systemctl restart bt-agent.service
 ```
 
 ## 前端构建

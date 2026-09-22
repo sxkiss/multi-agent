@@ -216,6 +216,7 @@ class ChatJob:
         self.events = []            # [{"id": seq, "event": name, "data": ...}]，回放按 id 过滤，超出上限会丢弃最旧的
         self.status = "running"     # running | done | error | stopped
         self.agent = None
+        self.cancel_event = threading.Event()  # chat_stop 置位；Agent 循环在检查点据此提前退出
         self.created_at = time.time()
         self._lock = threading.Lock()
         # 事件持久化（JSONL 追加）
@@ -226,6 +227,14 @@ class ChatJob:
 
     def attach_agent(self, agent):
         self.agent = agent
+
+    def request_stop(self):
+        """请求停止：置位取消标志，Agent 循环在检查点据此提前退出。
+
+        注意：Event 一旦置位不可撤销；chat_stop 停止的是正在运行的任务，
+        已终结的任务不会再被复用，因此无需重置。
+        """
+        self.cancel_event.set()
 
     def append(self, event, data=None):
         with self._lock:
@@ -388,6 +397,9 @@ class ChatJobManager:
                 targets = [j for _, j in self.active_for_session(session_id)]
         for j in targets:
             if j.is_running:
+                # 先置位取消标志（Agent 线程在检查点轮询），再置终态；顺序不可颠倒，
+                # 否则 Agent 可能在本线程 close() 之后仍继续下一轮请求
+                j.request_stop()
                 j.finish("stopped")
                 try:
                     if j.agent:
@@ -691,17 +703,66 @@ class AgentMain:
                 "reset_time": "独立模式",
                 "activate": data.get("activate", 50),
             },
-            "config": self.config,
+            "config": self._redacted_config(),
             "is_custom_api": bool(api_key and api_key != self.DEFAULT_CONFIG['api_key']),
             "questions": questions,
         }
         return public.return_data(True, data=configs)
 
+    # 这些字段属于凭据，一律不回传原文；只回 "<field>_set" 布尔，
+    # 与 get_search_config 的既有约定保持一致。
+    _SECRET_KEYS = {"api_key", "embedding_api_key"}
+    _PLACEHOLDER = "--"  # 与 DEFAULT_CONFIG 中的占位约定一致
+
+    def _redacted_config(self) -> dict:
+        """深拷贝配置并将凭据字段清空 + _set 布尔（与 search 配置同一约定）。
+
+        目的：GET /api/config 原先明文返回 api_key，任何人访问端口即可
+        拿到模型密钥。改为脱敏后，前端仍能判断"是否已配置"（_set 布尔），
+        但永远拿不到任何原文片段；留空提交=不修改，由后端保留原值。
+        """
+        cfg = json.loads(json.dumps(self.config))
+        default = self.DEFAULT_CONFIG or {}
+        for key in self._SECRET_KEYS:
+            if key not in cfg:
+                continue
+            raw = cfg.get(key) or ""
+            # 先依据原文算 _set，再清空原文（顺序不可颠倒）
+            cfg[f"{key}_set"] = bool(raw) and str(raw) != str(default.get(key, ""))
+            cfg[key] = ""
+        # embedding 为嵌套结构，单独处理
+        emb = cfg.get("embedding")
+        if isinstance(emb, dict) and "embedding_api_key" in emb:
+            raw_emb = emb.get("embedding_api_key") or ""
+            # 与顶层同逻辑：默认值占位符 "--" 视为未配置（_set=false）
+            emb_default = (default.get("embedding") or {}).get("embedding_api_key", "")
+            emb["embedding_api_key_set"] = bool(raw_emb) and str(raw_emb) != str(emb_default)
+            emb["embedding_api_key"] = ""
+        return cfg
+
     def get_models(self, base_url='', key=''):
-        if not base_url or not key:
-            return public.returnMsg(False, '缺少参数 base_url 或 key')
+        """获取模型列表。
+
+        key 为空或为脱敏占位符时，回退服务端已存凭据；为防止凭据被诱导
+        发往任意地址，回退仅在 base_url 为空或与已存 api_base_url 一致时生效。
+        """
         import openai
-        client = openai.OpenAI(api_key=key, base_url=base_url, default_headers=self.config['default_headers'])
+        saved_base = str(self.config.get('api_base_url') or '').strip()
+        saved_key = str(self.config.get('api_key') or '').strip()
+        effective_base = str(base_url or '').strip()
+        effective_key = str(key or '').strip()
+        if not effective_key or effective_key == self._PLACEHOLDER:
+            if not saved_key or saved_key == self._PLACEHOLDER:
+                return public.returnMsg(False, '缺少参数 key')
+            if effective_base and effective_base.rstrip('/') != saved_base.rstrip('/'):
+                # 目标地址与已配置地址不符时拒绝回退，避免真实 key 被发往任意地址
+                return public.returnMsg(False, '目标地址与已配置地址不一致，需提供对应的 API Key')
+            effective_key = saved_key
+        if not effective_base:
+            effective_base = saved_base
+        if not effective_base:
+            return public.returnMsg(False, '缺少参数 base_url')
+        client = openai.OpenAI(api_key=effective_key, base_url=effective_base, default_headers=self.config['default_headers'])
         try:
             response = client.models.list()
             model_names = [model.id for model in response.data]
@@ -811,8 +872,16 @@ class AgentMain:
 
     def _merge_config_with_rules(self, base, update):
         for k, v in update.items():
+            # 前端辅助字段（api_key_set / api_key_hint 等）仅用于展示，不落库，
+            # 防止 GET 脱敏结果被原样回传时污染 config.json
+            if isinstance(k, str) and (k.endswith("_set") or k.endswith("_hint")):
+                continue
             if isinstance(v, str):
                 v = v.strip()
+            # 前端保存时可能把 GET 返回的脱敏占位符原样回传；
+            # 若当作有效值写入，会覆盖真实凭据。此处视为"未修改"跳过。
+            if isinstance(v, str) and v == self._PLACEHOLDER and k in self._SECRET_KEYS:
+                continue
             is_empty = (v is None) or (v == "") or (isinstance(v, list) and len(v) == 0)
             if is_empty:
                 # 这些字段允许显式清空（运行时回退默认值，如 workspace → 项目根目录）
@@ -2729,13 +2798,19 @@ async def _lifespan(_app):
 
 
 app = FastAPI(title="AI Agent Standalone", version="1.0.0", lifespan=_lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+# ============================================================
+# 鉴权：默认关闭（auth.json.enabled=false），保持既有部署行为；
+# 开启后 /api/auth/* 与静态资源之外的路径均需 Bearer token。
+# 详见 auth.py 模块说明。
+from auth import register_auth
+register_auth(app, BASE_DIR)
+
+# ============================================================
+# CORS：原先为 allow_origins=["*"] + allow_credentials=True，
+# 与鉴权并存时等价于"任意站点可携带凭据调用任意接口"，属高危组合。
+# 改为显式白名单（config.cors_origins）。
+# 注意：CORS 配置需在 agent_main 实例化之后读取（见下方 add_middleware）。
 
 # ============================================================
 # MCP 路由：统一由 mcp_routes 模块提供（避免多份重复实现）
@@ -2744,6 +2819,24 @@ register_mcp_routes(app)
 
 
 agent_main = AgentMain()
+
+# ============================================================
+# CORS：此处才实例化完成 agent_main，故把实际注册放在这之后。
+_cors_origins = (agent_main.config or {}).get("cors_origins") or []
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["WWW-Authenticate"],
+)
+if not _cors_origins:
+    logger.warning(
+        "[安全] cors_origins 未配置，浏览器跨域请求将被拒绝。"
+        "请在 config.json 的 cors_origins 中填入前端域名（如 https://example.com）。"
+        "同源直连（Nginx 反代）不受影响。"
+    )
 
 # 后台预加载 MCP（避免首次 get_tool_list 阻塞）
 def _preload_mcp():

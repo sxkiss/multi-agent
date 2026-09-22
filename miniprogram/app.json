@@ -1,0 +1,15 @@
+{
+  "pages": [
+    "pages/chat/chat",
+    "pages/login/login"
+  ],
+  "window": {
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#1a1d24",
+    "navigationBarTitleText": "AI 助手",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#0f1115"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}
