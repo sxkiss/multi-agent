@@ -42,13 +42,17 @@ TOKEN_ISSUER = "bt-agent"
 DEFAULT_TTL_HOURS = 24
 PBKDF2_ITERATIONS = 200_000
 
-# 免鉴权路径（前缀匹配）。登录接口本身 + 静态资源 + 首页。
-PUBLIC_PATHS = (
+# 免鉴权路径。登录接口本身 + 静态资源 + 首页 HTML。
+# 首页必须放行：否则用户连登录页都加载不出来，形成"没 token → 打不开页面 →
+# 无法登录"的死锁。静态资源同理。
+PUBLIC_EXACT = {"/", "/index.html"}
+PUBLIC_PREFIX = (
     "/api/auth/login",
     "/api/auth/status",
     "/api/auth/logout",
     "/favicon.png",
     "/static/",
+    "/assets/",
 )
 
 # ------------------------------------------------------------------
@@ -192,7 +196,7 @@ def extract_token(request: Request) -> Optional[str]:
 
 
 def is_public(path: str) -> bool:
-    return any(path.startswith(p) for p in PUBLIC_PATHS)
+    return path in PUBLIC_EXACT or any(path.startswith(p) for p in PUBLIC_PREFIX)
 
 
 # ------------------------------------------------------------------
