@@ -148,6 +148,12 @@ function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd }) {
     method: 'GET',
     enableChunked: true, // 关键：开启分块接收，否则只能一次性拿到完整响应
     responseType: 'arraybuffer',
+    // 关键：SSE 是长连接，绝不能沿用微信默认 60s 超时。
+    // 实测未设置时每 ~60s 被强制断开（日志可见反复订阅、last_id 卡住），
+    // 长任务（多轮工具/生成图片）会被反复打断，重连次数耗尽后直接失去流。
+    // 官方文档只说明默认 60000ms、未定义 0 的语义，故显式给一个足够大的值，
+    // 配合 last_id 续传兜底（超时后按 lastId 重连，不丢事件）。
+    timeout: 600000, // 10 分钟；超时后由断线重连续传
     header: {
       Accept: 'text/event-stream',
       'Cache-Control': 'no-cache',

@@ -275,5 +275,62 @@ class TestTerminalEventSet(unittest.TestCase):
         self.assertIn("message_think", [e["event"] for e in allv])
 
 
+class TestBadToolArgsCircuitBreaker(unittest.TestCase):
+    """工具参数连续非法（输出被截断）的熔断与错误回灌
+
+    旧行为：非法 JSON 被静默降级为 {} 执行，模型看不到错误 → 反复重试同一个
+    超大 Write（参数被输出上限截断）→ 死循环烧 token。实测同一 tool_call id
+    重复出现 32 次。
+    新行为：把明确错误回灌给模型 + 连续达阈值即熔断结束本轮。
+    """
+
+    def setUp(self):
+        from chat_client.agent import Agent, bad_args_hint
+        self.Agent = Agent
+        self.bad_args_hint = bad_args_hint
+
+    def test_streak_increments_and_has_fault_tolerance(self):
+        self.assertEqual(self.Agent.next_bad_args_streak(0), 1)
+        self.assertEqual(self.Agent.next_bad_args_streak(1), 2)
+        # 非数值输入不得抛异常（防御历史脏数据）
+        self.assertEqual(self.Agent.next_bad_args_streak(None), 1)
+        self.assertEqual(self.Agent.next_bad_args_streak("x"), 1)
+
+    def test_circuit_breaker_threshold(self):
+        self.assertGreaterEqual(self.Agent.BAD_ARGS_MAX_STREAK, 2,
+                                "阈值过低会误杀正常重试，过高则起不到熔断作用")
+        # 累计到阈值时，调用方应判定熔断
+        streak, trips = 0, 0
+        for _ in range(self.Agent.BAD_ARGS_MAX_STREAK):
+            streak = self.Agent.next_bad_args_streak(streak)
+        self.assertGreaterEqual(streak, self.Agent.BAD_ARGS_MAX_STREAK)
+        self.assertTrue(streak >= self.Agent.BAD_ARGS_MAX_STREAK)
+
+    def test_hint_guides_model_not_to_resend(self):
+        h = self.bad_args_hint("Write")
+        # 必须明确"别重发同一份超长参数"，否则模型仍会原地重试
+        self.assertIn("不", h)
+        self.assertTrue("拆成多次" in h or "分段" in h or "更短" in h,
+                        "错误提示未引导模型改用分段/更小实现")
+
+
+class TestSSEClientTimeout(unittest.TestCase):
+    """小程序 SSE 必须覆盖微信默认 60s 超时
+
+    实测未设置 timeout 时每 ~60s 被强制断开，长任务被反复打断、last_id 卡住。
+    """
+
+    def test_sse_sets_explicit_timeout(self):
+        sse_src = os.path.join(BASE_DIR, "miniprogram", "utils", "sse.js")
+        with open(sse_src, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("timeout", src, "sse.js 未设置 timeout，会沿用微信默认 60s")
+        import re as _re
+        m = _re.search(r"timeout\s*:\s*(\d+)", src)
+        self.assertIsNotNone(m, "sse.js 的 timeout 应为显式数值")
+        self.assertGreater(int(m.group(1)), 60000,
+                           "SSE 超时必须大于微信默认 60000ms，否则仍会被提前断开")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

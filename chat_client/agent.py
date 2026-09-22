@@ -85,9 +85,34 @@ def _close_stream(stream) -> None:
         logger.debug("关闭响应流失败（已忽略）", exc_info=True)
 
 
+def bad_args_hint(func_name: str) -> str:
+    """工具参数非法（多为输出被截断）时回灌给模型的错误提示。
+
+    单独抽出便于测试与复用：重点是让模型明白"别重发同一份超长参数"，
+    而不是像旧实现那样静默按空参数执行、让模型误以为成功而无限重试。
+    """
+    return _xml_response(
+        "error",
+        f"Error: 工具 {func_name} 的参数不是合法 JSON（很可能是内容过长被截断）。"
+        "不要重复提交同一份超长参数：请把大文件拆成多次较小的写入"
+        "（先写骨架，再分次追加），或改用更短的实现后重试。",
+    )
+
+
 class Agent:
     # 集团协作工具：需要多 Agent 编排，单 Agent / Codex-X 模式不加载
     _GROUP_TOOLS: set[str] = {"RunCrew", "ConsultPeer", "CreateDepartment", "RecruitMember"}
+
+    # 工具参数连续非法的熔断阈值：达到即结束本轮，避免"截断→非法→空跑→再截断"死循环
+    BAD_ARGS_MAX_STREAK = 3
+
+    @staticmethod
+    def next_bad_args_streak(current: int) -> int:
+        """累计工具参数非法次数（解析成功时由调用方直接重置为 0）"""
+        try:
+            return int(current) + 1
+        except (TypeError, ValueError):
+            return 1
 
     def __init__(self, session_id: str, config: dict[str, Any] | None = None):
         self.session_id = session_id
@@ -99,6 +124,8 @@ class Agent:
         self.model_name = self.config.get("model_name") or self.config.get("default_model")
         self.rag_trigger_threshold = self.config.get("rag_trigger_threshold", 10)
         self.max_tool_iterations = self.config.get("max_tool_iterations", 9999)
+        # 工具参数非法（多为输出被截断）的连续计数，用于熔断，防止无限重试烧 token
+        self._bad_args_streak = 0
         self.context_window_kb = self.config.get("context_window_kb", 512)
         self.enabled_tools = self.config.get("tools", [])
         self.original_tools = list(self.enabled_tools)  # 保存用户原始指定工具，防止被默认工具覆盖
@@ -820,14 +847,40 @@ Here is some useful information about the environment you are running in:
                     try:
                         if args_str and args_str.strip():
                             args = json.loads(args_str)
+                            self._bad_args_streak = 0  # 解析成功即重置熔断计数
                         else:
                             args = {}
+                            self._bad_args_streak = 0
                     except json.JSONDecodeError:
+                        # 关键修复：此前非法 JSON 被静默降级为 {} 继续执行，模型看不到
+                        # 任何错误，于是不断重试同一个超大 Write（参数被输出上限截断），
+                        # 形成"截断 → 非法 → 空跑 → 再截断"的死循环刷 token。
+                        # 改为：把明确错误回灌给模型 + 连续多次即熔断，逼它改用分段写入。
+                        self._bad_args_streak = self.next_bad_args_streak(self._bad_args_streak)
                         logger.warning(
-                            "[Tool-Args] 工具 %s 的参数不是合法 JSON，按空参数处理: %r",
-                            func_name, (args_str or "")[:200]
+                            "[Tool-Args] 工具 %s 的参数不是合法 JSON（连续第 %d 次）: %r",
+                            func_name, self._bad_args_streak, (args_str or "")[:200]
                         )
-                        args = {}
+                        _err_structure = [{"type": "text", "text": bad_args_hint(func_name)}]
+                        self.memory.add_message("tool", _err_structure, tool_call_id=call_id, id=ai_msg_id)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": _err_structure
+                        })
+                        if self._bad_args_streak >= self.BAD_ARGS_MAX_STREAK:
+                            # 熔断：连续多次同类失败，直接结束本轮，避免无限烧 token
+                            logger.error("[Tool-Args] 连续 %d 次非法参数，熔断结束本轮", self._bad_args_streak)
+                            yield {
+                                "type": "warning",
+                                "data": f"工具 {func_name} 参数连续多次非法（内容可能过长被截断），已停止重试。"
+                                        "请换用更小的实现或分段写入。"
+                            }
+                            # return 是本文件既有的中止模式（同 _is_cancelled 分支），
+                            # 且需标记未执行的工具，保持消息序列合法
+                            self._mark_unexecuted_tools(assistant_msg_kwargs["tool_calls"], messages, ai_msg_id)
+                            return
+                        continue
 
                     # 类型矫正：按 schema 把字符串化的数字/布尔参数转回真实类型
                     # （模型常把 timeout 等数值传成字符串，导致 _validate_args 报 type error）
