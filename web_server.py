@@ -727,6 +727,88 @@ class AgentMain:
         else:
             return public.returnMsg(False, msg)
 
+    # ---- 搜索配置（独立于主 config，避免 api_key 混入 GET /api/config 的明文返回）----
+
+    # 这些 provider 字段属于凭据，返回前端时一律不返回任何原文片段
+    _SEARCH_SECRET_KEYS = {"api_key"}
+
+    def get_search_config(self):
+        """返回搜索配置。api_key 只回"<name>_set"布尔，不含任何原文片段。"""
+        try:
+            from chat_client.tools.websearch import PROVIDERS
+        except Exception:
+            PROVIDERS = {}
+        raw = (self.config.get("search") or {})
+        providers = {}
+        for name, meta in PROVIDERS.items():
+            opts = (raw.get("providers") or {}).get(name) or {}
+            safe = {}
+            for k, v in opts.items():
+                # 凭据字段：只告知"是否已配置"，输入框永远为空（留空=不修改）
+                if k in self._SEARCH_SECRET_KEYS:
+                    safe[k] = ""                      # 不回任何原文片段
+                    safe[k + "_set"] = bool(v)        # 是否已配置
+                else:
+                    safe[k] = v
+            providers[name] = {
+                "label": meta.get("label", name),
+                "need_key": meta.get("need_key", False),
+                "options": safe,
+            }
+        return public.return_data(True, data={
+            "provider": raw.get("provider", "bing"),
+            "result_size": raw.get("result_size", 10),
+            "providers": providers,
+        })
+
+    def set_search_config(self, config_str=''):
+        """保存搜索配置。
+
+        约定：secret 字段留空（或为 null）表示"不修改"，保留原值；
+        只有填了非空新值才覆盖。这样天然支持 key 里含 '*' 的情况——
+        旧实现用 "含 * 就跳过" 猜测是否为脱敏值，会把含 * 的真实 key 误吞。
+        """
+        try:
+            update = json.loads(config_str)
+        except Exception:
+            return public.returnMsg(False, '搜索配置格式错误')
+
+        cur = self.config.get("search")
+        if not isinstance(cur, dict):
+            cur = {}
+        cur.setdefault("providers", {})
+
+        if isinstance(update.get("provider"), str) and update["provider"]:
+            cur["provider"] = update["provider"]
+        if update.get("result_size"):
+            try:
+                cur["result_size"] = max(1, min(int(update["result_size"]), 20))
+            except (TypeError, ValueError):
+                pass
+
+        for name, payload in (update.get("providers") or {}).items():
+            if not isinstance(payload, dict):
+                continue
+            opts = payload.get("options")
+            if not isinstance(opts, dict):
+                continue
+            target = cur["providers"].setdefault(name, {})
+            for k, v in opts.items():
+                # 忽略前端回传的辅助字段（api_key_set / api_key_hint）
+                if k.endswith("_set") or k.endswith("_hint"):
+                    continue
+                if k in self._SEARCH_SECRET_KEYS:
+                    # 空/None = 不修改，保留原值；非空才覆盖（key 可含 '*'）
+                    if v is None or (isinstance(v, str) and not v.strip()):
+                        continue
+                target[k] = v
+
+        self.config["search"] = cur
+        status, msg = self._save_config()
+        if status:
+            return public.returnMsg(True, '搜索设置已保存')
+        return public.returnMsg(False, msg)
+
     def _merge_config_with_rules(self, base, update):
         for k, v in update.items():
             if isinstance(v, str):
@@ -2750,6 +2832,17 @@ async def api_set_config(request: Request):
     params = await _params(request)
     config_str = params.get('config', '')
     return JSONResponse(agent_main.set_config(config_str))
+
+
+@app.get("/api/search/config")
+async def api_search_config():
+    return JSONResponse(agent_main.get_search_config())
+
+
+@app.post("/api/search/config")
+async def api_set_search_config(request: Request):
+    params = await _params(request)
+    return JSONResponse(agent_main.set_search_config(params.get('config', '')))
 
 
 @app.get("/api/models")

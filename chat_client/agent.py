@@ -397,17 +397,15 @@ Here is some useful information about the environment you are running in:
         }
 
         thinking = self.thinking
-        web_search = self.web_search
 
         model_l = str(self.model_name or "").lower()
         # 仅对 qwen 系模型注入 DashScope 专属扩展参数（原条件 "qwen" or ... 恒真，会污染所有模型）
         if "qwen" in model_l or "default" in model_l:
             params["extra_body"]["enable_thinking"] = thinking
-            params["extra_body"]["enable_search"] = web_search
-            params["extra_body"]["search_options"] = {
-                "search_strategy": "max",       # 配置搜索策略为高性能模式
-                "enable_search_extension": True # 垂直领域搜索增强 例如天气、股市等
-            }
+
+        # 原实现把 enable_search 绑死在 qwen 系上，导致其它模型（doubao/gpt 等）
+        # 即使前端开关打开也静默失效。联网搜索已改为独立的 WebSearch 工具
+        # （见 chat_client/tools/websearch.py），与模型无关，此处不再注入该扩展参数。
         
         if "doubao" in str(self.model_name).lower():
             enable_type = "enabled" if thinking else "disabled"
