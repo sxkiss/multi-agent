@@ -268,10 +268,22 @@ class ChatJob:
             except Exception:
                 logger.warning("ChatJob.append persist 写入失败", exc_info=True)
 
-    def snapshot_from(self, last_id):
-        """返回 (last_id 之后的事件, 当前状态)"""
+    # 终端用户渠道不下发的内部事件：模型思维链会复述系统提示词、
+    # 暴露内部指令与部署信息（实测出现「渠道约束：小程序」等条款原文）。
+    # 网页端（管理界面）保留原文便于调试，小程序渠道直接剥掉。
+    _HIDDEN_EVENTS_FOR_TERMINAL = {"message_think", "compact_summary"}
+
+    def snapshot_from(self, last_id, drop_events=None):
+        """返回 (last_id 之后的事件, 当前状态)。
+
+        drop_events：需要对本订阅者隐藏的事件名集合。按订阅者过滤而非任务级，
+        因为同一 job 可能被网页端与小程序端同时订阅（渠道不同、可见性不同）。
+        """
         with self._lock:
-            pending = [e for e in self.events if e["id"] > last_id]
+            pending = [
+                e for e in self.events
+                if e["id"] > last_id and (not drop_events or e["event"] not in drop_events)
+            ]
             return pending, self.status
 
     def finish(self, status):
@@ -1787,6 +1799,13 @@ class AgentMain:
             daemon=True,
         )
         t.start()
+        # 渠道日志：此前小程序请求在日志里与网页/CLI 完全无法区分，
+        # 只能靠 jobs/ 下 wx_ 前缀反推。这里显式记录渠道，便于排查与审计。
+        logger.info(
+            "[chat_start] channel=%s session=%s mode=%s job=%s",
+            "miniprogram" if _is_miniprogram(get) else "web",
+            session_id, get.get("mode", "") or "group", job.key,
+        )
         return public.return_data(True, data={
             "session_id": session_id,
             "job": job.key,
@@ -1835,6 +1854,16 @@ class AgentMain:
             yield self.sse_pack(event="error", data={"msg": "没有可订阅的任务（不存在或已过期）"})
             return
 
+        # 渠道日志：SSE 订阅同样记录来源，便于小程序断流/续传问题时定位
+        _mp = _is_miniprogram(get)
+        logger.info(
+            "[chat_events] channel=%s session=%s job=%s last_id=%s",
+            "miniprogram" if _mp else "web",
+            session_id, job.key, get.get('last_id', -1),
+        )
+        # 小程序（终端用户）剥掉思维链等内部事件；网页管理端保留全部
+        drop = self._HIDDEN_EVENTS_FOR_TERMINAL if _mp else None
+
         try:
             last_id = int(get.get('last_id', -1))
         except (TypeError, ValueError):
@@ -1845,7 +1874,7 @@ class AgentMain:
         max_idle_seconds = 900  # P2-27: 最大空闲 15min，超时向客户端返回结束信号防止无限挂起
         idle_start = asyncio.get_event_loop().time()
         while True:
-            pending, status = job.snapshot_from(last_id)
+            pending, status = job.snapshot_from(last_id, drop)
             for e in pending:
                 yield self.sse_pack(event=e["event"], id=e["id"], data=e["data"])
                 last_id = e["id"]

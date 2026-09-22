@@ -8,8 +8,11 @@
     <block wx:for="{{messages}}" wx:key="index">
       <view class="msg {{item.role}}">
         <view class="bubble {{item.role}}">
+          <!-- 思维链（thinking）绝不展示原文：模型的思考过程会复述系统提示词、
+               暴露内部指令与服务端信息（实测出现过「渠道约束：小程序」等条款原文）。
+               终端用户只需知道"在思考"，故统一显示占位文案。 -->
           <block wx:if="{{item.role === 'ai' && item.thinking && !item.done}}">
-            <view class="think">{{item.thinking}}</view>
+            <view class="think">思考中…</view>
           </block>
           <rich-text wx:if="{{item.role === 'ai' && item.nodes}}" class="content md" nodes="{{item.nodes}}"></rich-text>
           <view wx:else class="content">{{item.content}}</view>

@@ -356,11 +356,10 @@ Page({
         break
       }
       case 'message_think': {
-        const src = typeof rawData === 'string' ? rawData : data
-        const text = unescapeSSEString(
-          typeof src === 'string' ? src : (src && (src.content || src.text)) || ''
-        )
-        if (text) ai.thinking += text
+        // 思维链只用来标记"正在思考"，绝不保存原文：模型思考会复述系统提示词
+        // 并暴露内部指令（实测出现「渠道约束：小程序」等条款原文）。
+        // 因此这里只置位标志，不累积文本；渲染层也只显示"思考中…"。
+        ai.thinking = '1'
         break
       }
       case 'tool_call': {
