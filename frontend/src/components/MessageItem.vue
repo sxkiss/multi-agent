@@ -615,7 +615,7 @@ export default {
 }
 
 .message-content.assistant-content::before {
-  content: "AI 助手";
+  content: "多智能体协作助手";
   display: block;
   font-size: 12px;
   color: #6b7280;
