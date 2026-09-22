@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import { marked } from 'marked'
 import App from './App.vue'
 import './styles.css'
+import { authOpts } from './auth.js'
 
 // ==================== 面板全局对象（原版内联于 index.html，现随源码编译） ====================
 window.ai_tools = {
@@ -131,7 +132,7 @@ function openFileBrowser(startPath, cb) {
 
   function load(p) {
     selectedFile = ''
-    fetch('/api/files/browse?path=' + encodeURIComponent(p))
+    fetch('/api/files/browse?path=' + encodeURIComponent(p), authOpts())
       .then(r => r.json())
       .then(r => { if (r.status) render(r.data); else alert(r.msg || '浏览失败') })
       .catch(e => alert('浏览失败: ' + e))

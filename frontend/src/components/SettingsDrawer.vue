@@ -520,6 +520,7 @@
 </template>
 <script>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { authOpts } from '../auth.js'
 
 export default {
   name: 'SettingsDrawer',
@@ -540,7 +541,7 @@ export default {
       try {
         const opts = { method, headers: { 'Content-Type': 'application/json' } }
         if (body && method.toUpperCase() !== 'GET') opts.body = JSON.stringify(body)
-        const r = await fetch(url, opts)
+        const r = await fetch(url, authOpts(opts))
         let res = {}
         try { res = await r.json() } catch { res = { status: false, msg: '响应解析失败' } }
         cb && cb(res)

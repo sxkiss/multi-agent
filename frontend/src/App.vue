@@ -158,6 +158,7 @@
       @close="closeSettingsDrawer"
       @save="handleSaveConfig"
     />
+    <LoginMask v-if="needLogin" @success="onLoginSuccess" />
   </div>
 </template>
 
@@ -167,6 +168,8 @@ import ChatSidebar from './components/ChatSidebar.vue'
 import ChatMain from './components/ChatMain.vue'
 import ChatInput from './components/ChatInput.vue'
 import SettingsDrawer from './components/SettingsDrawer.vue'
+import LoginMask from './components/LoginMask.vue'
+import { authOpts, authStatus } from './auth.js'
 
 // ==================== 独立部署 API 封装（不依赖宝塔面板 window.ai_tools）====================
 // 将原本走 /plugin?action=a&name=ai_agent&s=xxx 的面板代理请求，统一改为标准 REST /api/* 调用。
@@ -175,7 +178,7 @@ async function apiCall(method, url, body, cb) {
   try {
     const opts = { method, headers: { 'Content-Type': 'application/json' } }
     if (body && method.toUpperCase() !== 'GET') opts.body = JSON.stringify(body)
-    const r = await fetch(url, opts)
+    const r = await fetch(url, authOpts(opts))
     let res = {}
     try { res = await r.json() } catch { res = { status: false, msg: '响应解析失败' } }
     cb && cb(res)
@@ -284,7 +287,7 @@ function onWorkspaceChange() {
 
 async function loadOpencodeConfig() {
   try {
-    const r = await fetch('/api/opencode/config')
+    const r = await fetch('/api/opencode/config', authOpts())
     const res = await r.json()
     if (res.status) {
       ocConfig.value = res.data.opencode || { templates: {}, default_template: '' }
@@ -325,7 +328,7 @@ const orgLoaded = ref(false)
 
 async function fetchOrgData() {
   try {
-    const r = await fetch('/api/org')
+    const r = await fetch('/api/org', authOpts())
     const res = await r.json()
     if (res.status && Array.isArray(res.data?.departments)) {
       orgData.value = res.data
@@ -731,13 +734,13 @@ async function followChatEvents(sessionId, fromLastId, handlers) {
     try {
       const response = await fetch(
         `/api/chat/events?session_id=${encodeURIComponent(sessionId)}&last_id=${cursor}`,
-        {
+        authOpts({
           signal: (() => {
             const ac = new AbortController()
             currentStreamController = ac
             return ac.signal
           })(),
-        }
+        })
       )
       if (!response.body) throw new Error('无法获取事件流')
 
@@ -813,11 +816,11 @@ async function getAIResponseStream(message, sessionId, model, tools, webSearch, 
   queueStarting.value = true
   let startResult
   try {
-    const res = await fetch(endpoint, {
+    const res = await fetch(endpoint, authOpts({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    })
+    }))
     startResult = await res.json()
   } catch (err) {
     queueStarting.value = false
@@ -1477,7 +1480,7 @@ async function sendMessage(text, queueIndex = -1) {
     const t = String(text || '').trim()
     if (!t) return
     const sid = currentConversationId.value
-    fetch('/api/chat/start', {
+    fetch('/api/chat/start', authOpts({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1486,7 +1489,7 @@ async function sendMessage(text, queueIndex = -1) {
         model: currentModel.value || '',
         mode: chatMode.value || 'group',
       })
-    }).then(r => r.json()).then(res => {
+    })).then(r => r.json()).then(res => {
       if (res.status) {
         if (window.layer) window.layer.msg('任务已并行派发 ✓', { icon: 1 })
       } else {
@@ -1580,11 +1583,11 @@ function stopMessage() {
   // 通知后端停止任务（后台线程被中断，与前端连接无关）
   const sid = currentConversationId.value
   if (sid) {
-    fetch('/api/chat/stop', {
+    fetch('/api/chat/stop', authOpts({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sid })
-    }).catch(() => {})
+    })).catch(() => {})
   }
   abortCurrentRequest()
   clearThinkingTimer()
@@ -1842,8 +1845,32 @@ function scrollToBottom() {
   })
 }
 
+// ==================== 鉴权 ====================
+// needLogin 为 true 时全屏遮罩登录页，阻断所有交互。
+const needLogin = ref(false)
+
+async function checkAuth() {
+  const st = await authStatus()
+  // 服务端未开启鉴权 → 保持原行为，不显示登录页
+  if (!st.enabled) {
+    needLogin.value = false
+    return
+  }
+  needLogin.value = !st.hasToken
+}
+
+function onLoginSuccess() {
+  needLogin.value = false
+  // 登录成功后重新拉取配置等初始化数据
+  window.location.reload()
+}
+
 // ==================== Mounted ====================
-onMounted(() => {
+onMounted(async () => {
+  // 鉴权检查优先于数据加载，避免 401 后才补弹登录框
+  await checkAuth()
+  if (needLogin.value) return
+
   // Load config
   apiGet('/api/config', (result) => {
     if (result.status && result.data) {
@@ -1927,7 +1954,7 @@ onMounted(() => {
     if (document.hidden) { pendingReconnect = false; return }
     if (!currentConversationId.value || !isSending.value) { pendingReconnect = false; return }
     // 任务完成后不重连
-    fetch('/api/chat/status?session_id=' + encodeURIComponent(currentConversationId.value))
+    fetch('/api/chat/status?session_id=' + encodeURIComponent(currentConversationId.value), authOpts())
       .then(r => r.json())
       .then(data => {
         if (!data?.status || data.status === 'done' || data.status === 'error' || data.status === 'stopped') {
