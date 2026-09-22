@@ -5,7 +5,7 @@
       :current-conversation-id="currentConversationId"
       :is-sending="isSending"
       :chat-mode="chatMode"
-      :api-configured="!!(globalConfig.api_base_url && globalConfig.api_key)"
+      :api-configured="!!(globalConfig.api_base_url && (globalConfig.api_key || globalConfig.api_key_set))"
       :get-time-ago="getTimeAgo"
       @create-new="createNewConversation"
       @load-conversation="loadConversation"
@@ -435,9 +435,12 @@ const globalConfig = ref({
   system_prompt: '',
   api_base_url: '',
   api_key: '',
+  // 服务端脱敏后只回 api_key_set 布尔；用它与 api_base_url 共同判断"已配置"
+  api_key_set: false,
   models: [],
   embedding: {
     embedding_api_key: '',
+    embedding_api_key_set: false,
     embedding_base_url: '',
     embedding_model_name: ''
   },
@@ -1750,9 +1753,11 @@ function handleSaveConfig(newConfig) {
         system_prompt: e.config?.system_prompt || '',
         api_base_url: e.config?.api_base_url || '',
         api_key: e.config?.api_key || '',
+        api_key_set: e.config?.api_key_set === true,
         models: e.config?.models || [],
         embedding: {
           embedding_api_key: e.config?.embedding?.embedding_api_key || '',
+          embedding_api_key_set: e.config?.embedding?.embedding_api_key_set === true,
           embedding_base_url: e.config?.embedding?.embedding_base_url || '',
           embedding_model_name: e.config?.embedding?.embedding_model_name || ''
         },
@@ -1799,9 +1804,11 @@ function updateQuota() {
         system_prompt: e.config?.system_prompt || '',
         api_base_url: e.config?.api_base_url || '',
         api_key: e.config?.api_key || '',
+        api_key_set: e.config?.api_key_set === true,
         models: e.config?.models || [],
         embedding: {
           embedding_api_key: e.config?.embedding?.embedding_api_key || '',
+          embedding_api_key_set: e.config?.embedding?.embedding_api_key_set === true,
           embedding_base_url: e.config?.embedding?.embedding_base_url || '',
           embedding_model_name: e.config?.embedding?.embedding_model_name || ''
         },
@@ -1879,9 +1886,11 @@ onMounted(async () => {
         system_prompt: e.config?.system_prompt || '',
         api_base_url: e.config?.api_base_url || '',
         api_key: e.config?.api_key || '',
+        api_key_set: e.config?.api_key_set === true,
         models: e.config?.models || [],
         embedding: {
           embedding_api_key: e.config?.embedding?.embedding_api_key || '',
+          embedding_api_key_set: e.config?.embedding?.embedding_api_key_set === true,
           embedding_base_url: e.config?.embedding?.embedding_base_url || '',
           embedding_model_name: e.config?.embedding?.embedding_model_name || ''
         },
@@ -1908,8 +1917,12 @@ onMounted(async () => {
       }
       applyConfiguredModel(e.config)
       // 加载模型列表（在配置读取成功后调用）
-      if (globalConfig.value.api_base_url && globalConfig.value.api_key) {
-        apiGet('/api/models?base_url=' + encodeURIComponent(globalConfig.value.api_base_url) + '&key=' + encodeURIComponent(globalConfig.value.api_key), (r) => {
+      // key 已脱敏不回传：仅当地址已配置时调用，后端会自动回退已存凭据
+      if (globalConfig.value.api_base_url && (globalConfig.value.api_key || globalConfig.value.api_key_set)) {
+        const cfgKey = globalConfig.value.api_key
+        const qs = '/api/models?base_url=' + encodeURIComponent(globalConfig.value.api_base_url)
+          + (cfgKey && cfgKey !== '--' ? '&key=' + encodeURIComponent(cfgKey) : '')
+        apiGet(qs, (r) => {
           modelsList.value = r.data || []
         })
       }
