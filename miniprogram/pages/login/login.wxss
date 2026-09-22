@@ -56,3 +56,14 @@
   background: #4a7cf7;
   border-radius: 16rpx;
 }
+
+/* 微信一键登录：次要按钮，绿色区分主密码登录 */
+.wx-btn {
+  margin-top: 20rpx;
+  color: #eaf7ee;
+  background: #07c160;
+}
+
+.wx-btn[disabled] {
+  opacity: 0.6;
+}

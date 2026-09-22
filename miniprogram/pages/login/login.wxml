@@ -22,5 +22,18 @@
     <button class="btn" loading="{{loading}}" disabled="{{loading}}" bindtap="submit">
       {{loading ? '处理中…' : (initialized ? '登录' : '设置并进入')}}
     </button>
+
+    <!-- 微信一键登录：走 wx.login → 服务端 code2session 换 openid 并绑定会话。
+         服务端未配置小程序凭据时该按钮隐藏，避免点了必然失败。 -->
+    <button
+      wx:if="{{wxLoginAvailable}}"
+      class="btn wx-btn"
+      loading="{{wxLoading}}"
+      disabled="{{wxLoading || loading}}"
+      bindtap="submitWxLogin"
+    >
+      {{wxLoading ? '登录中…' : '微信一键登录'}}
+    </button>
+    <view wx:if="{{wxError}}" class="error">{{wxError}}</view>
   </view>
 </view>
