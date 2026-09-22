@@ -6,7 +6,7 @@
   "window": {
     "backgroundTextStyle": "light",
     "navigationBarBackgroundColor": "#1a1d24",
-    "navigationBarTitleText": "AI 助手",
+    "navigationBarTitleText": "多智能体协作助手",
     "navigationBarTextStyle": "white",
     "backgroundColor": "#0f1115"
   },
