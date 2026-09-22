@@ -16,6 +16,7 @@ import datetime
 import importlib
 import inspect
 import json
+import hashlib
 import os
 import random
 import re
@@ -650,6 +651,82 @@ class AgentMain:
                 os.makedirs(ws, exist_ok=True)
             except Exception:
                 return BASE_DIR
+        return ws
+
+    # 每个渠道用户的工作目录根。所有用户级 workspace 必须落在此目录下，
+    # 便于统一清理，也天然形成路径穿越的边界。
+    USER_WORKSPACE_ROOT = os.path.join(BASE_DIR, "workspace", "users")
+
+    # 管理端自定义 workspace 的允许根（收敛越界访问）。
+    # 管理端需要操作项目目录本身，故允许 BASE_DIR 及其子目录。
+    ADMIN_WORKSPACE_ROOTS = (BASE_DIR, os.path.expanduser("~"))
+
+    def _clamp_workspace(self, path):
+        """把管理端传入的 workspace 收敛到允许根内，越界则回退默认。
+
+        此前 `workspace` 参数直接 os.makedirs + 交给 Agent 当 cwd，
+        可指向 /etc、/root 等任意目录，属于可被前端利用的越权写入。
+        """
+        try:
+            real = os.path.realpath(path)
+            for root in self.ADMIN_WORKSPACE_ROOTS:
+                r = os.path.realpath(root)
+                if real == r or real.startswith(r + os.sep):
+                    if not os.path.isdir(real):
+                        os.makedirs(real, exist_ok=True)
+                    return real
+            logger.warning("[安全] workspace 越界被拒: %s（允许根: %s）", path, self.ADMIN_WORKSPACE_ROOTS)
+        except Exception:
+            logger.warning("[安全] workspace 解析失败，回退默认: %s", path, exc_info=True)
+        return self._resolve_workspace()
+
+    def _resolve_request_workspace(self, get, session_id):
+        """统一解析请求应使用的工作目录（含多用户隔离与越权收敛）。
+
+        优先级：小程序渠道强制用户目录 > 客户端传入（收敛校验）> 配置默认。
+        opencode/claude/codex 三个 CLI 分支共用本方法，避免各自实现走样。
+        """
+        if _is_miniprogram(get):
+            return self._resolve_user_workspace(session_id)
+        override = str(get.get('workspace', '')).strip()
+        if override:
+            return self._clamp_workspace(os.path.abspath(os.path.expanduser(override)))
+        return self._resolve_workspace()
+
+    def _resolve_user_workspace(self, session_id):
+        """按用户为粒度解析隔离工作目录：workspace/users/<用户键>/
+
+        隔离粒度说明（重要）：
+        - 会话级隔离不足：同一用户新开对话后，上次生成的文件就找不到了。
+        - 全局共享（原实现）更糟：多用户并存时互相覆盖、可读彼此文件。
+        因此按"用户"隔离：同一用户无论多少会话/多少设备，都落在同一目录
+        （换设备续聊不丢文件）；不同用户彼此不可见。
+
+        用户键来源：
+        - 小程序：会话 ID 形如 wx_<sha256(openid)[:24]>，天然按微信用户稳定。
+        - 网页/CLI：会话 ID 为普通字符串，退化为按会话隔离（管理员自用场景）。
+        """
+        try:
+            sid = str(session_id or "").strip()
+        except Exception:
+            sid = ""
+        if not sid:
+            return self.USER_WORKSPACE_ROOT
+        # 用户键：取会话 ID 中"用户标识"部分。
+        # wx_<hash> 取整个（hash 已由 openid 派生，不含其它用户信息）。
+        # 其它会话 ID 直接取其哈希，避免把用户可控字符串当路径。
+        if sid.startswith("wx_"):
+            user_key = sid[:64]
+        else:
+            user_key = "s_" + hashlib.sha256(sid.encode("utf-8")).hexdigest()[:24]
+        # 二次清洗：即使前缀判断失效，也绝不允许出现路径分隔符
+        user_key = re.sub(r"[^0-9A-Za-z_.-]", "_", user_key)[:64] or "default"
+        ws = os.path.join(self.USER_WORKSPACE_ROOT, user_key)
+        try:
+            os.makedirs(ws, exist_ok=True)
+        except Exception:
+            logger.warning("用户工作目录创建失败: %s", ws, exc_info=True)
+            return BASE_DIR
         return ws
 
     def _merge_config(self, base, update):
@@ -1441,14 +1518,15 @@ class AgentMain:
             strict_mode = True
             tools = ["Task", "RunCrew", "CreateDepartment", "RecruitMember"]
 
-        # 工作空间：优先使用前端传入的 workspace，否则按模式配置
-        if workspace_override:
+        # 工作空间：多用户必须隔离，否则不同用户的文件会互相覆盖/互读。
+        #   - 终端渠道（小程序）：一律用该用户的隔离目录，忽略客户端传参，
+        #     杜绝通过 workspace 参数指向任意路径（此前无穿越校验）。
+        #   - 管理端（网页/CLI）：保留自定义能力，但仍做根目录收敛校验。
+        if _is_miniprogram(get):
+            workspace = self._resolve_user_workspace(session_id)
+        elif workspace_override:
             workspace = os.path.abspath(os.path.expanduser(workspace_override))
-            if not os.path.isdir(workspace):
-                try:
-                    os.makedirs(workspace, exist_ok=True)
-                except Exception:
-                    workspace = self._resolve_workspace(mode)
+            workspace = self._clamp_workspace(workspace)
         else:
             workspace = self._resolve_workspace(mode)
 
@@ -1638,7 +1716,7 @@ class AgentMain:
             # RAG 上下文注入（全局 Mem0，适用于子进程模式）
             system_prompt = self._inject_rag_context(get, system_prompt, user_input)
 
-            workspace = str(get.get('workspace', '')).strip()
+            workspace = self._resolve_request_workspace(get, session_id)
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
             # 自定义 API 配置（优先前端传入，回退全局配置）
             custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
@@ -1686,7 +1764,7 @@ class AgentMain:
             # RAG 上下文注入（全局 Mem0，适用于子进程模式）
             system_prompt = self._inject_rag_context(get, system_prompt, user_input)
 
-            workspace = str(get.get('workspace', '')).strip()
+            workspace = self._resolve_request_workspace(get, session_id)
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
             # 自定义 API 配置（优先前端传入，回退全局配置）
             custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
@@ -1730,7 +1808,7 @@ class AgentMain:
             system_prompt = self._resolve_template_system_prompt(get, cfg_key='opencode')
             # RAG 上下文注入（全局 Mem0，适用于子进程模式）
             system_prompt = self._inject_rag_context(get, system_prompt, user_input)
-            workspace = str(get.get('workspace', '')).strip()
+            workspace = self._resolve_request_workspace(get, session_id)
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
             custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
             custom_api_key = str(get.get('api_key', '')).strip() or self.config.get('api_key', '')
