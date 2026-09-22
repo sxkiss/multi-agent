@@ -1,9 +1,21 @@
 // request.js — 统一网络层
 //
 // 所有请求自动附带 Bearer token；遇到 401 通知调用方跳转登录。
+//
+// 渠道标识：小程序侧无法自定义 User-Agent/Referer（微信客户端会强制覆盖），
+// 因此统一用 X-Client-* 自定义头声明来源，供服务端识别渠道、做访问控制。
 const { baseUrl, timeout } = require('./config.js')
 
 const app = getApp()
+
+/** 渠道元信息头：服务端据此识别请求来源（小程序 / 网页 / CLI） */
+function clientHeaders() {
+  return {
+    'X-Client-Type': 'miniprogram',
+    'X-Client-Version': '1.0.2',
+    'X-Client-Appid': 'wxbb9e77f84a643da8'
+  }
+}
 
 function authHeader() {
   const token = (app && app.globalData && app.globalData.token) || wx.getStorageSync('token') || ''
@@ -23,6 +35,7 @@ function request({ url, method = 'GET', data = {}, header = {} }) {
       timeout,
       header: {
         'Content-Type': 'application/json',
+        ...clientHeaders(),
         ...authHeader(),
         ...header
       },
@@ -74,7 +87,8 @@ const api = {
     return request({ url: '/api/chat/history', data: params })
   },
   start(data) {
-    return request({ url: '/api/chat/start', method: 'POST', data })
+    // 带上渠道标识：服务端据此裁剪系统提示，避免回答里泄露网关内部信息
+    return request({ url: '/api/chat/start', method: 'POST', data: Object.assign({ client_type: 'miniprogram' }, data) })
   },
   stop(sessionId) {
     return request({ url: '/api/chat/stop', method: 'POST', data: { session_id: sessionId } })
@@ -92,4 +106,4 @@ const api = {
   }
 }
 
-module.exports = { api, request, authHeader, baseUrl }
+module.exports = { api, request, authHeader, clientHeaders, baseUrl }

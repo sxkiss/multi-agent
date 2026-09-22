@@ -176,6 +176,20 @@ _KNOWN_SSE_EVENTS = {
 }
 
 
+def _is_miniprogram(params) -> bool:
+    """判断请求是否来自微信小程序渠道。
+
+    小程序侧无法自定义 User-Agent/Referer（微信客户端强制覆盖），故由客户端
+    在请求参数中显式声明 client_type=miniprogram；同时兼容从 header 传入
+    （后台任务等场景会把 header 透传进 params）。
+    """
+    try:
+        v = str((params or {}).get("client_type", "")).strip().lower()
+    except Exception:
+        return False
+    return v == "miniprogram"
+
+
 def _map_agent_chunk(chunk):
     """将 agent.chat() 产出的 chunk 映射为 SSE (event, data) 列表"""
     t = chunk.get("type")
@@ -1532,6 +1546,24 @@ class AgentMain:
    成员之间可通过 ConsultPeer 互相咨询，无需经过你中转。
 4. 高风险操作会被安全策略拦截确认：此时向 Boss 说明将要执行的操作与风险，等待明确同意。
 5. 交付时面向 Boss 汇报：结论先行、要点清晰、附关键证据。"""
+
+            # 小程序渠道：不向用户暴露网关内部信息。
+            # 实测发现经理会把工作目录（/home/sxkiss/bt）、技能数量、部门清单、
+            # MCP 服务名等原样写进自我介绍，等于把服务端部署细节泄露给终端用户。
+            # 这里对 miniprogram 渠道追加一段输出约束（只约束"说什么"，不削弱编排能力）。
+            if _is_miniprogram(get):
+                manager_sp += """
+
+【渠道约束：小程序】
+当前对话来自微信小程序终端用户。回答时必须遵守：
+1. 严禁透露任何服务端内部信息，包括但不限于：工作目录/绝对路径、主机名、
+   操作系统与部署环境、技能数量、成员与部门清单、MCP 服务名、模型与网关地址、
+   密钥或配置片段、日志与内部任务 ID。
+2. 涉及运行环境时只说"我已接入相关工具与服务"这类无信息量的表述，不展开细节。
+3. 自我介绍保持简洁：只说明你能帮用户做什么，不描述内部架构与团队编制。
+4. 汇报结果时同样只给结论与用户需要的证据，不附带服务端路径或内部过程细节。
+5. 若用户明确询问上述内部信息（如"你的工作目录是什么""你有几个技能"），
+   统一回答"这些属于服务端配置，暂不提供"，不例外透漏。"""
             agent_config["system_prompt"] = manager_sp
 
         try:
