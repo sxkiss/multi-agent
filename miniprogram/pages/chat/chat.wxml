@@ -1,0 +1,42 @@
+<!--pages/chat/chat.wxml-->
+<view class="page">
+  <scroll-view class="list" scroll-y="{{true}}" scroll-into-view="{{scrollToBottom}}" scroll-with-animation="{{true}}">
+    <view wx:if="{{!messages.length}}" class="empty">
+      发一条消息试试
+    </view>
+
+    <block wx:for="{{messages}}" wx:key="index">
+      <view class="msg {{item.role}}">
+        <view class="bubble {{item.role}}">
+          <block wx:if="{{item.role === 'ai' && item.thinking && !item.done}}">
+            <view class="think">{{item.thinking}}</view>
+          </block>
+          <view class="content">{{item.content}}</view>
+          <block wx:if="{{item.role === 'ai' && !item.done && !item.content}}">
+            <view class="typing">思考中…</view>
+          </block>
+        </view>
+      </view>
+    </block>
+  </scroll-view>
+
+  <view wx:if="{{statusText}}" class="status">{{statusText}}</view>
+
+  <view class="composer">
+    <input
+      class="input"
+      value="{{input}}"
+      placeholder="输入消息…"
+      bindinput="onInput"
+      bindconfirm="send"
+      confirm-type="send"
+      disabled="{{sending}}"
+    />
+    <block wx:if="{{sending}}">
+      <button class="btn stop" size="mini" bindtap="stop">停止</button>
+    </block>
+    <block wx:else>
+      <button class="btn" size="mini" type="primary" bindtap="send">发送</button>
+    </block>
+  </view>
+</view>

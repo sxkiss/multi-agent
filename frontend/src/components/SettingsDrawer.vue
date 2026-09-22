@@ -23,12 +23,15 @@
 
           <div class="form-section">
             <label class="form-label">API Key</label>
-            <input 
-              type="password" 
-              class="form-input" 
-              v-model="formData.api_key"
-              placeholder="请输入 API Key"
-            />
+            <div class="key-row">
+              <input
+                type="password"
+                class="form-input"
+                v-model="formData.api_key"
+                :placeholder="apiKeyConfigured ? '已配置（留空保持原值）' : '请输入 API Key'"
+              />
+              <span v-if="apiKeyConfigured" class="key-badge">已配置</span>
+            </div>
           </div>
 
           <div class="form-section">
@@ -520,6 +523,7 @@
 </template>
 <script>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { authOpts } from '../auth.js'
 
 export default {
   name: 'SettingsDrawer',
@@ -540,7 +544,7 @@ export default {
       try {
         const opts = { method, headers: { 'Content-Type': 'application/json' } }
         if (body && method.toUpperCase() !== 'GET') opts.body = JSON.stringify(body)
-        const r = await fetch(url, opts)
+        const r = await fetch(url, authOpts(opts))
         let res = {}
         try { res = await r.json() } catch { res = { status: false, msg: '响应解析失败' } }
         cb && cb(res)
@@ -586,6 +590,9 @@ export default {
     const availableModels = ref([])
     const loadingModels = ref(false)
     const fetchError = ref('')
+    // 服务端已配置 key 的标志（GET /api/config 只回 api_key_set 布尔，不回原文）
+    const apiKeySet = ref(false)
+    const apiKeyConfigured = computed(() => apiKeySet.value)
 
     // Tools management
     const toolsData = ref([])
@@ -714,9 +721,13 @@ export default {
     // 避免覆盖用户正在编辑的内容；关闭抽屉后恢复自动同步
     const syncFormData = (newConfig) => {
       if (!newConfig) return
+      // 服务端脱敏约定：api_key 永远为空串或历史占位符 "--"，真值不回传。
+      // 表单里一律置空并记录 _set 标志，避免把占位符当成真 key 使用/回传。
+      const rawKey = newConfig.api_key || ''
+      apiKeySet.value = newConfig.api_key_set === true || (!!rawKey && rawKey !== '--')
       formData.value = {
         api_base_url: newConfig.api_base_url || '',
-        api_key: newConfig.api_key || '',
+        api_key: '',
         models: (newConfig.models || []).filter(Boolean),
         enable_mcp: newConfig.enable_mcp !== false,
         mcp_config_path: newConfig.mcp_config_path || '',
@@ -761,30 +772,40 @@ export default {
     })
 
     const fetchModels = () => {
-      if (!formData.value.api_base_url || !formData.value.api_key) {
-        fetchError.value = '请先填写 API Base URL 和 API Key'
+      if (!formData.value.api_base_url) {
+        fetchError.value = '请先填写 API Base URL'
         return
       }
 
       loadingModels.value = true
       fetchError.value = ''
 
-      apiGet('/api/models?base_url=' + encodeURIComponent(formData.value.api_base_url) + '&key=' + encodeURIComponent(formData.value.api_key), (result) => {
+      // key 留空时后端回退已存凭据（仅当地址与已配置地址一致）；占位符永不外发
+      const typedKey = (formData.value.api_key || '').trim()
+      let url = '/api/models?base_url=' + encodeURIComponent(formData.value.api_base_url)
+      if (typedKey && typedKey !== '--') {
+        url += '&key=' + encodeURIComponent(typedKey)
+      }
+
+      apiGet(url, (result) => {
         loadingModels.value = false
         if (result.status) {
           availableModels.value = result.data.map(m => ({ id: m }))
           // 剪枝：清除已从服务商下线的陈旧勾选项（否则会被永久保留并随表单一起保存）
-          const live = new Set(result.data)
-          const before = formData.value.models
-          formData.value.models = before.filter(id => live.has(id))
-          // 默认模型失效时回退
-          const dm = formData.value.default_model
-          if (dm && !live.has(dm)) {
-            formData.value.default_model = formData.value.models[0] || ''
+          // 列表为空（上游异常被后端吞掉）时不动已选，避免误清用户配置
+          if (result.data.length > 0) {
+            const live = new Set(result.data)
+            const before = formData.value.models
+            formData.value.models = before.filter(id => live.has(id))
+            // 默认模型失效时回退
+            const dm = formData.value.default_model
+            if (dm && !live.has(dm)) {
+              formData.value.default_model = formData.value.models[0] || ''
+            }
           }
           fetchError.value = ''
         } else {
-          fetchError.value = '未获取到任何模型'
+          fetchError.value = result.msg || '未获取到任何模型'
           availableModels.value = []
         }
       })
@@ -1202,6 +1223,7 @@ export default {
 
     return {
       formData,
+      apiKeyConfigured,
       searchConfig,
       currentSearchProvider,
       searchSaving,
