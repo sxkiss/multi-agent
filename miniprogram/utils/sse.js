@@ -69,7 +69,18 @@ function decodeUTF8Manual(bytes) {
 
 /**
  * 解析一个完整的 SSE 事件块（形如 "id: 1\nevent: message\ndata: {...}\n"）。
- * @returns {id:number, event:string, data:any} 或 null
+ *
+ * 返回 {id, event, data, rawData}：
+ *   - data    ：尝试 JSON 解析的结果；失败则为原始字符串。
+ *   - rawData ：data 字段的原始文本（未经 JSON 解析）。
+ *
+ * 必须保留 rawData 的原因：
+ *   message 事件的 data 是**纯文本分片**（如 "390"、"老板好"），服务端为防
+ *   SSE 断行已把换行转义成字面 "\n"，并未加 JSON 引号。此时 JSON.parse 会
+ *   把纯数字分片转成 number（"390" → 390）、把空格/空串判为无效，导致
+ *   调用方取不到文本而整片丢弃——表现为回答里的数字莫名消失。
+ *   因此调用方（chat.js）优先用 rawData，语义与浏览器端一致。
+ * @returns {id:number, event:string, data:any, rawData:string} 或 null
  */
 function parseEventBlock(block) {
   if (!block || !block.trim()) return null
@@ -102,9 +113,9 @@ function parseEventBlock(block) {
   try {
     data = JSON.parse(raw)
   } catch (e) {
-    data = raw // 非 JSON 时按字符串透传（如 message 事件是纯文本 JSON 串）
+    data = raw // 非 JSON 时按字符串透传
   }
-  return { id, event, data }
+  return { id, event, data, rawData: raw }
 }
 
 /**

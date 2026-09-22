@@ -5,6 +5,146 @@ const { subscribe } = require('../../utils/sse.js')
 // SSE 事件类型 → 页面处理
 const MAX_RESUME = 5
 
+/**
+ * 还原后端 sse_pack 对字符串的转义（把字面 "\n" 还原为真实换行）。
+ * 与浏览器端 unescapeSSEString 对齐：不还原的话小程序的 \n\n 会原样显示。
+ */
+function unescapeSSEString(str) {
+  if (typeof str !== 'string') return str
+  return str
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+}
+
+/**
+ * 极简 Markdown → 小程序 rich-text 可用的 HTML 片段。
+ *
+ * 小程序没有 marked / v-html，这里按行处理最常用的语法：标题、有序/无序
+ * 列表、代码块、行内代码、粗体、引用、分割线、链接。
+ * rich-text 的 nodes 模式不支持 wxss class，故输出 HTML 字符串并内联 style
+ * （这种用法下 style 生效），避免引入第三方渲染库。
+ */
+const MD_STYLE = {
+  p: 'margin:0 0 12rpx 0;line-height:1.7;',
+  h: 'margin:16rpx 0 8rpx 0;font-weight:bold;font-size:30rpx;color:#111827;',
+  li: 'margin:0 0 6rpx 0;line-height:1.7;padding-left:8rpx;',
+  quote: 'margin:8rpx 0;padding:8rpx 16rpx;border-left:6rpx solid #d1d5db;color:#6b7280;background:#f9fafb;',
+  code: 'margin:8rpx 0;padding:12rpx 16rpx;background:#f3f4f6;border-radius:8rpx;font-size:24rpx;color:#374151;white-space:pre-wrap;word-break:break-all;',
+  codeInline: 'padding:2rpx 8rpx;background:#f3f4f6;border-radius:6rpx;font-size:26rpx;color:#ef4444;',
+  strong: 'font-weight:bold;color:#111827;',
+  a: 'color:#2563eb;text-decoration:underline;'
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** 行内标记：**粗体**、`代码`、[文字](链接) */
+function inlineHtml(text) {
+  let out = ''
+  let last = 0
+  const re = /(\*\*|__)(.+?)\1|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)/g
+  let m
+  while ((m = re.exec(text)) !== null) {
+    out += escapeHtml(text.slice(last, m.index))
+    if (m[2] !== undefined) {
+      out += `<span style="${MD_STYLE.strong}">${escapeHtml(m[2])}</span>`
+    } else if (m[3] !== undefined) {
+      out += `<span style="${MD_STYLE.codeInline}">${escapeHtml(m[3])}</span>`
+    } else {
+      out += `<span style="${MD_STYLE.a}">${escapeHtml(m[4])}</span>`
+    }
+    last = m.index + m[0].length
+  }
+  out += escapeHtml(text.slice(last))
+  return out
+}
+
+function markdownToHtml(md) {
+  if (!md) return ''
+  const lines = String(md).split('\n')
+  let html = ''
+  let inCode = false
+  let codeBuf = []
+  let listBuf = []
+  let ordered = false
+
+  const flushList = () => {
+    if (!listBuf.length) return
+    listBuf.forEach((t, i) => {
+      const prefix = ordered ? `${i + 1}. ` : '\u2022 '
+      html += `<div style="${MD_STYLE.li}">${escapeHtml(prefix)}${inlineHtml(t)}</div>`
+    })
+    listBuf = []
+  }
+  const flushCode = () => {
+    if (!codeBuf.length) return
+    html += `<div style="${MD_STYLE.code}">${escapeHtml(codeBuf.join('\n'))}</div>`
+    codeBuf = []
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '')
+    if (/^\s*```/.test(line)) {
+      if (inCode) { flushCode(); inCode = false } else { flushList(); inCode = true }
+      continue
+    }
+    if (inCode) { codeBuf.push(line); continue }
+    if (!line.trim()) { flushList(); flushCode(); continue }
+
+    let m
+    if ((m = line.match(/^\s*>\s?(.*)$/))) {
+      flushList()
+      html += `<div style="${MD_STYLE.quote}">${inlineHtml(m[1])}</div>`
+      continue
+    }
+    if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) {
+      flushList()
+      html += '<div style="margin:12rpx 0;height:1rpx;background:#e5e7eb;"></div>'
+      continue
+    }
+    if ((m = line.match(/^\s*(#{1,6})\s+(.*)$/))) {
+      flushList()
+      html += `<div style="${MD_STYLE.h}">${inlineHtml(m[2])}</div>`
+      continue
+    }
+    if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
+      if (ordered) { flushList(); ordered = false }
+      listBuf.push(m[1])
+      continue
+    }
+    if ((m = line.match(/^\s*(\d+)[.)]\s+(.*)$/))) {
+      if (!ordered) { flushList(); ordered = true }
+      listBuf.push(m[2])
+      continue
+    }
+    flushList()
+    html += `<div style="${MD_STYLE.p}">${inlineHtml(line)}</div>`
+  }
+  flushList()
+  flushCode()
+  return html
+}
+
+/** JSON 解析：失败返回 null（不抛异常打断渲染） */
+function safeJson(text) {
+  try { return JSON.parse(text) } catch (e) { return null }
+}
+
+/** 把消息文本同步渲染为 rich-text nodes，挂到消息对象上 */
+function decorate(messages) {
+  return messages.map((m) => (
+    m.role === 'ai'
+      ? Object.assign({}, m, { nodes: markdownToHtml(m.content || '') })
+      : Object.assign({}, m, { nodes: null })
+  ))
+}
+
 Page({
   data: {
     messages: [],      // {role:'user'|'ai', content:'', thinking:'', done:bool}
@@ -65,8 +205,9 @@ Page({
 
       const res = await api.wxLogin(loginRes.code)
       if (!res.ok || !res.data || !res.data.token) {
-        // 服务端未配置小程序凭据、或 code 无效时，退回密码登录
-        wx.redirectTo({ url: '/pages/login/login' })
+        // 带上失败原因跳登录页：否则用户只看到登录框，不知道微信登录为何失败
+        const reason = encodeURIComponent(res.msg || (res.unauthorized ? '微信登录未通过' : '网络异常'))
+        wx.redirectTo({ url: `/pages/login/login?reason=${reason}` })
         return false
       }
 
@@ -98,7 +239,7 @@ Page({
           done: true
         }))
       if (messages.length) {
-        this.setData({ messages }, () => this.scrollBottom())
+        this.setData({ messages: decorate(messages) }, () => this.scrollBottom())
       }
       return
     }
@@ -125,7 +266,7 @@ Page({
       { role: 'user', content: text, thinking: '', done: true },
       { role: 'ai', content: '', thinking: '', done: false }
     ])
-    this.setData({ input: '', messages, sending: true, streaming: true }, () => this.scrollBottom())
+    this.setData({ input: '', messages: decorate(messages), sending: true, streaming: true }, () => this.scrollBottom())
 
     const res = await api.start({
       message: text,
@@ -179,51 +320,70 @@ Page({
   },
 
   handleEvent(evt) {
-    const { event, data } = evt
+    const { event, data, rawData } = evt
     if (evt.id) this.lastId = evt.id
 
     const messages = this.data.messages.slice()
     const ai = messages[messages.length - 1]
     if (!ai || ai.role !== 'ai') return
 
+    /** 同步刷新气泡（含 markdown 渲染结果 nodes） */
+    const flush = () => {
+      ai.nodes = markdownToHtml(ai.content)
+      this.setData({ messages }, () => this.scrollBottom())
+    }
+
     switch (event) {
       case 'message': {
-        // 后端 message 事件的 data 是 JSON 字符串或纯文本
-        const text = typeof data === 'string' ? data : (data && (data.content || data.text)) || ''
+        // message 的 data 是**纯文本分片**（服务端未加 JSON 引号）。
+        // 必须用 rawData 而非 data：JSON.parse("390") 会得到 number，
+        // 走 data.content||data.text 取不到文本导致整片（数字/true/null）丢失。
+        // 同时还原服务端为防断行做的 \n 转义，否则气泡里会显示字面 \n\n。
+        const src = typeof rawData === 'string' ? rawData : data
+        const text = unescapeSSEString(
+          typeof src === 'string' ? src : (src && (src.content || src.text)) || ''
+        )
         if (text) {
           ai.content += text
-          this.setData({ messages }, () => this.scrollBottom())
+          flush()
         }
         break
       }
       case 'message_think': {
-        const text = typeof data === 'string' ? data : (data && (data.content || data.text)) || ''
+        const src = typeof rawData === 'string' ? rawData : data
+        const text = unescapeSSEString(
+          typeof src === 'string' ? src : (src && (src.content || src.text)) || ''
+        )
         if (text) ai.thinking += text
         break
       }
       case 'tool_call': {
-        const name = data && data.function && data.function.name
+        // 服务端字段是 tool（浏览器端也读 tool）；兼容 function.name 旧形态
+        const tc = typeof data === 'string' ? safeJson(data) : data
+        const name = tc && (tc.tool || (tc.function && tc.function.name))
         if (name) {
           ai.content += `\n\n> 调用工具：${name}\n`
-          this.setData({ messages }, () => this.scrollBottom())
+          flush()
         }
         break
       }
       case 'tool_result': {
         ai.content += `\n`
-        this.setData({ messages })
+        flush()
         break
       }
       case 'error': {
-        const msg = (data && data.msg) || '出错了'
+        const src = typeof rawData === 'string' ? rawData : data
+        const parsed = typeof src === 'string' ? safeJson(src) : src
+        const msg = (parsed && parsed.msg) || (typeof src === 'string' ? unescapeSSEString(src) : '') || '出错了'
         ai.content += `\n\n⚠️ ${msg}`
         ai.done = true
-        this.setData({ messages }, () => this.scrollBottom())
+        flush()
         break
       }
       case 'message_end': {
         ai.done = true
-        this.setData({ messages }, () => this.scrollBottom())
+        flush()
         break
       }
       default:

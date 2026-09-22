@@ -11,7 +11,8 @@
           <block wx:if="{{item.role === 'ai' && item.thinking && !item.done}}">
             <view class="think">{{item.thinking}}</view>
           </block>
-          <view class="content">{{item.content}}</view>
+          <rich-text wx:if="{{item.role === 'ai' && item.nodes}}" class="content md" nodes="{{item.nodes}}"></rich-text>
+          <view wx:else class="content">{{item.content}}</view>
           <block wx:if="{{item.role === 'ai' && !item.done && !item.content}}">
             <view class="typing">思考中…</view>
           </block>
