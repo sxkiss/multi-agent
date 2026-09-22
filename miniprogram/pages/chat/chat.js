@@ -100,7 +100,17 @@ Page({
       if (messages.length) {
         this.setData({ messages }, () => this.scrollBottom())
       }
+      return
     }
+
+    // 登录态过期（token 超过 24h）：静默重登，用户无感知。
+    // 若不处理，用户会看到空白历史且不知原因。
+    if (res.unauthorized) {
+      const ok = await this.wxLogin()
+      if (ok) this.loadHistory()
+      return
+    }
+    if (res.msg) this.setData({ statusText: res.msg })
   },
 
   onInput(e) {
@@ -125,11 +135,16 @@ Page({
 
     if (!res.ok) {
       if (res.unauthorized) {
-        wx.redirectTo({ url: '/pages/login/login' })
+        // token 过期：清掉后重新走微信登录
+        const app2 = getApp()
+        app2.clearToken()
+        const ok = await this.wxLogin()
+        if (ok) { this.send(); return }
         return
       }
       this.finishStream()
       this.setData({ statusText: res.msg || '发送失败' })
+      wx.showToast({ title: res.msg || '发送失败', icon: 'none' })
       return
     }
 

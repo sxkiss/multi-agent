@@ -107,3 +107,10 @@ auth.json
 # 微信小程序 AppSecret（服务端专用，绝不可进客户端或 git）
 # 仅用于服务端 code2session 换取 openid。
 miniprogram/.wxsecret
+
+# 小程序上传密钥（miniprogram-ci 专用，等同部署凭据，绝不入库）
+miniprogram/private.key
+miniprogram/node_modules/
+miniprogram/package.json
+miniprogram/package-lock.json
+miniprogram/project.private.config.json
