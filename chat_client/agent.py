@@ -43,6 +43,48 @@ BINARY_EXTENSIONS = {
     '.iso', '.bin', '.dat', '.db', '.sqlite', '.pyc', '.pyo'
 }
 
+
+# ============================================================
+# 任务取消（chat_stop → 后台 Agent 线程真正中断）
+#
+# 背景：原先 chat_stop 只做 job.finish("stopped") + agent.close()，
+# 后者仅关闭 RAG/HTTP 连接，不打断正在运行的 chat() 循环——停止后
+# Agent 仍会继续流式接收/重试请求/执行工具，直到下一次 API 调用恰好失败。
+# 现在 ChatJob 增加 cancel_event，Agent 主循环在本模块的检查点轮询。
+# ============================================================
+
+def _cancel_event():
+    """取当前执行上下文（ChatJob）的取消事件；无任务上下文（如脚本直调 Agent）返回 None。"""
+    from .tools import get_current_job
+    job = get_current_job()
+    return getattr(job, "cancel_event", None)
+
+
+def _is_cancelled() -> bool:
+    """当前任务是否已被 chat_stop 请求停止。"""
+    ev = _cancel_event()
+    return ev is not None and ev.is_set()
+
+
+def _sleep_interruptible(seconds: float) -> bool:
+    """可被取消打断的等待。返回 True 表示等待期间收到取消请求。"""
+    ev = _cancel_event()
+    if ev is None:
+        time.sleep(seconds)
+        return False
+    return ev.wait(seconds)
+
+
+def _close_stream(stream) -> None:
+    """关闭流式响应，释放底层连接（失败静默——取消路径不因清理异常中断）。"""
+    try:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        logger.debug("关闭响应流失败（已忽略）", exc_info=True)
+
+
 class Agent:
     # 集团协作工具：需要多 Agent 编排，单 Agent / Codex-X 模式不加载
     _GROUP_TOOLS: set[str] = {"RunCrew", "ConsultPeer", "CreateDepartment", "RecruitMember"}
@@ -532,7 +574,12 @@ Here is some useful information about the environment you are running in:
 
             while iteration_count < self.max_tool_iterations:
                 iteration_count += 1
-                
+
+                # 停止检查：工具执行完毕后不再发起新一轮模型请求
+                if _is_cancelled():
+                    logger.info("[Cancel] 任务已停止，结束主循环")
+                    return
+
                 # Copy messages to avoid polluting history with ephemeral warnings
                 request_messages = list(messages)
 
@@ -572,6 +619,11 @@ Here is some useful information about the environment you are running in:
                         response_stream = self._create_completion_stream(request_messages, iter_tools)
 
                         for chunk in response_stream:
+
+                            # 停止检查：chat_stop 置位后立即断开，不再消费流
+                            if _is_cancelled():
+                                _close_stream(response_stream)
+                                return
 
                             # 结束判断
                             if not chunk.choices:
@@ -643,7 +695,8 @@ Here is some useful information about the environment you are running in:
                                 logger.warning(
                                     f"[AI-Retry] 空回复（第 {attempt}/{api_max_retry + 1} 次），{api_retry_base_wait}s 后重试..."
                                 )
-                                time.sleep(api_retry_base_wait)
+                                if _sleep_interruptible(api_retry_base_wait):
+                                    return  # 等待期间被 chat_stop 请求停止
                                 continue  # 重试本轮
                             else:
                                 logger.warning("[AI-Retry] 多次空回复，放弃重试")
@@ -652,13 +705,19 @@ Here is some useful information about the environment you are running in:
                         break
 
                     except Exception as api_err:
+                        # 取消优先：停止请求导致的连接中断不触发重试，立即退出
+                        if _is_cancelled():
+                            logger.info("[AI-Retry] 任务已停止，跳过重试")
+                            return
                         if not is_retryable_api_err(api_err) or attempt > api_max_retry:
                             raise
                         wait_s = min(api_retry_base_wait * (2 ** (attempt - 1)), api_retry_max_wait)
                         logger.warning(
                             f"[AI-Retry] 接口流异常 {type(api_err).__name__}，{wait_s}s 后第 {attempt}/{api_max_retry} 次重试: {str(api_err)[:200]}"
                         )
-                        time.sleep(wait_s)
+                        if _sleep_interruptible(wait_s):
+                            logger.info("[AI-Retry] 等待重试期间任务被停止")
+                            return
                         if yielded_content:
                             # 续写模式：把已输出内容作为上下文附上，要求模型从中断处继续（前端按序拼接，不会重复）
                             # 移除上一轮重试附加的续写上下文，避免重复堆叠
@@ -716,6 +775,10 @@ Here is some useful information about the environment you are running in:
 
                 # 执行工具
                 for tc in assistant_msg_kwargs["tool_calls"]:
+                    # 停止检查：已请求停止则不再执行后续工具（含 Bash 等高危工具）
+                    if _is_cancelled():
+                        self._mark_unexecuted_tools(assistant_msg_kwargs["tool_calls"], messages, ai_msg_id)
+                        return
                     func_name = tc["function"]["name"]
                     args_str = tc["function"]["arguments"]
                     call_id = tc["id"]
@@ -871,6 +934,29 @@ Here is some useful information about the environment you are running in:
         finally:
             set_session_allow_high(self.session_id, False)
     
+    def _mark_unexecuted_tools(self, tool_calls: list[dict], messages: list[dict], ai_msg_id: str):
+        """任务被停止时，为未执行/未回填结果的 tool_call 补齐"未执行"结果。
+
+        原因：assistant 消息（含全部 tool_calls）在流式结束后已先落库；若此时直接
+        退出，会留下"声明 N 个工具、只回 k 个结果"的历史，下一轮请求会被 API
+        以 400 拒绝（Missing tool response for tool_call_id）。补齐后历史自洽。
+        """
+        replied = {m.get("tool_call_id") for m in messages if m.get("role") == "tool"}
+        for tc in tool_calls:
+            call_id = tc.get("id")
+            if not call_id or call_id in replied:
+                continue
+            content_structure = [{
+                "type": "text",
+                "text": _xml_response("error", "任务被用户停止，该工具未执行。"),
+            }]
+            self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": content_structure,
+            })
+
     @staticmethod
     def _sanitize_messages_for_api(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """清理消息列表中非法的 tool_calls，防止 API 返回 400 错误。
