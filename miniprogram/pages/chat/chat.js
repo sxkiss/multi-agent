@@ -40,11 +40,48 @@ Page({
     if (res.ok && res.data && res.data.enabled) {
       const token = wx.getStorageSync('token') || ''
       if (!token) {
-        wx.redirectTo({ url: '/pages/login/login' })
-        return
+        // 优先走微信一键登录，失败再退回密码登录页
+        const ok = await this.wxLogin()
+        if (!ok) return
       }
     }
     this.loadHistory()
+  },
+
+  /**
+   * 微信登录：wx.login 取 code → 服务端换 openid + 绑定会话。
+   * 成功后把服务端返回的 session_id 持久化，保证同一用户始终回到同一会话。
+   * @returns {boolean} 是否登录成功
+   */
+  async wxLogin() {
+    try {
+      const loginRes = await new Promise((resolve, reject) => {
+        wx.login({ success: resolve, fail: reject })
+      })
+      if (!loginRes.code) {
+        wx.redirectTo({ url: '/pages/login/login' })
+        return false
+      }
+
+      const res = await api.wxLogin(loginRes.code)
+      if (!res.ok || !res.data || !res.data.token) {
+        // 服务端未配置小程序凭据、或 code 无效时，退回密码登录
+        wx.redirectTo({ url: '/pages/login/login' })
+        return false
+      }
+
+      const app = getApp()
+      app.setToken(res.data.token)
+      // 关键：用服务端绑定的会话 ID，实现"换设备也能续聊"
+      if (res.data.session_id) {
+        wx.setStorageSync('session_id', res.data.session_id)
+        this.setData({ sessionId: res.data.session_id })
+      }
+      return true
+    } catch (e) {
+      wx.redirectTo({ url: '/pages/login/login' })
+      return false
+    }
   },
 
   async loadHistory() {
@@ -207,7 +244,11 @@ Page({
 
   newSession() {
     this.abortStream()
-    const sid = 'mp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+    // 保持在同一用户的命名空间内：若为微信绑定会话（wx_ 前缀），
+    // 新会话以其为基追加时间戳，避免脱离用户绑定导致换设备丢失。
+    const cur = this.data.sessionId || ''
+    const base = cur.startsWith('wx_') ? cur.slice(0, 27) : 'mp_' + Date.now().toString(36)
+    const sid = base + '_' + Date.now().toString(36)
     wx.setStorageSync('session_id', sid)
     this.setData({ sessionId: sid, messages: [], statusText: '' })
   }

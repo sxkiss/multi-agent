@@ -61,6 +61,10 @@ const api = {
   login(password) {
     return request({ url: '/api/auth/login', method: 'POST', data: { password } })
   },
+  // 微信登录：wx.login 拿 code → 服务端换 openid 并签发 token
+  wxLogin(code) {
+    return request({ url: '/api/auth/wxlogin', method: 'POST', data: { code } })
+  },
   authStatus() {
     return request({ url: '/api/auth/status' })
   },
