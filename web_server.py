@@ -691,11 +691,41 @@ class AgentMain:
                 "reset_time": "独立模式",
                 "activate": data.get("activate", 50),
             },
-            "config": self.config,
+            "config": self._redacted_config(),
             "is_custom_api": bool(api_key and api_key != self.DEFAULT_CONFIG['api_key']),
             "questions": questions,
         }
         return public.return_data(True, data=configs)
+
+    # 这些字段属于凭据，一律不回传原文；只回 "<field>_set" 布尔，
+    # 与 get_search_config 的既有约定保持一致。
+    _SECRET_KEYS = {"api_key", "embedding_api_key"}
+    _PLACEHOLDER = "--"  # 与 DEFAULT_CONFIG 中的占位约定一致
+
+    def _redacted_config(self) -> dict:
+        """深拷贝配置并将凭据字段替换为占位符 + _set 布尔。
+
+        目的：GET /api/config 原先明文返回 api_key，任何人访问端口即可
+        拿到模型密钥。改为脱敏后，前端仍能判断"是否已配置"，但无法取值。
+        """
+        cfg = json.loads(json.dumps(self.config))
+        default = self.DEFAULT_CONFIG or {}
+        for key in self._SECRET_KEYS:
+            if key not in cfg:
+                continue
+            raw = cfg.get(key) or ""
+            # 先依据原文算 _set，再覆盖为占位符（顺序不可颠倒）
+            cfg[f"{key}_set"] = bool(raw) and str(raw) != str(default.get(key, ""))
+            cfg[key] = self._PLACEHOLDER if raw else ""
+        # embedding 为嵌套结构，单独处理
+        emb = cfg.get("embedding")
+        if isinstance(emb, dict) and "embedding_api_key" in emb:
+            raw_emb = emb.get("embedding_api_key") or ""
+            # 与顶层同逻辑：默认值占位符 "--" 视为未配置（_set=false）
+            emb_default = (default.get("embedding") or {}).get("embedding_api_key", "")
+            emb["embedding_api_key_set"] = bool(raw_emb) and str(raw_emb) != str(emb_default)
+            emb["embedding_api_key"] = self._PLACEHOLDER if raw_emb else ""
+        return cfg
 
     def get_models(self, base_url='', key=''):
         if not base_url or not key:
@@ -813,6 +843,10 @@ class AgentMain:
         for k, v in update.items():
             if isinstance(v, str):
                 v = v.strip()
+            # 前端保存时可能把 GET 返回的脱敏占位符原样回传；
+            # 若当作有效值写入，会覆盖真实凭据。此处视为"未修改"跳过。
+            if isinstance(v, str) and v == self._PLACEHOLDER and k in self._SECRET_KEYS:
+                continue
             is_empty = (v is None) or (v == "") or (isinstance(v, list) and len(v) == 0)
             if is_empty:
                 # 这些字段允许显式清空（运行时回退默认值，如 workspace → 项目根目录）
@@ -2729,13 +2763,19 @@ async def _lifespan(_app):
 
 
 app = FastAPI(title="AI Agent Standalone", version="1.0.0", lifespan=_lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+# ============================================================
+# 鉴权：默认关闭（auth.json.enabled=false），保持既有部署行为；
+# 开启后 /api/auth/* 与静态资源之外的路径均需 Bearer token。
+# 详见 auth.py 模块说明。
+from auth import register_auth
+register_auth(app, BASE_DIR)
+
+# ============================================================
+# CORS：原先为 allow_origins=["*"] + allow_credentials=True，
+# 与鉴权并存时等价于"任意站点可携带凭据调用任意接口"，属高危组合。
+# 改为显式白名单（config.cors_origins）。
+# 注意：CORS 配置需在 agent_main 实例化之后读取（见下方 add_middleware）。
 
 # ============================================================
 # MCP 路由：统一由 mcp_routes 模块提供（避免多份重复实现）
@@ -2744,6 +2784,24 @@ register_mcp_routes(app)
 
 
 agent_main = AgentMain()
+
+# ============================================================
+# CORS：此处才实例化完成 agent_main，故把实际注册放在这之后。
+_cors_origins = (agent_main.config or {}).get("cors_origins") or []
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["WWW-Authenticate"],
+)
+if not _cors_origins:
+    logger.warning(
+        "[安全] cors_origins 未配置，浏览器跨域请求将被拒绝。"
+        "请在 config.json 的 cors_origins 中填入前端域名（如 https://example.com）。"
+        "同源直连（Nginx 反代）不受影响。"
+    )
 
 # 后台预加载 MCP（避免首次 get_tool_list 阻塞）
 def _preload_mcp():
