@@ -197,6 +197,97 @@
           </div>
         </div>
 
+        <!-- 搜索设置 -->
+        <div class="form-section-group">
+          <h4 class="section-title">联网搜索</h4>
+          <div class="form-section">
+            <label class="form-label">默认搜索引擎</label>
+            <p class="form-hint">
+              WebSearch 工具默认使用的引擎。Bing 免 Key 且实测可用（无需代理即可直连）；
+              SearXNG 免 Key 但需自建实例。生产环境建议用需 Key 的引擎以获得更稳定结果。
+            </p>
+            <select class="form-input" v-model="searchConfig.provider">
+              <option v-for="(p, name) in searchConfig.providers" :key="name" :value="name">
+                {{ p.label }}{{ p.need_key ? '（需 Key）' : '（免 Key）' }}
+              </option>
+            </select>
+          </div>
+          <div class="form-section">
+            <label class="form-label">默认返回条数</label>
+            <p class="form-hint">每次搜索返回的结果条数，1-20</p>
+            <input
+              type="number"
+              class="form-input"
+              v-model.number="searchConfig.result_size"
+              min="1"
+              max="20"
+            />
+          </div>
+          <!-- 只显示当前选中引擎的配置项，避免 19 个引擎的表单全铺开 -->
+          <div v-if="currentSearchProvider" class="form-section">
+            <label class="form-label">{{ currentSearchProvider.label }} 配置</label>
+            <p class="form-hint" v-if="currentSearchProvider.need_key">
+              API Key 不会回显（只显示是否已配置）。<strong>留空表示不修改</strong>，填入新值才会覆盖。
+            </p>
+            <p class="form-hint" v-else>
+              该引擎无需 API Key。
+            </p>
+            <div v-if="'api_key' in currentSearchProvider.options" class="key-row">
+              <input
+                type="password"
+                class="form-input"
+                v-model="currentSearchProvider.options.api_key"
+                :placeholder="currentSearchProvider.options.api_key_set ? '已配置（留空保持原值）' : '未配置，填入 API Key'"
+                autocomplete="new-password"
+              />
+              <span v-if="currentSearchProvider.options.api_key_set" class="key-badge">已配置</span>
+            </div>
+            <input
+              v-if="'url' in currentSearchProvider.options"
+              type="text"
+              class="form-input"
+              v-model="currentSearchProvider.options.url"
+              :placeholder="currentSearchProvider.key === 'searxng' ? '实例地址，如 https://searx.example.com' : 'API 地址（可选，指向自建网关）'"
+            />
+            <input
+              v-if="'engine' in currentSearchProvider.options"
+              type="text"
+              class="form-input"
+              v-model="currentSearchProvider.options.engine"
+              placeholder="引擎名（可选，逗号分隔）"
+            />
+            <input
+              v-if="'language' in currentSearchProvider.options"
+              type="text"
+              class="form-input"
+              v-model="currentSearchProvider.options.language"
+              placeholder="Accept-Language，如 zh-CN,zh"
+            />
+            <input
+              v-if="'model' in currentSearchProvider.options"
+              type="text"
+              class="form-input"
+              v-model="currentSearchProvider.options.model"
+              placeholder="模型名，如 grok-3"
+            />
+            <select v-if="'depth' in currentSearchProvider.options" class="form-input" v-model="currentSearchProvider.options.depth">
+              <option value="basic">basic（快）</option>
+              <option value="advanced">advanced（深）</option>
+              <option value="standard">standard（标准）</option>
+            </select>
+            <select v-if="'mode' in currentSearchProvider.options" class="form-input" v-model="currentSearchProvider.options.mode">
+              <option value="custom">custom（自定义搜索）</option>
+              <option value="ai">ai（AI 搜索）</option>
+            </select>
+          </div>
+          <div class="form-section">
+            <button class="btn-save" @click="saveSearchConfig" :disabled="searchSaving">
+              {{ searchSaving ? '保存中...' : '保存搜索设置' }}
+            </button>
+            <span v-if="searchMsg" class="form-hint" :class="{ 'err': searchMsgErr }">{{ searchMsg }}</span>
+          </div>
+        </div>
+
         <!-- 记忆/知识库设置 -->
         <div class="form-section-group">
           <h4 class="section-title">记忆 / 知识库</h4>
@@ -501,6 +592,58 @@ export default {
     const loadingTools = ref(false)
     const skillsData = ref(null)
     const loadingSkills = ref(false)
+
+    // Search settings（独立接口，api_key 不回显，只回 api_key_set 布尔）
+    const searchConfig = ref({ provider: 'bing', result_size: 10, providers: {} })
+    const searchSaving = ref(false)
+    const searchMsg = ref('')
+    const searchMsgErr = ref(false)
+
+    // 当前选中引擎的配置项（只渲染这一个，避免 19 个引擎的表单全铺开）
+    const currentSearchProvider = computed(() => {
+      const name = searchConfig.value.provider
+      const p = (searchConfig.value.providers || {})[name]
+      if (!p) return null
+      return { key: name, ...p }
+    })
+
+    async function loadSearchConfig() {
+      try {
+        const r = await fetch('/api/search/config')
+        const j = await r.json()
+        if (j && j.data) {
+          searchConfig.value = {
+            provider: j.data.provider || 'bing',
+            result_size: j.data.result_size || 10,
+            providers: j.data.providers || {}
+          }
+        }
+      } catch (e) {
+        // 拉取失败不阻塞整个抽屉，保留默认空结构
+        console.warn('加载搜索配置失败', e)
+      }
+    }
+
+    async function saveSearchConfig() {
+      searchSaving.value = true
+      searchMsg.value = ''
+      try {
+        const r = await fetch('/api/search/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: JSON.stringify(searchConfig.value) })
+        })
+        const j = await r.json()
+        searchMsgErr.value = !(j && j.status === true)
+        searchMsg.value = (j && j.msg) || (searchMsgErr.value ? '保存失败' : '已保存')
+        if (!searchMsgErr.value) await loadSearchConfig()
+      } catch (e) {
+        searchMsgErr.value = true
+        searchMsg.value = '保存失败: ' + (e && e.message ? e.message : e)
+      } finally {
+        searchSaving.value = false
+      }
+    }
 
     // MCP servers management
     const mcpServers = ref(null)
@@ -1053,8 +1196,18 @@ export default {
       pendingTimers.clear()
     })
 
+    onMounted(() => {
+      loadSearchConfig()
+    })
+
     return {
       formData,
+      searchConfig,
+      currentSearchProvider,
+      searchSaving,
+      searchMsg,
+      searchMsgErr,
+      saveSearchConfig,
       availableModels,
       loadingModels,
       fetchError,
@@ -1465,6 +1618,30 @@ export default {
 }
 
 .skill-install-msg.err {
+  color: #dc2626;
+}
+
+/* 搜索设置：Key 输入行与"已配置"标记 */
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-row .form-input {
+  flex: 1;
+}
+
+.key-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #16a34a;
+  border: 1px solid #16a34a;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.form-hint.err {
   color: #dc2626;
 }
 
