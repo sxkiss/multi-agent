@@ -131,6 +131,35 @@ def _validate_session_id(session_id) -> tuple:
     return True, sid
 
 
+def _session_history_mtime(session_file: str) -> float:
+    """会话历史的最后修改时间（快照与 journal 取较新者）。
+
+    只取 sessions.json 会在"只有 journal"的会话上抛 FileNotFoundError /
+    得到过期时间，导致列表排序错乱。
+    """
+    latest = 0.0
+    for path in (session_file, session_file[: -len('sessions.json')] + 'sessions.journal.jsonl'):
+        try:
+            latest = max(latest, os.path.getmtime(path))
+        except OSError:
+            continue
+    return latest
+
+
+def _session_has_history(session_file: str) -> bool:
+    """会话是否存在任何可读历史（快照或增量日志任一存在即为真）。
+
+    不能只判断 sessions.json：memory.py 的 add_message 只把新消息 append 到
+    journal，快照要等 journal 累积到 JOURNAL_COMPACT_BYTES 才合并生成。
+    新会话在相当长一段时间内根本没有 sessions.json，若以此做门禁，
+    历史接口会静默返回空（实测小程序每次刷新都是空白）。
+    """
+    if os.path.exists(session_file):
+        return True
+    jpath = session_file[: -len('sessions.json')] + 'sessions.journal.jsonl'
+    return os.path.exists(jpath)
+
+
 def _load_session_history(session_file: str) -> list:
     """读取会话完整历史 = sessions.json 快照 + sessions.journal.jsonl 增量。
 
@@ -2411,10 +2440,10 @@ class AgentMain:
                         if not os.path.isdir(session_path):
                             continue
                         session_file = os.path.join(session_path, 'sessions.json')
-                        if not os.path.exists(session_file):
+                        if not _session_has_history(session_file):
                             continue
                         try:
-                            mtime = os.path.getmtime(session_file)
+                            mtime = _session_history_mtime(session_file)
                             time_str = datetime.datetime.fromtimestamp(mtime).astimezone().strftime('%Y-%m-%d %H:%M:%S')
                             title = session_id
                             history = _load_session_history(session_file)
@@ -2483,8 +2512,7 @@ class AgentMain:
                                     mtime = os.path.getmtime(meta_file)
                                 else:
                                     mtime = 0
-                                if os.path.exists(sub_file):
-                                    mtime = max(mtime, os.path.getmtime(sub_file))
+                                mtime = max(mtime, _session_history_mtime(sub_file))
                                 time_str = datetime.datetime.fromtimestamp(mtime).astimezone().strftime('%Y-%m-%d %H:%M:%S')
                                 if os.path.exists(meta_file):
                                     with open(meta_file, 'r', encoding='utf-8') as f:
@@ -2492,7 +2520,7 @@ class AgentMain:
                                 else:
                                     meta = {"source": "crew", "parent": session_id, "agent": "", "dept": ""}
                                 title = sub_dir[:36]
-                                if os.path.exists(sub_file):
+                                if _session_has_history(sub_file):
                                     history = _load_session_history(sub_file)
                                     if history:
                                         for msg in history:
@@ -2580,7 +2608,7 @@ class AgentMain:
                     break
 
         # ── native 历史（包括集团子代理）：从 sessions.json 读取 ──────────────
-        if os.path.exists(native_file):
+        if _session_has_history(native_file):
             try:
                 history = _load_session_history(native_file)
                 try:
@@ -2725,7 +2753,7 @@ class AgentMain:
         session_id = sid
         sessions_dir = get.get('sessions_dir', '') or 'sessions'
         session_file = os.path.join(self.plugin_path, sessions_dir, session_id, 'sessions.json')
-        if not os.path.exists(session_file):
+        if not _session_has_history(session_file):
             return public.returnMsg(False, "会话记录不存在")
         try:
             history = _load_session_history(session_file)

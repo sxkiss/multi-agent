@@ -1,9 +1,20 @@
 // pages/chat/chat.js
 const { api } = require('../../utils/request.js')
 const { subscribe } = require('../../utils/sse.js')
+const { parseMarkdown, extractImages } = require('../../utils/markdown.js')
 
 // SSE 事件类型 → 页面处理
 const MAX_RESUME = 5
+
+/** 快捷指令：把高频用法前置，减少手机端输入成本 */
+const QUICK_PROMPTS = [
+  '帮我总结这段内容',
+  '写一份周报',
+  '解释一下这个概念',
+  '帮我优化这段代码',
+  '翻译成英文',
+  '列出行动清单'
+]
 
 /**
  * 还原后端 sse_pack 对字符串的转义（把字面 "\n" 还原为真实换行）。
@@ -17,149 +28,40 @@ function unescapeSSEString(str) {
     .replace(/\\t/g, '\t')
 }
 
-/**
- * 极简 Markdown → 小程序 rich-text 可用的 HTML 片段。
- *
- * 小程序没有 marked / v-html，这里按行处理最常用的语法：标题、有序/无序
- * 列表、代码块、行内代码、粗体、引用、分割线、链接。
- * rich-text 的 nodes 模式不支持 wxss class，故输出 HTML 字符串并内联 style
- * （这种用法下 style 生效），避免引入第三方渲染库。
- */
-// 配色必须跟随小程序的深色主题（页面 #0f1115 / 气泡 #1a1d24，正文 #e8eaed）。
-// 早期版本误用了浅色主题的近黑色（#111827）与浅灰底（#f3f4f6），
-// 在深色气泡上会糊成一团、几乎看不清，这里统一改为深色适配。
-const MD_STYLE = {
-  p: 'margin:0 0 12rpx 0;line-height:1.7;color:#e8eaed;',
-  h: 'margin:16rpx 0 8rpx 0;font-weight:bold;font-size:30rpx;color:#ffffff;',
-  li: 'margin:0 0 6rpx 0;line-height:1.7;padding-left:8rpx;color:#e8eaed;',
-  quote: 'margin:8rpx 0;padding:8rpx 16rpx;border-left:6rpx solid #4a7cf7;color:#a8adb8;background:#20242c;',
-  code: 'margin:8rpx 0;padding:12rpx 16rpx;background:#12141a;border:1rpx solid #2c303a;border-radius:8rpx;font-size:24rpx;color:#7dd3a8;white-space:pre-wrap;word-break:break-all;',
-  codeInline: 'padding:2rpx 8rpx;background:#20242c;border-radius:6rpx;font-size:26rpx;color:#7dd3a8;',
-  strong: 'font-weight:bold;color:#ffffff;',
-  a: 'color:#6ea8fe;text-decoration:underline;'
-}
-
-// 分割线：深色底上用浅灰细线
-const MD_HR = '<div style="margin:12rpx 0;height:1rpx;background:#2c303a;"></div>'
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-/** 行内标记：**粗体**、`代码`、[文字](链接) */
-function inlineHtml(text) {
-  let out = ''
-  let last = 0
-  const re = /(\*\*|__)(.+?)\1|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)/g
-  let m
-  while ((m = re.exec(text)) !== null) {
-    out += escapeHtml(text.slice(last, m.index))
-    if (m[2] !== undefined) {
-      out += `<span style="${MD_STYLE.strong}">${escapeHtml(m[2])}</span>`
-    } else if (m[3] !== undefined) {
-      out += `<span style="${MD_STYLE.codeInline}">${escapeHtml(m[3])}</span>`
-    } else {
-      out += `<span style="${MD_STYLE.a}">${escapeHtml(m[4])}</span>`
-    }
-    last = m.index + m[0].length
-  }
-  out += escapeHtml(text.slice(last))
-  return out
-}
-
-function markdownToHtml(md) {
-  if (!md) return ''
-  const lines = String(md).split('\n')
-  let html = ''
-  let inCode = false
-  let codeBuf = []
-  let listBuf = []
-  let ordered = false
-
-  const flushList = () => {
-    if (!listBuf.length) return
-    listBuf.forEach((t, i) => {
-      const prefix = ordered ? `${i + 1}. ` : '\u2022 '
-      html += `<div style="${MD_STYLE.li}">${escapeHtml(prefix)}${inlineHtml(t)}</div>`
-    })
-    listBuf = []
-  }
-  const flushCode = () => {
-    if (!codeBuf.length) return
-    html += `<div style="${MD_STYLE.code}">${escapeHtml(codeBuf.join('\n'))}</div>`
-    codeBuf = []
-  }
-
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/\r$/, '')
-    if (/^\s*```/.test(line)) {
-      if (inCode) { flushCode(); inCode = false } else { flushList(); inCode = true }
-      continue
-    }
-    if (inCode) { codeBuf.push(line); continue }
-    if (!line.trim()) { flushList(); flushCode(); continue }
-
-    let m
-    if ((m = line.match(/^\s*>\s?(.*)$/))) {
-      flushList()
-      html += `<div style="${MD_STYLE.quote}">${inlineHtml(m[1])}</div>`
-      continue
-    }
-    if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) {
-      flushList()
-      html += MD_HR
-      continue
-    }
-    if ((m = line.match(/^\s*(#{1,6})\s+(.*)$/))) {
-      flushList()
-      html += `<div style="${MD_STYLE.h}">${inlineHtml(m[2])}</div>`
-      continue
-    }
-    if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
-      if (ordered) { flushList(); ordered = false }
-      listBuf.push(m[1])
-      continue
-    }
-    if ((m = line.match(/^\s*(\d+)[.)]\s+(.*)$/))) {
-      if (!ordered) { flushList(); ordered = true }
-      listBuf.push(m[2])
-      continue
-    }
-    flushList()
-    html += `<div style="${MD_STYLE.p}">${inlineHtml(line)}</div>`
-  }
-  flushList()
-  flushCode()
-  return html
-}
-
 /** JSON 解析：失败返回 null（不抛异常打断渲染） */
 function safeJson(text) {
   try { return JSON.parse(text) } catch (e) { return null }
 }
 
-/** 把消息文本同步渲染为 rich-text nodes，挂到消息对象上 */
-function decorate(messages) {
-  return messages.map((m) => (
-    m.role === 'ai'
-      ? Object.assign({}, m, { nodes: markdownToHtml(m.content || '') })
-      : Object.assign({}, m, { nodes: null })
-  ))
+/** 消息文本 → 渲染块（文本/代码/图片），供 wxml 按块渲染 */
+function buildBlocks(text) {
+  return parseMarkdown(text || '')
 }
 
 Page({
   data: {
-    messages: [],      // {role:'user'|'ai', content:'', thinking:'', done:bool}
+    messages: [],      // {role, content, thinking, done, blocks, images}
     input: '',
     sessionId: '',
     sending: false,
     streaming: false,
     statusText: '',
-    scrollToBottom: ''
+    scrollToBottom: '',
+
+    // 快捷指令
+    QUICK_PROMPTS,
+    quickVisible: false,
+
+    // 语音输入
+    voiceMode: false,
+    recording: false,
+    recordManager: null,
+
+    // 长按菜单
+    menuVisible: false,
+    longPressIndex: -1,
+    menuIndex: -1,
+    menuMessage: { images: [] }
   },
 
   onLoad() {
@@ -170,6 +72,7 @@ Page({
       wx.setStorageSync('session_id', sid)
     }
     this.setData({ sessionId: sid })
+    this.initRecorder()
     this.checkAuthAndLoad()
   },
 
@@ -180,6 +83,30 @@ Page({
   onHide() {
     // 页面隐藏时不断开 SSE：后端任务是后台式的，回来可续传
   },
+
+  /**
+   * 分享：优先分享当前这条回答。
+   * 通过点击气泡右侧的"分享"进入；无选中时分享小程序本身。
+   */
+  onShareAppMessage() {
+    const idx = this.data.menuIndex
+    const msg = idx >= 0 ? this.data.messages[idx] : null
+    if (msg && msg.role === 'ai' && msg.content) {
+      const summary = msg.content.replace(/\s+/g, ' ').slice(0, 60)
+      return {
+        title: summary || '来自多智能体协作助手',
+        path: '/pages/chat/chat'
+      }
+    }
+    return { title: '多智能体协作助手', path: '/pages/chat/chat' }
+  },
+
+  /** 允许"分享到朋友圈"仅安卓有效，这里保留转发好友能力 */
+  onShareTimeline() {
+    return { title: '多智能体协作助手' }
+  },
+
+  // ─────────────────────────── 鉴权与历史 ───────────────────────────
 
   async checkAuthAndLoad() {
     const res = await api.authStatus()
@@ -232,20 +159,50 @@ Page({
   },
 
   async loadHistory() {
-    const res = await api.history({ session_id: this.data.sessionId })
+    const res = await api.messages(this.data.sessionId)
     if (res.ok && res.data) {
       // 历史事件结构依后端而定，尽量兼容数组/对象两种形态
       const list = Array.isArray(res.data) ? res.data : (res.data.messages || [])
-      const messages = list
-        .filter((m) => m && (m.role || m.content))
-        .map((m) => ({
-          role: m.role === 'user' ? 'user' : 'ai',
-          content: String(m.content || ''),
+      const messages = []
+      for (const m of list) {
+        if (!m) continue
+        // tool 消息是工具执行结果，不是对话内容，直接丢弃。
+        // 若不过滤，工具返回的 JSON/HTML 会当成 AI 回答渲染出来。
+        if (m.role === 'tool') continue
+        const kind = m.role === 'user' ? 'user' : 'ai'
+        let content = String(m.content || '')
+        // content 可能是 [{type:'text',text:'..'}] 结构（服务端多模态格式）
+        if (Array.isArray(m.content)) {
+          content = m.content
+            .filter((p) => p && p.type === 'text')
+            .map((p) => p.text || '')
+            .join('')
+        }
+        if (!content.trim() && kind === 'ai') continue
+
+        // 合并连续的同角色消息：服务端按 turn 存储，可能出现相邻的 ai 消息，
+        // 不合并会渲染成一串气泡
+        const prev = messages[messages.length - 1]
+        if (prev && prev.role === kind) {
+          prev.content += '\n' + content
+          continue
+        }
+        messages.push({
+          role: kind,
+          content,
           thinking: '',
-          done: true
-        }))
+          done: true,
+          blocks: buildBlocks(content),
+          images: extractImages(content)
+        })
+      }
+      // 重算合并后消息的渲染块
+      messages.forEach((m) => {
+        m.blocks = buildBlocks(m.content)
+        m.images = extractImages(m.content)
+      })
       if (messages.length) {
-        this.setData({ messages: decorate(messages) }, () => this.scrollBottom())
+        this.setData({ messages }, () => this.scrollBottom())
       }
       return
     }
@@ -260,6 +217,8 @@ Page({
     if (res.msg) this.setData({ statusText: res.msg })
   },
 
+  // ─────────────────────────── 输入与发送 ───────────────────────────
+
   onInput(e) {
     this.setData({ input: e.detail.value })
   },
@@ -269,10 +228,10 @@ Page({
     if (!text || this.data.sending) return
 
     const messages = this.data.messages.concat([
-      { role: 'user', content: text, thinking: '', done: true },
-      { role: 'ai', content: '', thinking: '', done: false }
+      { role: 'user', content: text, thinking: '', done: true, blocks: buildBlocks(text), images: [] },
+      { role: 'ai', content: '', thinking: '', done: false, blocks: [], images: [] }
     ])
-    this.setData({ input: '', messages: decorate(messages), sending: true, streaming: true }, () => this.scrollBottom())
+    this.setData({ input: '', messages, sending: true, streaming: true, quickVisible: false }, () => this.scrollBottom())
 
     const res = await api.start({
       message: text,
@@ -333,9 +292,10 @@ Page({
     const ai = messages[messages.length - 1]
     if (!ai || ai.role !== 'ai') return
 
-    /** 同步刷新气泡（含 markdown 渲染结果 nodes） */
+    /** 同步刷新气泡（重新切块渲染） */
     const flush = () => {
-      ai.nodes = markdownToHtml(ai.content)
+      ai.blocks = buildBlocks(ai.content)
+      ai.images = extractImages(ai.content)
       this.setData({ messages }, () => this.scrollBottom())
     }
 
@@ -422,14 +382,305 @@ Page({
     this.setData({ scrollToBottom: 'msg-' + (this.data.messages.length - 1) })
   },
 
-  newSession() {
-    this.abortStream()
-    // 保持在同一用户的命名空间内：若为微信绑定会话（wx_ 前缀），
-    // 新会话以其为基追加时间戳，避免脱离用户绑定导致换设备丢失。
-    const cur = this.data.sessionId || ''
-    const base = cur.startsWith('wx_') ? cur.slice(0, 27) : 'mp_' + Date.now().toString(36)
-    const sid = base + '_' + Date.now().toString(36)
-    wx.setStorageSync('session_id', sid)
-    this.setData({ sessionId: sid, messages: [], statusText: '' })
+
+  // ─────────────────────────── 快捷指令 ───────────────────────────
+
+  toggleQuick() {
+    this.setData({ quickVisible: !this.data.quickVisible })
+  },
+
+  useQuickPrompt(e) {
+    const text = e.currentTarget.dataset.text || ''
+    // 填入输入框而非直接发送：给用户补充细节的机会
+    this.setData({ input: text, quickVisible: false })
+  },
+
+  // ─────────────────────────── 语音输入 ───────────────────────────
+
+  initRecorder() {
+    // 同声传译插件（微信官方）：把语音转文字，替代手打
+    try {
+      // eslint-disable-next-line no-undef
+      const plugin = requirePlugin('WechatSI')
+      const manager = plugin.getRecordRecognitionManager()
+      if (!manager) return
+
+      manager.onStop = (res) => {
+        this.setData({ recording: false })
+        const text = (res && res.result) || ''
+        if (!text) {
+          wx.showToast({ title: '没听清，再说一次', icon: 'none' })
+          return
+        }
+        // 追加到已有内容后面，避免覆盖用户已输入的文字
+        const cur = String(this.data.input || '')
+        this.setData({ input: cur ? `${cur}${text}` : text })
+      }
+      manager.onError = (err) => {
+        this.setData({ recording: false })
+        const msg = (err && err.retcode === -30011) ? '录音时间太短' : '语音识别失败'
+        wx.showToast({ title: msg, icon: 'none' })
+      }
+      this.recorder = manager
+    } catch (e) {
+      // 插件未配置时静默降级：不显示语音按钮
+      this.recorder = null
+    }
+  },
+
+  toggleVoiceMode() {
+    if (!this.data.voiceMode && !this.recorder) {
+      wx.showToast({ title: '语音输入需先配置同声传译插件', icon: 'none' })
+      return
+    }
+    this.setData({ voiceMode: !this.data.voiceMode })
+  },
+
+  startRecord() {
+    if (!this.recorder) return
+    this.setData({ recording: true })
+    try {
+      this.recorder.start({ duration: 60000, lang: 'zh_CN' })
+    } catch (e) {
+      this.setData({ recording: false })
+      wx.showToast({ title: '录音启动失败', icon: 'none' })
+    }
+  },
+
+  stopRecord() {
+    if (!this.recorder || !this.data.recording) return
+    try { this.recorder.stop() } catch (e) { /* ignore */ }
+  },
+
+  cancelRecord() {
+    if (!this.recorder) return
+    this.setData({ recording: false })
+    try { this.recorder.stop() } catch (e) { /* ignore */ }
+  },
+
+  // ─────────────────────────── 长按消息菜单 ───────────────────────────
+
+  onBubbleTouchStart(e) {
+    const index = Number(e.currentTarget.dataset.index)
+    this._touchStart = Date.now()
+    this._touchIndex = index
+    this._longPressTimer = setTimeout(() => {
+      this._longPressTimer = null
+      wx.vibrateShort({ type: 'light' })
+      const msg = this.data.messages[index] || {}
+      this.setData({
+        menuVisible: true,
+        longPressIndex: index,
+        menuIndex: index,
+        menuMessage: { images: msg.images || [] }
+      })
+    }, 550)
+  },
+
+  onBubbleTouchMove() {
+    // 滑动即视为非长按（用户可能在滚动列表）
+    this.clearLongPressTimer()
+  },
+
+  onBubbleTouchEnd() {
+    this.clearLongPressTimer()
+    if (this.data.longPressIndex >= 0) {
+      this.setData({ longPressIndex: -1 })
+    }
+  },
+
+  clearLongPressTimer() {
+    if (this._longPressTimer) {
+      clearTimeout(this._longPressTimer)
+      this._longPressTimer = null
+    }
+  },
+
+  hideMenu() {
+    this.setData({ menuVisible: false, longPressIndex: -1 })
+  },
+
+  onMenuAction(e) {
+    const act = e.currentTarget.dataset.act
+    const idx = this.data.menuIndex
+    const msg = this.data.messages[idx]
+    if (!msg && act !== 'share') {
+      this.hideMenu()
+      return
+    }
+
+    switch (act) {
+      case 'copy':
+        wx.setClipboardData({
+          data: msg.content || '',
+          success: () => wx.showToast({ title: '已复制', icon: 'none' })
+        })
+        this.hideMenu()
+        break
+      case 'copyCode': {
+        // 只复制最后一段代码：多数场景用户想要的是刚生成的那段
+        const codes = (msg.blocks || []).filter((b) => b.type === 'code')
+        if (!codes.length) {
+          wx.showToast({ title: '这条没有代码', icon: 'none' })
+          this.hideMenu()
+          return
+        }
+        wx.setClipboardData({
+          data: codes[codes.length - 1].code,
+          success: () => wx.showToast({ title: '代码已复制', icon: 'none' })
+        })
+        this.hideMenu()
+        break
+      }
+      case 'share':
+        // 触发系统转发：onShareAppMessage 会读取 menuIndex
+        wx.showShareMenu({ withShareTicket: false })
+        this.hideMenu()
+        wx.showToast({ title: '点右上角「···」转发', icon: 'none' })
+        break
+      case 'regen':
+        this.hideMenu()
+        this.regenerate(idx)
+        break
+      case 'saveImage':
+        this.hideMenu()
+        this.saveImages(msg.images || [])
+        break
+      case 'delete':
+        this.hideMenu()
+        this.deleteMessage(idx)
+        break
+      default:
+        this.hideMenu()
+    }
+  },
+
+  /**
+   * 重新生成：删掉这条 AI 回答及其后的消息，用上一条用户消息重发。
+   *
+   * 纯本地操作 + 复用对话接口：服务端历史里旧回答仍保留，但会话上下文
+   * 由服务端记忆接管，重新生成的结果会以新消息追加，不影响后续对话。
+   */
+  async regenerate(idx) {
+    if (this.data.sending) {
+      wx.showToast({ title: '正在生成，请先停止', icon: 'none' })
+      return
+    }
+    const messages = this.data.messages
+    // 向前找最近的用户消息
+    let userIdx = -1
+    for (let i = idx; i >= 0; i -= 1) {
+      if (messages[i] && messages[i].role === 'user') { userIdx = i; break }
+    }
+    if (userIdx < 0) {
+      wx.showToast({ title: '找不到对应的提问', icon: 'none' })
+      return
+    }
+    const prompt = messages[userIdx].content || ''
+    if (!prompt) return
+
+    // 截断到该用户消息之前（不含它）：send() 会把这条提问重新追加，
+    // 若保留原消息会出现两个一模一样的提问气泡
+    const kept = messages.slice(0, userIdx)
+    this.setData({ messages: kept }, () => {
+      this.setData({ input: prompt })
+      this.send()
+    })
+  },
+
+  /**
+   * 删除这条：仅本地移除（不改服务端历史）。
+   * 用 splice 后重新 setData 整数组，避免 wx:key=index 引起的错位。
+   */
+  deleteMessage(idx) {
+    const messages = this.data.messages.slice()
+    if (idx < 0 || idx >= messages.length) return
+    messages.splice(idx, 1)
+    this.setData({ messages }, () => this.scrollBottom())
+    wx.showToast({ title: '已删除', icon: 'none' })
+  },
+
+  // ─────────────────────────── 代码与图片 ───────────────────────────
+
+  copyCode(e) {
+    const index = Number(e.currentTarget.dataset.index)
+    const bi = Number(e.currentTarget.dataset.bi)
+    const msg = this.data.messages[index]
+    const blk = msg && msg.blocks && msg.blocks[bi]
+    if (!blk || !blk.code) return
+    wx.setClipboardData({
+      data: blk.code,
+      success: () => wx.showToast({ title: '已复制', icon: 'none' })
+    })
+  },
+
+  previewImage(e) {
+    const url = e.currentTarget.dataset.url
+    const index = Number(e.currentTarget.dataset.index)
+    const msg = this.data.messages[index] || {}
+    const urls = (msg.images && msg.images.length) ? msg.images : [url]
+    wx.previewImage({ current: url, urls })
+  },
+
+  onImageLongPress(e) {
+    const url = e.currentTarget.dataset.url
+    if (!url) return
+    wx.showActionSheet({
+      itemList: ['保存到相册', '预览图片'],
+      success: (res) => {
+        if (res.tapIndex === 0) this.saveImages([url])
+        if (res.tapIndex === 1) wx.previewImage({ current: url, urls: [url] })
+      },
+      fail: () => { /* 用户取消 */ }
+    })
+  },
+
+  /**
+   * 保存图片到相册。
+   * 需要 scope.writePhotosAlbum 授权：拒绝过则引导去设置页重新打开，
+   * 否则会静默失败、用户不知道为什么存不下。
+   */
+  saveImages(urls) {
+    if (!urls || !urls.length) {
+      wx.showToast({ title: '没有可保存的图片', icon: 'none' })
+      return
+    }
+    const url = urls[0]
+    wx.showLoading({ title: '保存中…' })
+    wx.downloadFile({
+      url,
+      success: (res) => {
+        if (res.statusCode !== 200) {
+          wx.hideLoading()
+          wx.showToast({ title: '下载失败', icon: 'none' })
+          return
+        }
+        wx.saveImageToPhotosAlbum({
+          filePath: res.tempFilePath,
+          success: () => {
+            wx.hideLoading()
+            wx.showToast({ title: '已保存到相册', icon: 'none' })
+          },
+          fail: (err) => {
+            wx.hideLoading()
+            const msg = String((err && err.errMsg) || '')
+            if (msg.indexOf('auth deny') >= 0 || msg.indexOf('authorize') >= 0) {
+              wx.showModal({
+                title: '需要相册权限',
+                content: '请在设置中允许保存到相册',
+                confirmText: '去设置',
+                success: (r) => { if (r.confirm) wx.openSetting() }
+              })
+            } else {
+              wx.showToast({ title: '保存失败', icon: 'none' })
+            }
+          }
+        })
+      },
+      fail: () => {
+        wx.hideLoading()
+        wx.showToast({ title: '下载失败', icon: 'none' })
+      }
+    })
   }
 })
