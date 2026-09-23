@@ -1,24 +1,62 @@
 <!--pages/chat/chat.wxml-->
 <view class="page">
   <scroll-view class="list" scroll-y="{{true}}" scroll-into-view="{{scrollToBottom}}" scroll-with-animation="{{true}}">
-    <view wx:if="{{!messages.length}}" class="empty">
-      发一条消息试试
+    <view wx:if="{{!messages.length && !quickVisible}}" class="empty">
+      <view class="empty-title">有什么可以帮你的？</view>
+      <view class="empty-sub">试试下面的快捷指令，或直接输入</view>
     </view>
 
     <block wx:for="{{messages}}" wx:key="index">
-      <view class="msg {{item.role}}">
-        <view class="bubble {{item.role}}">
+      <view id="msg-{{index}}" class="msg {{item.role}}">
+        <view
+          class="bubble {{item.role}} {{longPressIndex === index ? 'pressed' : ''}}"
+          data-index="{{index}}"
+          bindtouchstart="onBubbleTouchStart"
+          bindtouchend="onBubbleTouchEnd"
+          bindtouchmove="onBubbleTouchMove"
+        >
           <!-- 思维链（thinking）绝不展示原文：模型的思考过程会复述系统提示词、
                暴露内部指令与服务端信息（实测出现过「渠道约束：小程序」等条款原文）。
                终端用户只需知道"在思考"，故统一显示占位文案。 -->
           <block wx:if="{{item.role === 'ai' && item.thinking && !item.done}}">
             <view class="think">思考中…</view>
           </block>
-          <rich-text wx:if="{{item.role === 'ai' && item.nodes}}" class="content md" nodes="{{item.nodes}}"></rich-text>
-          <view wx:else class="content">{{item.content}}</view>
-          <block wx:if="{{item.role === 'ai' && !item.done && !item.content}}">
-            <view class="typing">思考中…</view>
+
+          <!-- 按块渲染：文本走 rich-text，代码块/图片用原生组件以支持交互 -->
+          <block wx:for="{{item.blocks}}" wx:for-item="blk" wx:for-index="bi" wx:key="bi">
+            <rich-text wx:if="{{blk.type === 'text'}}" class="content md" nodes="{{blk.html}}"></rich-text>
+
+            <view wx:elif="{{blk.type === 'code'}}" class="code-block">
+              <view class="code-head">
+                <text class="code-lang">{{blk.lang || 'code'}}</text>
+                <text wx:if="{{blk.open}}" class="code-open">生成中…</text>
+                <view
+                  wx:else
+                  class="code-copy"
+                  data-index="{{index}}"
+                  data-bi="{{bi}}"
+                  catchtap="copyCode"
+                >复制</view>
+              </view>
+              <scroll-view class="code-body" scroll-x="{{true}}">
+                <text class="code-text" user-select="{{true}}">{{blk.code}}</text>
+              </scroll-view>
+            </view>
+
+            <image
+              wx:elif="{{blk.type === 'image'}}"
+              class="md-image"
+              src="{{blk.url}}"
+              mode="widthFix"
+              lazy-load="{{true}}"
+              data-url="{{blk.url}}"
+              data-index="{{index}}"
+              bindtap="previewImage"
+              bindlongpress="onImageLongPress"
+            />
           </block>
+
+          <view wx:if="{{item.role === 'ai' && !item.done && !item.content}}" class="typing">思考中…</view>
         </view>
       </view>
     </block>
@@ -26,21 +64,76 @@
 
   <view wx:if="{{statusText}}" class="status">{{statusText}}</view>
 
+  <!-- 快捷指令面板 -->
+  <view wx:if="{{quickVisible}}" class="quick-panel">
+    <view class="quick-head">
+      <text class="quick-title">快捷指令</text>
+      <text class="quick-close" catchtap="toggleQuick">收起</text>
+    </view>
+    <view class="quick-list">
+      <view
+        wx:for="{{QUICK_PROMPTS}}"
+        wx:key="index"
+        class="quick-item"
+        data-text="{{item}}"
+        catchtap="useQuickPrompt"
+      >{{item}}</view>
+    </view>
+  </view>
+
   <view class="composer">
-    <input
-      class="input"
-      value="{{input}}"
-      placeholder="输入消息…"
-      bindinput="onInput"
-      bindconfirm="send"
-      confirm-type="send"
-      disabled="{{sending}}"
-    />
-    <block wx:if="{{sending}}">
-      <button class="btn stop" size="mini" bindtap="stop">停止</button>
-    </block>
-    <block wx:else>
-      <button class="btn" size="mini" type="primary" bindtap="send">发送</button>
-    </block>
+    <view class="composer-row">
+      <view class="icon-btn" catchtap="toggleQuick">
+        <text class="icon-text">⚡</text>
+      </view>
+
+      <!-- 语音与键盘输入互斥：避免"边说边改"造成内容错乱 -->
+      <block wx:if="{{!voiceMode}}">
+        <input
+          class="input"
+          value="{{input}}"
+          placeholder="输入消息…"
+          bindinput="onInput"
+          bindconfirm="send"
+          confirm-type="send"
+          disabled="{{sending}}"
+          adjust-position="{{true}}"
+        />
+      </block>
+      <block wx:else>
+        <view
+          class="voice-btn {{recording ? 'recording' : ''}}"
+          bindtouchstart="startRecord"
+          bindtouchend="stopRecord"
+          bindtouchcancel="cancelRecord"
+        >
+          <text class="voice-text">{{recording ? '松开 发送' : '按住 说话'}}</text>
+        </view>
+      </block>
+
+      <view class="icon-btn" catchtap="toggleVoiceMode">
+        <text class="icon-text">{{voiceMode ? '⌨' : '🎙'}}</text>
+      </view>
+
+      <block wx:if="{{sending}}">
+        <button class="btn stop" size="mini" bindtap="stop">停止</button>
+      </block>
+      <block wx:else>
+        <button class="btn" size="mini" type="primary" bindtap="send">发送</button>
+      </block>
+    </view>
+  </view>
+
+  <!-- 长按消息菜单 -->
+  <view wx:if="{{menuVisible}}" class="mask" bindtap="hideMenu"></view>
+  <view wx:if="{{menuVisible}}" class="action-sheet">
+    <view class="as-title">消息操作</view>
+    <view class="as-item" data-act="copy" catchtap="onMenuAction">复制全文</view>
+    <view class="as-item" data-act="copyCode" catchtap="onMenuAction">复制代码</view>
+    <view class="as-item" data-act="share" catchtap="onMenuAction">分享给好友</view>
+    <view class="as-item" data-act="regen" catchtap="onMenuAction">重新生成</view>
+    <view wx:if="{{menuMessage.images.length}}" class="as-item" data-act="saveImage" catchtap="onMenuAction">保存图片</view>
+    <view class="as-item danger" data-act="delete" catchtap="onMenuAction">删除这条</view>
+    <view class="as-cancel" catchtap="hideMenu">取消</view>
   </view>
 </view>

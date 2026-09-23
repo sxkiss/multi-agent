@@ -83,6 +83,12 @@ const api = {
   },
 
   // ---- 会话 ----
+  // 注意：/api/chat/history 返回的是「会话列表」（[{session_id,title,...}]），
+  // 不是某个会话的消息；某会话的消息要用 /api/chat/messages。
+  // 早期小程序误用 history 取消息，导致每次刷新历史都是空白。
+  messages(sessionId) {
+    return request({ url: '/api/chat/messages', data: { session_id: sessionId } })
+  },
   history(params) {
     return request({ url: '/api/chat/history', data: params })
   },
