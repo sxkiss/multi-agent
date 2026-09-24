@@ -6,18 +6,31 @@
 // 因此统一用 X-Client-* 自定义头声明来源，供服务端识别渠道、做访问控制。
 const { baseUrl, timeout } = require('./config.js')
 
-const app = getApp()
+/**
+ * 延迟获取 App 实例。
+ * 模块顶层直接 getApp() 在页面尚未初始化、或单元测试环境下会抛错，
+ * 而 request.js 被多个模块依赖，一处抛错会导致整条依赖链加载失败。
+ * 改为调用时才取，取不到则退化为读本地 token（行为不变）。
+ */
+function appInstance() {
+  try {
+    return (typeof getApp === 'function' ? getApp() : null) || null
+  } catch (e) {
+    return null
+  }
+}
 
 /** 渠道元信息头：服务端据此识别请求来源（小程序 / 网页 / CLI） */
 function clientHeaders() {
   return {
     'X-Client-Type': 'miniprogram',
-    'X-Client-Version': '1.0.2',
+    'X-Client-Version': '1.1.0',
     'X-Client-Appid': 'wxbb9e77f84a643da8'
   }
 }
 
 function authHeader() {
+  const app = appInstance()
   const token = (app && app.globalData && app.globalData.token) || wx.getStorageSync('token') || ''
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
@@ -101,6 +114,20 @@ const api = {
   },
   status(sessionId) {
     return request({ url: '/api/chat/status', data: { session_id: sessionId } })
+  },
+
+  // ---- 用户数据（服务端权威存储，见 utils/store.js）----
+  // 服务端 /api/mp/profile：GET 拉全量；POST 按 action 执行签到/更新/导入。
+  // 身份由 Bearer token 决定，不接受客户端传 user_key。
+  mpProfile(action, payload) {
+    if (action) {
+      return request({
+        url: '/api/mp/profile',
+        method: 'POST',
+        data: Object.assign({ action }, payload || {})
+      })
+    }
+    return request({ url: '/api/mp/profile' })
   },
 
   // ---- 元信息 ----

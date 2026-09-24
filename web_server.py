@@ -3461,6 +3461,124 @@ async def api_chat_messages(request: Request):
 
 
 # ============================================================
+# 小程序用户数据（服务端权威存储）
+# ============================================================
+# 小程序本地存储在清缓存 / 换设备时会丢，签到这类有积累价值的数据
+# 必须落服务端。身份来自 token 的 sub（wx:<openid>），与用户工作目录、
+# 会话 ID 共用同一把钥匙 —— 微信侧（clawbot）将来接入时复用同一 user_key
+# 即可共享数据与会话。
+_MP_STORE = None
+
+
+def _mp_store():
+    """惰性初始化：避免 import 期就创建目录（测试环境可能无写权限）。"""
+    global _MP_STORE
+    if _MP_STORE is None:
+        from mp_store import MpStore
+        _MP_STORE = MpStore(os.path.join(BASE_DIR, "workspace", "users"))
+    return _MP_STORE
+
+
+def _mp_user_key(request: Request) -> str:
+    """从 Bearer token 解析用户键；非微信登录态返回空串。
+
+    不接受客户端传入的 user_key —— 身份只能来自服务端签发的 token，
+    否则任何调用方都能读写他人数据。
+    """
+    from auth import extract_token, verify_token, wx_session_id
+    token = extract_token(request)
+    if not token:
+        return ""
+    payload = verify_token(BASE_DIR, token)
+    if not payload:
+        return ""
+    sub = str(payload.get("sub") or "")
+    if not sub.startswith("wx:"):
+        return ""
+    openid = sub[3:]
+    if not openid:
+        return ""
+    return wx_session_id(openid)
+
+
+def _mp_guard(request: Request):
+    """统一身份校验：返回 (user_key, error_response)。"""
+    user_key = _mp_user_key(request)
+    if not user_key:
+        return "", JSONResponse(
+            {"status": False, "msg": "未授权：请重新登录", "code": 401},
+            status_code=401,
+        )
+    return user_key, None
+
+
+@app.get("/api/mp/profile")
+async def api_mp_profile_get(request: Request):
+    """拉取用户全量数据（签到 / 资料 / 设置 / 统计）。"""
+    user_key, err = _mp_guard(request)
+    if err:
+        return err
+    try:
+        store = _mp_store()
+        doc = store.touch_visit(user_key)
+        return JSONResponse(public.return_data(True, data={
+            "doc": doc,
+            "today": store.today(),
+        }))
+    except Exception:
+        logger.warning("[mp_profile] 读取失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "读取失败"), status_code=500)
+
+
+@app.post("/api/mp/profile")
+async def api_mp_profile_post(request: Request):
+    """写操作：签到 / 资料 / 设置。
+
+    请求体 {"action": "checkin"} 或 {"action": "update", "patch": {...}}。
+    签到由服务端判定日期与连击（客户端时区不可信）。
+    """
+    user_key, err = _mp_guard(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        return JSONResponse(public.returnMsg(False, "参数错误"))
+
+    action = str(body.get("action") or "").strip()
+    try:
+        store = _mp_store()
+        if action == "checkin":
+            r = store.checkin(user_key)
+            return JSONResponse(public.return_data(True, data={
+                "already": r["already"],
+                "streak": r["streak"],
+                "total": r["total"],
+                "last": r["last"],
+                "doc": r["doc"],
+                "today": store.today(),
+            }))
+        if action == "update":
+            patch = body.get("patch")
+            if not isinstance(patch, dict):
+                return JSONResponse(public.returnMsg(False, "缺少 patch"))
+            doc = store.update(user_key, patch)
+            return JSONResponse(public.return_data(True, data={"doc": doc}))
+        if action == "import":
+            # 首次迁移：本地已有数据并入服务端，只填空不覆盖（见 mp_store.import_data）
+            data_in = body.get("data")
+            if not isinstance(data_in, dict):
+                return JSONResponse(public.returnMsg(False, "缺少 data"))
+            doc = store.import_data(user_key, data_in)
+            return JSONResponse(public.return_data(True, data={"doc": doc}))
+        return JSONResponse(public.returnMsg(False, "未知 action"))
+    except Exception:
+        logger.warning("[mp_profile] 写入失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "保存失败"), status_code=500)
+
+
 @app.post("/api/chat/delete")
 async def api_chat_delete(request: Request):
     params = dict(request.query_params)
