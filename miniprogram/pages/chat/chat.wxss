@@ -42,7 +42,7 @@
   max-width: 78%;
   padding: 20rpx 24rpx;
   border-radius: 20rpx;
-  font-size: 28rpx;
+  /* 字号继承自页面根节点的 font-size（「我的」页可调），不写死 */
   line-height: 1.65;
   word-break: break-word;
   white-space: pre-wrap;

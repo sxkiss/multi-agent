@@ -1,5 +1,5 @@
 <!--pages/chat/chat.wxml-->
-<view class="page">
+<view class="page" style="font-size:{{fontPx}}rpx">
   <scroll-view class="list" scroll-y="{{true}}" scroll-into-view="{{scrollToBottom}}" scroll-with-animation="{{true}}">
     <view wx:if="{{!messages.length && !quickVisible}}" class="empty">
       <view class="empty-title">有什么可以帮你的？</view>
