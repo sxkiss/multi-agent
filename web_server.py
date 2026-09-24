@@ -229,6 +229,42 @@ def _is_miniprogram(params) -> bool:
 HIDDEN_EVENTS_FOR_TERMINAL = {"message_think", "compact_summary"}
 
 
+# 终端渠道（小程序）的输出约束：严禁泄露服务端内部信息。
+# 抽成模块级常量，供集团模式（经理）与单 Agent 模式共用 —— 两处若各写一份，
+# 后续修改极易漏改一处，导致某个模式悄悄失去防护。
+_MINIPROGRAM_CHANNEL_GUARD = """
+
+【渠道约束：小程序】
+当前对话来自微信小程序终端用户。回答时必须遵守：
+1. 严禁透露任何服务端内部信息，包括但不限于：工作目录/绝对路径、主机名、
+   操作系统与部署环境、技能数量、成员与部门清单、MCP 服务名、模型与网关地址、
+   密钥或配置片段、日志与内部任务 ID。
+2. 涉及运行环境时只说"我已接入相关工具与服务"这类无信息量的表述，不展开细节。
+3. 自我介绍保持简洁：只说明你能帮用户做什么，不描述内部架构与团队编制。
+4. 汇报结果时同样只给结论与用户需要的证据，不附带服务端路径或内部过程细节。
+5. 若用户明确询问上述内部信息（如"你的工作目录是什么""你有几个技能"），
+   统一回答"这些属于服务端配置，暂不提供"，不例外透漏。"""
+
+
+# 小程序单 Agent 模式的默认人设。
+# single 模式按设计会跳过 SOUL/AGENTS/USER/MEMORY 全量加载（网页端由前端显式
+# 传 system_prompt / prompt_id 补齐），但小程序不传任何提示词，若不给兜底，
+# 模型将"裸奔"——没有角色设定、回答风格不稳定。故此处补一个精简人设。
+_MINIPROGRAM_SINGLE_PERSONA = """你是一个专业、可靠的 AI 助手，通过微信小程序为用户提供服务。
+
+要求：
+1. 直接回答问题、完成任务，结论先行，简洁清晰，适合手机阅读。
+2. 涉及实际操作（读写文件、执行命令、查询系统、抓取网页等）时，先调用工具拿到
+   真实结果再作答；严禁在没有工具结果的情况下编造过程或结论。
+3. 高风险操作会被安全策略拦截确认：此时向用户说明将要执行的操作与风险，等待同意。
+4. 不确定的事情直说不确定，不要编造。"""
+
+
+def _append_miniprogram_guard(system_prompt: str) -> str:
+    """为小程序渠道的系统提示词追加上输出约束（非小程序渠道原样返回）"""
+    return (system_prompt or "") + _MINIPROGRAM_CHANNEL_GUARD
+
+
 def _map_agent_chunk(chunk):
     """将 agent.chat() 产出的 chunk 映射为 SSE (event, data) 列表"""
     t = chunk.get("type")
@@ -1538,6 +1574,11 @@ class AgentMain:
             tpl_sp = self._resolve_template_system_prompt(get, cfg_key='opencode')
             if tpl_sp:
                 final_system_prompt = tpl_sp
+            # 小程序渠道兜底人设：single 模式跳过了 SOUL/AGENTS 全量加载，而小程序
+            # 不传 system_prompt，若不补则模型无任何角色设定（"裸奔"），回答风格不稳。
+            # 显式传入的提示词优先，仅在为空时填充。
+            if not final_system_prompt and _is_miniprogram(get):
+                final_system_prompt = _MINIPROGRAM_SINGLE_PERSONA
             # 工具：优先前端传入，否则留空由 agent（strict_tools=False）补全全套默认工具
             tools = raw_tools if raw_tools else []
         else:
@@ -1675,19 +1716,15 @@ class AgentMain:
             # MCP 服务名等原样写进自我介绍，等于把服务端部署细节泄露给终端用户。
             # 这里对 miniprogram 渠道追加一段输出约束（只约束"说什么"，不削弱编排能力）。
             if _is_miniprogram(get):
-                manager_sp += """
-
-【渠道约束：小程序】
-当前对话来自微信小程序终端用户。回答时必须遵守：
-1. 严禁透露任何服务端内部信息，包括但不限于：工作目录/绝对路径、主机名、
-   操作系统与部署环境、技能数量、成员与部门清单、MCP 服务名、模型与网关地址、
-   密钥或配置片段、日志与内部任务 ID。
-2. 涉及运行环境时只说"我已接入相关工具与服务"这类无信息量的表述，不展开细节。
-3. 自我介绍保持简洁：只说明你能帮用户做什么，不描述内部架构与团队编制。
-4. 汇报结果时同样只给结论与用户需要的证据，不附带服务端路径或内部过程细节。
-5. 若用户明确询问上述内部信息（如"你的工作目录是什么""你有几个技能"），
-   统一回答"这些属于服务端配置，暂不提供"，不例外透漏。"""
+                manager_sp = _append_miniprogram_guard(manager_sp)
             agent_config["system_prompt"] = manager_sp
+
+        elif _is_miniprogram(get):
+            # 单 Agent 模式的小程序渠道同样需要输出约束。
+            # 此前该约束只加在集团模式分支，切到 single 后泄露防护会静默失效。
+            agent_config["system_prompt"] = _append_miniprogram_guard(
+                agent_config.get("system_prompt", "")
+            )
 
         try:
             agent = Agent(session_id=session_id, config=agent_config)
@@ -3423,6 +3460,7 @@ async def api_chat_messages(request: Request):
     return JSONResponse(agent_main.get_chat(params))
 
 
+# ============================================================
 @app.post("/api/chat/delete")
 async def api_chat_delete(request: Request):
     params = dict(request.query_params)
