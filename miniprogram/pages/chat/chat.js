@@ -2,6 +2,8 @@
 const { api } = require('../../utils/request.js')
 const { subscribe } = require('../../utils/sse.js')
 const { parseMarkdown, extractImages } = require('../../utils/markdown.js')
+const auth = require('../../utils/auth.js')
+const store = require('../../utils/store.js')
 
 // SSE 事件类型 → 页面处理
 const MAX_RESUME = 5
@@ -47,6 +49,7 @@ Page({
     streaming: false,
     statusText: '',
     scrollToBottom: '',
+    fontPx: 30,        // 正文字号，由「我的」页设置（utils/store.js）
 
     // 快捷指令
     QUICK_PROMPTS,
@@ -72,8 +75,21 @@ Page({
       wx.setStorageSync('session_id', sid)
     }
     this.setData({ sessionId: sid })
+    this.applyFontSize()
     this.initRecorder()
     this.checkAuthAndLoad()
+  },
+
+  onShow() {
+    // 字号可能刚在「我的」页被改过，每次显示时同步一次
+    this.applyFontSize()
+  },
+
+  /** 读取本地字号设置并应用（与「我的」页共用 utils/store.js） */
+  applyFontSize() {
+    const s = store.getSettings()
+    const px = store.FONT_SIZES[s.fontSize] || store.FONT_SIZES.mid
+    if (px !== this.data.fontPx) this.setData({ fontPx: px })
   },
 
   onUnload() {
@@ -95,10 +111,10 @@ Page({
       const summary = msg.content.replace(/\s+/g, ' ').slice(0, 60)
       return {
         title: summary || '来自多智能体协作助手',
-        path: '/pages/chat/chat'
+        path: '/pages/index/index'
       }
     }
-    return { title: '多智能体协作助手', path: '/pages/chat/chat' }
+    return { title: '多智能体协作助手', path: '/pages/index/index' }
   },
 
   /** 允许"分享到朋友圈"仅安卓有效，这里保留转发好友能力 */
@@ -122,40 +138,21 @@ Page({
   },
 
   /**
-   * 微信登录：wx.login 取 code → 服务端换 openid + 绑定会话。
-   * 成功后把服务端返回的 session_id 持久化，保证同一用户始终回到同一会话。
+   * 微信登录：核心逻辑由 utils/auth.js 共享（首页也要用，避免两份实现走样）。
+   * 本页只负责失败时的页面引导：带上原因跳密码登录页。
    * @returns {boolean} 是否登录成功
    */
   async wxLogin() {
-    try {
-      const loginRes = await new Promise((resolve, reject) => {
-        wx.login({ success: resolve, fail: reject })
-      })
-      if (!loginRes.code) {
-        wx.redirectTo({ url: '/pages/login/login' })
-        return false
-      }
-
-      const res = await api.wxLogin(loginRes.code)
-      if (!res.ok || !res.data || !res.data.token) {
-        // 带上失败原因跳登录页：否则用户只看到登录框，不知道微信登录为何失败
-        const reason = encodeURIComponent(res.msg || (res.unauthorized ? '微信登录未通过' : '网络异常'))
-        wx.redirectTo({ url: `/pages/login/login?reason=${reason}` })
-        return false
-      }
-
-      const app = getApp()
-      app.setToken(res.data.token)
+    const r = await auth.ensureLogin()
+    if (r.ok) {
       // 关键：用服务端绑定的会话 ID，实现"换设备也能续聊"
-      if (res.data.session_id) {
-        wx.setStorageSync('session_id', res.data.session_id)
-        this.setData({ sessionId: res.data.session_id })
-      }
+      if (r.sessionId) this.setData({ sessionId: r.sessionId })
       return true
-    } catch (e) {
-      wx.redirectTo({ url: '/pages/login/login' })
-      return false
     }
+    // 带上失败原因跳登录页：否则用户只看到登录框，不知道微信登录为何失败
+    const reason = encodeURIComponent(r.reason || '微信登录未通过')
+    wx.redirectTo({ url: `/pages/login/login?reason=${reason}` })
+    return false
   },
 
   async loadHistory() {
@@ -236,7 +233,9 @@ Page({
     const res = await api.start({
       message: text,
       session_id: this.data.sessionId,
-      mode: 'group'
+      // 单 Agent 模式：Agent 直接干活、使用全套工具，不经「经理」中转一层。
+      // 服务端会为小程序渠道补默认人设与输出约束（见 _MINIPROGRAM_SINGLE_PERSONA）。
+      mode: 'single'
     })
 
     if (!res.ok) {
