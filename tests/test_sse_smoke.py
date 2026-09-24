@@ -332,5 +332,36 @@ class TestSSEClientTimeout(unittest.TestCase):
                            "SSE 超时必须大于微信默认 60000ms，否则仍会被提前断开")
 
 
+class TestMiniprogramChannelGuard(unittest.TestCase):
+    """小程序渠道的输出约束必须两种模式都生效
+
+    此前该约束只加在集团模式（strict_mode）分支，切到单 Agent 模式后
+    泄露防护会静默失效——模型可以把工作目录、技能数、部门清单原样说出来。
+    """
+
+    def test_guard_appended_and_idempotent_shape(self):
+        out = W._append_miniprogram_guard("BASE")
+        self.assertTrue(out.startswith("BASE"), "应在原提示词之后追加，不覆盖")
+        self.assertIn("【渠道约束：小程序】", out)
+        self.assertIn("严禁透露任何服务端内部信息", out)
+
+    def test_guard_handles_empty_prompt(self):
+        """小程序 single 模式若没兜底人设，原提示词可能为空，拼接不得报错"""
+        out = W._append_miniprogram_guard("")
+        self.assertIn("【渠道约束：小程序】", out)
+        out_none = W._append_miniprogram_guard(None)
+        self.assertIn("【渠道约束：小程序】", out_none)
+
+    def test_single_persona_exists_and_forbids_fabrication(self):
+        p = W._MINIPROGRAM_SINGLE_PERSONA
+        self.assertTrue(p.strip(), "小程序 single 模式需要兜底人设，否则模型无角色设定")
+        self.assertIn("工具", p, "人设应要求先调用工具再作答")
+
+    def test_guard_is_shared_constant(self):
+        """约束必须是模块级常量：两处各写一份会漏改"""
+        self.assertTrue(hasattr(W, "_MINIPROGRAM_CHANNEL_GUARD"))
+        self.assertIn("渠道约束", W._MINIPROGRAM_CHANNEL_GUARD)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
