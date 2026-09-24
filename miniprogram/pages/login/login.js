@@ -76,11 +76,12 @@ Page({
     }
   },
 
-  /** 登录成功后回聊天页：优先返回，失败则重开（兼容直接进入登录页的场景） */
+  /** 登录成功后进首页：优先返回，失败则重开（兼容直接进入登录页的场景） */
   goChat() {
     wx.navigateBack({
       fail() {
-        wx.reLaunch({ url: '/pages/chat/chat' })
+        // 首页是 tabBar 页，只能用 switchTab/reLaunch 进入
+        wx.reLaunch({ url: '/pages/index/index' })
       }
     })
   },

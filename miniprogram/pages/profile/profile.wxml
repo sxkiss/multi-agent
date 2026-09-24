@@ -1,0 +1,49 @@
+<!--pages/profile/profile.wxml——设置页（tab「我的」）-->
+<view class="page" style="font-size:{{fontPx}}rpx">
+
+  <view class="card">
+    <view class="card-head"><text class="card-title">显示</text></view>
+    <view class="row">
+      <text class="row-label">正文字号</text>
+      <view class="seg">
+        <view
+          wx:for="{{fontOptions}}"
+          wx:key="key"
+          class="seg-item {{fontSize === item.key ? 'on' : ''}}"
+          data-key="{{item.key}}"
+          catchtap="setFontSize"
+        >{{item.label}}</view>
+      </view>
+    </view>
+    <text class="row-hint">影响首页与对话气泡的正文字号</text>
+  </view>
+
+  <view class="card">
+    <view class="card-head"><text class="card-title">存储</text></view>
+    <view class="row" catchtap="clearCache">
+      <text class="row-label">清除缓存</text>
+      <text class="row-value">{{storageSize || '—'}}</text>
+    </view>
+    <text class="row-hint">清除本机缓存，服务端数据会自动恢复</text>
+  </view>
+
+  <view class="card">
+    <view class="row" catchtap="logout">
+      <text class="row-label danger">退出登录</text>
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="row">
+      <text class="row-label">版本</text>
+      <text class="row-value">v{{version}}</text>
+    </view>
+    <view class="row">
+      <text class="row-label">账号</text>
+      <text class="row-value">{{uidMasked}}</text>
+    </view>
+    <text class="row-hint">数据已同步到账号，换设备自动恢复</text>
+  </view>
+
+  <view class="foot">聊天记录与个人数据均保存在服务端</view>
+</view>

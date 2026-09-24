@@ -1,0 +1,79 @@
+/* pages/profile/profile.wxss */
+.page {
+  min-height: 100vh;
+  padding: 24rpx 24rpx 40rpx;
+  box-sizing: border-box;
+  background: #0f1115;
+}
+
+.card {
+  margin-bottom: 24rpx;
+  padding: 28rpx;
+  background: #1a1d24;
+  border-radius: 20rpx;
+}
+
+.card-head {
+  margin-bottom: 16rpx;
+}
+
+.card-title {
+  font-size: 30rpx;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16rpx 0;
+}
+
+.row-label {
+  font-size: 30rpx;
+  color: #e8eaed;
+}
+
+.row-label.danger {
+  color: #f87171;
+}
+
+.row-value {
+  font-size: 26rpx;
+  color: #8b909a;
+}
+
+.row-hint {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #5c616b;
+}
+
+.seg {
+  display: flex;
+  gap: 8rpx;
+}
+
+.seg-item {
+  padding: 8rpx 24rpx;
+  font-size: 26rpx;
+  color: #a8adb8;
+  background: #12141a;
+  border: 1rpx solid #2c303a;
+  border-radius: 12rpx;
+}
+
+.seg-item.on {
+  color: #fff;
+  background: #4a7cf7;
+  border-color: #4a7cf7;
+}
+
+.foot {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #4b5060;
+  text-align: center;
+}
