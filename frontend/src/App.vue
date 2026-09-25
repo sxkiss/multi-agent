@@ -1038,7 +1038,7 @@ function loadConversation(id) {
 // 重进页面时：若该会话的后台任务仍在运行，订阅事件流续播剩余输出
 async function resumeRunningJobIfAny(sessionId, seq) {
   try {
-    const res = await fetch(`/api/chat/status?session_id=${encodeURIComponent(sessionId)}`)
+    const res = await fetch(`/api/chat/status?session_id=${encodeURIComponent(sessionId)}`, authOpts())
     const result = await res.json()
     if (!result.status || !result.data?.running) return
     if (seq !== loadConversationSeq || isSending.value) return
