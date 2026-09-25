@@ -61,7 +61,11 @@ ppt_page.png
 
 # ===== 前端构建产物（旧版本 hash 文件） =====
 static/vue/
-static/js/
+# 目录本身不能被忽略，否则其内部的文件级例外规则不生效（git 限制）
+static/js/*
+# 例外：面板共享鉴权模块是手写源码，非构建产物，必须入库
+# 否则他人 clone 后三个配置面板（claude/opencode/codex）会因缺文件白屏
+!static/js/panel-auth.js
 static/assets/
 skills/*
 !skills/review-agent/

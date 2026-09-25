@@ -523,7 +523,7 @@
 </template>
 <script>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { authOpts } from '../auth.js'
+import { authOpts, authFetch } from '../auth.js'
 
 export default {
   name: 'SettingsDrawer',
@@ -616,7 +616,7 @@ export default {
 
     async function loadSearchConfig() {
       try {
-        const r = await fetch('/api/search/config')
+        const r = await authFetch('/api/search/config')
         const j = await r.json()
         if (j && j.data) {
           searchConfig.value = {
@@ -635,7 +635,7 @@ export default {
       searchSaving.value = true
       searchMsg.value = ''
       try {
-        const r = await fetch('/api/search/config', {
+        const r = await authFetch('/api/search/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ config: JSON.stringify(searchConfig.value) })
@@ -834,7 +834,7 @@ export default {
     const fetchMcpServers = async () => {
       loadingMcp.value = true
       try {
-        const r = await fetch('/api/mcp/servers')
+        const r = await authFetch('/api/mcp/servers')
         const res = await r.json()
         mcpServers.value = res
       } catch {
@@ -849,7 +849,7 @@ export default {
       mcpMsg.value = ''
       mcpMsgErr.value = false
       try {
-        const r = await fetch('/api/mcp/servers/add', {
+        const r = await authFetch('/api/mcp/servers/add', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -881,7 +881,7 @@ export default {
     const removeMcpServer = async (srv) => {
       if (!confirm(`确认移除 MCP server「${srv.name}」？`)) return
       try {
-        const r = await fetch('/api/mcp/servers/remove', {
+        const r = await authFetch('/api/mcp/servers/remove', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: srv.name })
@@ -895,7 +895,7 @@ export default {
     const fetchMcpMarket = async () => {
       loadingMarket.value = true
       try {
-        const r = await fetch('/api/mcp/market')
+        const r = await authFetch('/api/mcp/market')
         const res = await r.json()
         if (res.status) {
           mcpMarket.value = res
@@ -915,7 +915,7 @@ export default {
     const installMarketMcp = async (m) => {
       installingMcpName.value = m.name
       try {
-        const r = await fetch('/api/mcp/servers/install', {
+        const r = await authFetch('/api/mcp/servers/install', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ mcp_id: m.name })
@@ -941,7 +941,7 @@ export default {
     const doHotReload = async () => {
       reloading.value = true
       try {
-        const r = await fetch('/api/hotreload', {
+        const r = await authFetch('/api/hotreload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ target: 'all' })
@@ -965,7 +965,7 @@ export default {
     const fetchCrew = async () => {
       loadingCrew.value = true
       try {
-        const r = await fetch('/api/crew/agents')
+        const r = await authFetch('/api/crew/agents')
         const res = await r.json()
         if (res.status) {
           crewAgents.value = res.data.agents || []
@@ -978,7 +978,7 @@ export default {
       const f = deptForm.value
       if (!f.name.trim() || !f.title.trim()) return
       try {
-        const r = await fetch('/api/crew/dept_save', {
+        const r = await authFetch('/api/crew/dept_save', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: f.name.trim(), title: f.title.trim(), description: f.description.trim() })
@@ -991,7 +991,7 @@ export default {
     }
 
     const deleteDept = (name) => {
-      fetch('/api/crew/dept_delete', {
+      authFetch('/api/crew/dept_delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name })
@@ -1002,7 +1002,7 @@ export default {
       const a = crewAgents.value.find(x => x.name === memberName)
       if (!a) return
       // 复用 save：带上现有字段仅更新部门
-      fetch('/api/crew/save', {
+      authFetch('/api/crew/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1026,7 +1026,7 @@ export default {
       savingCrew.value = true
       crewMsg.value = ''
       try {
-        const r = await fetch('/api/crew/save', {
+        const r = await authFetch('/api/crew/save', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1053,7 +1053,7 @@ export default {
     }
 
     const deleteCrewAgent = (name) => {
-      fetch('/api/crew/delete', {
+      authFetch('/api/crew/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name })
@@ -1089,7 +1089,7 @@ export default {
       installingUrl.value = true
       skillInstallMsg.value = ''
       try {
-        const resp = await fetch('/api/skills/install_url', {
+        const resp = await authFetch('/api/skills/install_url', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url, overwrite: overwriteSkill.value })
@@ -1130,7 +1130,7 @@ export default {
           binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
         }
         const zipB64 = btoa(binary)
-        const resp = await fetch('/api/skills/install', {
+        const resp = await authFetch('/api/skills/install', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ zip_b64: zipB64, overwrite: overwriteSkill.value })
@@ -1146,7 +1146,7 @@ export default {
 
     const uninstallSkill = (skill) => {
       const doDelete = () => {
-        fetch('/api/skills/uninstall', {
+        authFetch('/api/skills/uninstall', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ skill_name: skill.name })
