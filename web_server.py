@@ -2358,7 +2358,7 @@ class AgentMain:
         if not bin_path:
             return public.returnMsg(False, "未定位到 codex 二进制")
         try:
-            proc = subprocess.run(
+            proc = _subp.run(
                 [bin_path, "--version"], capture_output=True, text=True, timeout=10
             )
             ver = (proc.stdout or proc.stderr or "").strip().splitlines()[0] if (proc.stdout or proc.stderr) else ""
