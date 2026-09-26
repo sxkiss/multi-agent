@@ -1014,9 +1014,13 @@ Here is some useful information about the environment you are running in:
     def _sanitize_messages_for_api(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """清理消息列表中非法的 tool_calls，防止 API 返回 400 错误。
 
-        当流式请求中断时，累积的 tool call arguments 可能是截断的 JSON。
-        这些消息被保存到历史后，下次请求会发给 API，导致:
-        "Assistant tool call arguments must be valid JSON" 400 错误。
+        处理两类问题：
+        1. 非法 JSON（含为空）的 tool call arguments —— 截断/空参数会导致
+           "Assistant tool call arguments must be valid JSON" 400 错误。
+        2. assistant 已声明 tool_call 但无配对 tool 结果（悬空声明）——
+           进程被杀/崩溃/续写中断时，"声明先落库、结果来不及回填"会在历史里
+           留下悬空记录，DeepSeek 等严格校验的网关直接以
+           "tool calls and tool results do not match" 拒绝请求。
         """
         # 预扫描：收集所有原始 assistant tool_call 的 ID，用于匹配 tool 结果
         all_tc_ids: set[str] = set()
@@ -1083,6 +1087,70 @@ Here is some useful information about the environment you are running in:
                     continue
 
             sanitized.append(msg)
+
+        # ---- 配对自检：为每个仍存活的 tool_call 补齐缺失的结果 ----
+        # 悬空声明会让 DeepSeek 等严格网关返回 400（tool calls and tool results
+        # do not match），且会随历史永久残留，导致后续每次请求都失败（只能新建会话）。
+        # 这里在发送前补齐合成结果，保证发给 API 的序列自洽。
+        replied_ids = {
+            m.get("tool_call_id")
+            for m in sanitized
+            if m.get("role") == "tool" and m.get("tool_call_id")
+        }
+        missing = valid_tool_call_ids - replied_ids
+        if missing:
+            pending: dict[str, dict] = {
+                tid: {
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "content": [{
+                        "type": "text",
+                        "text": _xml_response(
+                            "error",
+                            "工具未执行：该调用在上一次执行中断（进程退出或服务重启），无可用结果。",
+                        ),
+                    }],
+                }
+                for tid in missing
+            }
+            # 逐块重建：每个 assistant 声明后必须紧跟其全部 tool 结果（按声明顺序）。
+            # 既有的结果原样保留，缺失的用合成结果补齐，保证发给 API 的序列自洽。
+            repaired: list[dict[str, Any]] = []
+            i = 0
+            n = len(sanitized)
+            while i < n:
+                msg = sanitized[i]
+                repaired.append(msg)
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    # 收集紧跟其后的既有 tool 结果
+                    j = i + 1
+                    following: list[dict[str, Any]] = []
+                    while j < n and sanitized[j].get("role") == "tool":
+                        following.append(sanitized[j])
+                        j += 1
+                    by_id = {m.get("tool_call_id"): m for m in following if m.get("tool_call_id")}
+                    used: set[str] = set()
+                    for tc in msg["tool_calls"]:
+                        tid = tc.get("id")
+                        if not tid or tid in used:
+                            continue
+                        result = by_id.get(tid) or pending.pop(tid, None)
+                        if result is not None:
+                            repaired.append(result)
+                            used.add(tid)
+                    # 未被声明匹配的既有结果原样保留（正常历史下不会出现）
+                    for m in following:
+                        if m.get("tool_call_id") not in used:
+                            repaired.append(m)
+                    i = j
+                    continue
+                i += 1
+            repaired.extend(pending.values())  # 兜底：无归属的剩余结果补到末尾
+            logger.warning(
+                "[Sanitize] 补齐 %d 个无结果的 tool_call（工具执行中断残留）: %s",
+                len(missing), sorted(missing)[:5],
+            )
+            return repaired
 
         return sanitized
 
@@ -1353,13 +1421,14 @@ Here is some useful information about the environment you are running in:
 
             m = {"role": reconstructed["role"], "content": content}
             if "tool_calls" in reconstructed:
-                tc = []
-                for c in reconstructed["tool_calls"]:
-                    fn = ((c or {}).get("function") or {})
-                    name = (fn.get("name") or "").strip()
-                    args = (fn.get("arguments") or "").strip()
-                    if name and args:
-                        tc.append(c)
+                # 只要求有函数名即可：无参数的工具（如 get_system_resources）arguments
+                # 可能为空串，此处若一并丢弃，会导致 assistant 声明与其后的 tool 结果
+                # 双双消失，模型看不到"自己调用过该工具"。空参数由
+                # _sanitize_messages_for_api 统一替换为合法空 JSON "{}"。
+                tc = [
+                    c for c in reconstructed["tool_calls"]
+                    if (((c or {}).get("function") or {}).get("name") or "").strip()
+                ]
                 if tc:
                     m["tool_calls"] = tc
             if "tool_call_id" in reconstructed:
