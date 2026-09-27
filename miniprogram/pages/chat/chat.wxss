@@ -64,6 +64,51 @@
   line-height: 1.6;
 }
 
+/* 已连接后的使用说明块：与下方「断开机器人」之间留间距，避免挤在一起 */
+.bot-guide {
+  margin-top: 12rpx;
+  padding: 16rpx 20rpx;
+  background: #f6f7f9;
+  border-radius: 12rpx;
+}
+
+.bot-guide-title {
+  display: block;
+  font-size: 24rpx;
+  font-weight: 600;
+  color: #2f333a;
+  margin-bottom: 4rpx;
+}
+
+/* 末尾提示降级为更弱的灰色，与上面三条步骤区分开 */
+.bot-guide-note {
+  margin-top: 10rpx;
+  color: #8b909a;
+}
+
+/* 第 1 步整行可点（复制关键词）：行内左右布局，右侧是「复制」按钮。
+   点击区域比只给按钮大，手机上更好按。 */
+.bot-guide-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+}
+
+.bot-guide-step {
+  margin-top: 4rpx;
+  flex: 1;
+}
+
+.bot-guide-copy-btn {
+  flex-shrink: 0;
+  padding: 4rpx 16rpx;
+  font-size: 22rpx;
+  color: #2f6fed;
+  border: 1rpx solid #2f6fed;
+  border-radius: 999rpx;
+}
+
 /* 机器人二维码：白底才能被微信识别，不能跟随暗色主题 */
 .bot-qr-wrap {
   display: flex;

@@ -8,6 +8,13 @@ const store = require('../../utils/store.js')
 // SSE 事件类型 → 页面处理
 const MAX_RESUME = 5
 
+/**
+ * 在微信里搜索机器人用的关键词。
+ * 这里不是"链接"：clawbot 走 ilink 通道，是微信内的机器人，没有小程序
+ * appid 也没有可跳转 URL，故只能给出可搜索的名称（见 copyBotName 注释）。
+ */
+const BOT_SEARCH_KEYWORD = 'clawbot'
+
 /** 快捷指令：把高频用法前置，减少手机端输入成本 */
 const QUICK_PROMPTS = [
   '帮我总结这段内容',
@@ -80,6 +87,8 @@ Page({
     botBusyPeer: '',          // 已脱敏的对方标识
     botBusyPreview: '',       // 消息内容预览
     botBusyElapsed: 0,        // 已耗时（秒）
+    // 在微信里搜索机器人用的名称（与 copyBotName 用的常量同源）
+    botSearchName: BOT_SEARCH_KEYWORD,
 
     // 对话区显隐开关：false = 隐藏对话 UI（代码不删，随时可恢复）
     chatHidden: true
@@ -250,6 +259,22 @@ Page({
   /** 临时开关：把隐藏的对话区调出来（chatHidden=false 即可，代码一直在）。 */
   toggleChat() {
     this.setData({ chatHidden: !this.data.chatHidden })
+  },
+
+  /**
+   * 复制机器人名称，供用户去微信里搜索。
+   *
+   * 为什么是"复制"而不是"跳转链接"：clawbot 是微信内的机器人（ilink 通道），
+   * 没有小程序 appid、也没有公众号文章 URL，微信未提供任何可用的跳转 scheme；
+   * 而小程序也无法调起微信客户端的原生搜索页。实测可行的只剩复制关键词——
+   * 用户复制后进微信搜索框粘贴，是当前能力边界内最短的路径。
+   */
+  copyBotName() {
+    wx.setClipboardData({
+      data: BOT_SEARCH_KEYWORD,
+      success: () => wx.showToast({ title: '已复制，去微信粘贴搜索', icon: 'none' }),
+      fail: () => wx.showToast({ title: '复制失败，请长按手动选取', icon: 'none' }),
+    })
   },
 
   /** 读取本地字号设置并应用（与「我的」页共用 utils/store.js） */

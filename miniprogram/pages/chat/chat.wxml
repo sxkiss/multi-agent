@@ -30,7 +30,22 @@
           <text wx:if="{{botBusyPreview}}" class="bot-busy-preview">{{botBusyPreview}}</text>
         </view>
 
-                <text class="bot-hint">你的专属微信机器人已上线。在微信里给它发消息，即可与小程序共享同一条会话</text>
+        <!-- 已连接后的使用说明。
+             这段是必要的：扫码完用户不知道"接下来去哪说话"，最常见的问题是
+             在小程序里等回复、或不知道要在微信里搜什么名字。
+             第 1 条做成可点复制：clawbot 在微信里是机器人（ilink 通道），没有
+             可跳转的 URL/appid，小程序也无法调起微信原生搜索页，因此只能帮
+             用户把关键词放进剪贴板，由他去微信粘贴 —— 这已是当前最短路径。 -->
+        <view class="bot-guide">
+          <text class="bot-guide-title">怎么开始对话</text>
+          <view class="bot-guide-copy" bindtap="copyBotName">
+            <text class="bot-hint bot-guide-step">1. 打开微信，搜索「{{botSearchName}}」</text>
+            <text class="bot-guide-copy-btn">复制</text>
+          </view>
+          <text class="bot-hint">2. 直接发消息即可，它会实时处理并回复你</text>
+          <text class="bot-hint">3. 对话记录与小程序同步，两边是同一条会话</text>
+          <text class="bot-hint bot-guide-note">提示：机器人只回复你在微信里发来的消息；换个微信号扫码会得到一个独立机器人</text>
+        </view>
         <view class="bot-row bot-row-tap" bindtap="disconnectBot">
           <text class="bot-row-label danger">断开机器人</text>
         </view>
