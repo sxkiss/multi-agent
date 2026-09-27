@@ -70,7 +70,8 @@ Page({
     // 本页 tab 已改名为「连接机器人」，对话 UI 隐藏但代码保留（见 chat.wxml
     // 的 chatHidden 开关），机器人状态机是本页的主职责。
     botStatus: 'unknown',     // unknown | new | waiting | scaned | active | expired | error
-    botQr: '',                // 二维码 data URI（waiting/scaned 时有值）
+    botQr: '',                // 原始 data URI（用于判断二维码是否变化）
+    botQrSrc: '',             // 实际显示用的 src（本地文件路径，见 resolveQrSrc）
     botError: '',
     botLoading: false,
 
@@ -113,6 +114,7 @@ Page({
     this.setData({
       botStatus: d.status || 'new',
       botQr: d.qr_payload || '',
+      botQrSrc: this.resolveQrSrc(d.qr_payload || ''),
       botError: d.error || ''
     })
     // 正在等待扫码：启动轮询，扫描确认后自动更新界面
@@ -138,6 +140,7 @@ Page({
     this.setData({
       botStatus: 'waiting',
       botQr: res.data.qr_payload,
+      botQrSrc: this.resolveQrSrc(res.data.qr_payload),
       botError: ''
     })
     this.startBotPolling()
@@ -154,6 +157,7 @@ Page({
         this.setData({
           botStatus: d.status,
           botQr: d.qr_payload || '',
+          botQrSrc: this.resolveQrSrc(d.qr_payload || ''),
           botError: d.error || ''
         })
       }
@@ -174,76 +178,25 @@ Page({
   },
 
   /**
-   * 长按二维码 → 弹出菜单（扫码 / 保存 / 分享），不再直接保存。
+   * 二维码 data URI → 显示用的 src（本地文件路径）。
    *
-   * 为什么改成菜单：直接保存是"替用户做了决定"——多数时候用户只是想
-   * 扫码或转发给另一台设备，保存完还得自己去相册里翻。菜单把三件事
-   * 摆出来，让用户选。
+   * 为什么必须落盘：image 的原生长按识别（show-menu-by-longpress）对
+   * data URI 支持不稳定——社区多例反馈直接给 base64 时长按不弹出
+   * "识别图中二维码"。写成真实文件后，微信客户端才能按图片处理，
+   * 长按即可得原生菜单：识别图中二维码 / 保存图片 / 转发朋友 / 收藏。
+   *
+   * 空值直接返回空（页面 wx:if 会隐藏），写失败则退回原 data URI，
+   * 保证至少能看见图（只是长按识别可能不生效）。
    */
-  onBotQrLongPress() {
-    const qr = this.data.botQr
-    if (!qr) return
-    wx.showActionSheet({
-      itemList: ['扫码（长按图片识别）', '保存到相册', '分享给朋友'],
-      success: (res) => {
-        if (res.tapIndex === 0) this.scanBotQr()
-        else if (res.tapIndex === 1) this.saveBotQr()
-        else if (res.tapIndex === 2) this.shareBotQr()
-      },
-      fail: () => { /* 用户取消 */ }
-    })
-  },
-
-  /** 菜单项：扫码 —— 大图预览，微信内置长按识别二维码 */
-  scanBotQr() {
-    const path = this.writeBotQrTemp()
-    if (!path) return
-    wx.previewImage({
-      current: path,
-      urls: [path]
-    })
-  },
-
-  /** 菜单项：保存到相册 */
-  saveBotQr() {
-    const path = this.writeBotQrTemp()
-    if (!path) return
-    wx.saveImageToPhotosAlbum({
-      filePath: path,
-      success: () => wx.showToast({ title: '已保存到相册', icon: 'none' }),
-      fail: () => wx.showToast({ title: '保存失败，可长按图片识别', icon: 'none' })
-    })
-  },
-
-  /** 菜单项：分享 —— 调微信官方图片分享菜单（转发好友/收藏等） */
-  shareBotQr() {
-    const path = this.writeBotQrTemp()
-    if (!path) return
-    if (typeof wx.showShareImageMenu !== 'function') {
-      wx.showToast({ title: '当前版本不支持分享，请先保存', icon: 'none' })
-      return
-    }
-    wx.showShareImageMenu({
-      path,
-      fail: () => { /* 用户取消 */ }
-    })
-  },
-
-  /**
-   * 二维码 data URI → 本地临时文件。
-   * 三个菜单项都要它，故抽出来；失败统一提示并回退到"长按识别"。
-   */
-  writeBotQrTemp() {
-    const qr = this.data.botQr
-    if (!qr) return ''
-    const fs = wx.getFileSystemManager()
-    const filePath = `${wx.env.USER_DATA_PATH}/bot_qr.png`
+  resolveQrSrc(dataUri) {
+    if (!dataUri) return ''
     try {
-      fs.writeFileSync(filePath, qr.split(',')[1], 'base64')
+      const fs = wx.getFileSystemManager()
+      const filePath = `${wx.env.USER_DATA_PATH}/bot_qr.png`
+      fs.writeFileSync(filePath, dataUri.split(',')[1], 'base64')
       return filePath
     } catch (e) {
-      wx.showToast({ title: '操作失败，请重新获取二维码', icon: 'none' })
-      return ''
+      return dataUri
     }
   },
 
