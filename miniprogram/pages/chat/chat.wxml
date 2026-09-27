@@ -19,7 +19,18 @@
           <text class="bot-row-label">状态</text>
           <text class="bot-row-value bot-on">已连接</text>
         </view>
-        <text class="bot-hint">你的专属微信机器人已上线。在微信里给它发消息，即可与小程序共享同一条会话</text>
+
+        <!-- 忙碌条：微信里发来消息、正在生成回复时显示。
+             无此条时用户发了消息看不到任何反馈，会以为机器人挂了。 -->
+        <view wx:if="{{botBusy}}" class="bot-busy">
+          <view class="bot-busy-dot"></view>
+          <text class="bot-busy-text">
+            正在处理微信消息{{botBusyPeer ? '（' + botBusyPeer + '）' : ''}}… {{botBusyElapsed}}s
+          </text>
+          <text wx:if="{{botBusyPreview}}" class="bot-busy-preview">{{botBusyPreview}}</text>
+        </view>
+
+                <text class="bot-hint">你的专属微信机器人已上线。在微信里给它发消息，即可与小程序共享同一条会话</text>
         <view class="bot-row bot-row-tap" bindtap="disconnectBot">
           <text class="bot-row-label danger">断开机器人</text>
         </view>
