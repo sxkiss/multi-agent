@@ -15,7 +15,7 @@
 // 使用前提：Nginx 反代必须配置 `proxy_buffering off`，否则流式会被缓冲
 // 成一次性返回（真机常见坑）。
 
-const { baseUrl } = require('./config.js')
+const { getBaseUrl, CONFIG } = require('./config.js')
 const app = getApp()
 
 // ---------- UTF-8 解码 ----------
@@ -129,8 +129,12 @@ function parseEventBlock(block) {
  * @param {function} opts.onEnd   () => void
  * @returns {object} RequestTask，可调用 .abort() 主动断开
  */
-function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd }) {
+function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd, nodeIndex = 0, tryIndex = 0 }) {
   const token = (app && app.globalData && app.globalData.token) || wx.getStorageSync('token') || ''
+  // 节点选择：外部传 nodeIndex 时用指定节点（故障转移/重连用），否则取当前节点。
+  // 与 request.js 的故障转移共用同一份 CONFIG.nodes，避免两处配置漂移。
+  const nodes = (CONFIG && CONFIG.nodes) || []
+  const baseUrl = nodeIndex > 0 && nodes[nodeIndex] ? nodes[nodeIndex] : getBaseUrl()
   const url =
     `${baseUrl}/api/chat/events?session_id=${encodeURIComponent(sessionId)}` +
     `&last_id=${lastId}` +
@@ -159,7 +163,7 @@ function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd }) {
       'Cache-Control': 'no-cache',
       // 渠道标识：SSE 同样需要，便于服务端按渠道限流/审计
       'X-Client-Type': 'miniprogram',
-      'X-Client-Version': '1.0.2',
+      'X-Client-Version': '1.4.0',
       'X-Client-Appid': 'wxbb9e77f84a643da8',
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     },
@@ -171,6 +175,17 @@ function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd }) {
     fail(err) {
       if (!ended) {
         ended = true
+        // 节点故障转移：tryIndex > 0 表示当前是重试，还有后续节点可试
+        const totalNodes = nodes.length
+        if (tryIndex < totalNodes - 1) {
+          // 还有下一个节点，切过去重连（不触发前端 onError，用户无感知）
+          subscribe({
+            sessionId, lastId, onEvent, onError, onEnd,
+            nodeIndex: tryIndex + 1
+          })
+          return
+        }
+        // 所有节点都试过了：把错误透传给前端
         onError && onError(err.errMsg || '事件流连接失败')
       }
     }

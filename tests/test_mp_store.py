@@ -224,6 +224,55 @@ class MpStoreRouteGuardTest(unittest.TestCase):
         self.assertNotEqual(a, c)
         self.assertTrue(a.startswith("wx_"))
 
+    def test_admin_token_rejected_by_mp_guard(self):
+        """密码登录签发的 admin token 不得通过小程序鉴权。
+
+        真实故障：用户在登录页用密码登录 → token 存本地 → 进「我的」点
+        「连接微信机器人」→ ensureLogin() 见 token 存在直接放行 → 网关
+        _mp_user_key() 要求 sub 以 "wx:" 开头，admin 被拒 → 前端弹"未授权"。
+        对话接口对 admin 放行，所以用户会觉得"别的都能用，就这个不行"。
+        """
+        import web_server as W
+        from auth import create_token
+
+        admin_token = create_token(W.BASE_DIR, 24, sub="admin")
+
+        class FakeReq:
+            def __init__(self, token):
+                self.headers = {"authorization": f"Bearer {token}"}
+                self.query_params = {}
+
+            async def json(self):
+                return {}
+
+        self.assertEqual(W._mp_user_key(FakeReq(admin_token)), "",
+                         "admin token 不是微信身份，必须被 mp 鉴权拒绝")
+
+    def test_expired_token_rejected_by_mp_guard(self):
+        """过期的 wx token 必须被拒 —— 且前端不能因"本地有 token"就跳过登录。
+
+        token_ttl_hours 默认 24，过期后 verify_token 返回 None；此时
+        ensureLogin() 若只判断 token 是否存在就会带着死 token 继续请求，
+        用户看到的是"未授权"而非"请重新登录"。
+        """
+        import web_server as W
+        from auth import create_token, verify_token
+
+        dead = create_token(W.BASE_DIR, -1, sub="wx:probe_expired")
+        self.assertIsNone(verify_token(W.BASE_DIR, dead),
+                          "前置条件：该 token 必须确实已过期")
+
+        class FakeReq:
+            def __init__(self, token):
+                self.headers = {"authorization": f"Bearer {token}"}
+                self.query_params = {}
+
+            async def json(self):
+                return {}
+
+        self.assertEqual(W._mp_user_key(FakeReq(dead)), "",
+                         "过期 token 不得解析出 user_key")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
