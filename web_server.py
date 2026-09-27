@@ -220,6 +220,27 @@ def _is_miniprogram(params) -> bool:
     return v == "miniprogram"
 
 
+# 对外终端渠道：这些渠道的用户是外部使用者而非管理员，必须：
+#   1) 追加输出约束，禁止泄露服务端内部信息
+#   2) 剥掉思维链等内部事件
+# clawbot（微信 clawbot 个人号）与小程序同属此类，共用同一套防护。
+_TERMINAL_CHANNELS = {"miniprogram", "clawbot"}
+
+
+def _client_channel(params) -> str:
+    """取渠道标识（已归一化小写）；非终端渠道返回空串。"""
+    try:
+        v = str((params or {}).get("client_type", "")).strip().lower()
+    except Exception:
+        return ""
+    return v
+
+
+def _is_terminal_channel(params) -> bool:
+    """是否为面向外部用户的终端渠道（小程序 / clawbot）。"""
+    return _client_channel(params) in _TERMINAL_CHANNELS
+
+
 # 终端用户渠道不下发的内部事件：模型思维链会复述系统提示词、暴露内部指令
 # 与部署信息（实测出现「渠道约束：小程序」等条款原文）。网页管理端保留原文
 # 便于调试，小程序等终端渠道直接剥掉。
@@ -229,13 +250,13 @@ def _is_miniprogram(params) -> bool:
 HIDDEN_EVENTS_FOR_TERMINAL = {"message_think", "compact_summary"}
 
 
-# 终端渠道（小程序）的输出约束：严禁泄露服务端内部信息。
+# 终端渠道（小程序 / clawbot）的输出约束：严禁泄露服务端内部信息。
 # 抽成模块级常量，供集团模式（经理）与单 Agent 模式共用 —— 两处若各写一份，
 # 后续修改极易漏改一处，导致某个模式悄悄失去防护。
-_MINIPROGRAM_CHANNEL_GUARD = """
+_TERMINAL_CHANNEL_GUARD = """
 
-【渠道约束：小程序】
-当前对话来自微信小程序终端用户。回答时必须遵守：
+【渠道约束：终端用户】
+当前对话来自终端用户（微信小程序 / 微信机器人）。回答时必须遵守：
 1. 严禁透露任何服务端内部信息，包括但不限于：工作目录/绝对路径、主机名、
    操作系统与部署环境、技能数量、成员与部门清单、MCP 服务名、模型与网关地址、
    密钥或配置片段、日志与内部任务 ID。
@@ -245,12 +266,15 @@ _MINIPROGRAM_CHANNEL_GUARD = """
 5. 若用户明确询问上述内部信息（如"你的工作目录是什么""你有几个技能"），
    统一回答"这些属于服务端配置，暂不提供"，不例外透漏。"""
 
+# 兼容旧名（测试与外部引用仍可用）
+_MINIPROGRAM_CHANNEL_GUARD = _TERMINAL_CHANNEL_GUARD
 
-# 小程序单 Agent 模式的默认人设。
+
+# 终端渠道单 Agent 模式的默认人设。
 # single 模式按设计会跳过 SOUL/AGENTS/USER/MEMORY 全量加载（网页端由前端显式
-# 传 system_prompt / prompt_id 补齐），但小程序不传任何提示词，若不给兜底，
-# 模型将"裸奔"——没有角色设定、回答风格不稳定。故此处补一个精简人设。
-_MINIPROGRAM_SINGLE_PERSONA = """你是一个专业、可靠的 AI 助手，通过微信小程序为用户提供服务。
+# 传 system_prompt / prompt_id 补齐），但小程序/clawbot 不传任何提示词，若不给
+# 兜底，模型将"裸奔"——没有角色设定、回答风格不稳定。故此处补一个精简人设。
+_TERMINAL_SINGLE_PERSONA = """你是一个专业、可靠的 AI 助手，通过微信为用户提供服务。
 
 要求：
 1. 直接回答问题、完成任务，结论先行，简洁清晰，适合手机阅读。
@@ -259,10 +283,13 @@ _MINIPROGRAM_SINGLE_PERSONA = """你是一个专业、可靠的 AI 助手，通�
 3. 高风险操作会被安全策略拦截确认：此时向用户说明将要执行的操作与风险，等待同意。
 4. 不确定的事情直说不确定，不要编造。"""
 
+# 兼容旧名
+_MINIPROGRAM_SINGLE_PERSONA = _TERMINAL_SINGLE_PERSONA
+
 
 def _append_miniprogram_guard(system_prompt: str) -> str:
-    """为小程序渠道的系统提示词追加上输出约束（非小程序渠道原样返回）"""
-    return (system_prompt or "") + _MINIPROGRAM_CHANNEL_GUARD
+    """为终端渠道的系统提示词追加上输出约束（其它渠道原样返回）"""
+    return (system_prompt or "") + _TERMINAL_CHANNEL_GUARD
 
 
 def _map_agent_chunk(chunk):
@@ -748,10 +775,10 @@ class AgentMain:
     def _resolve_request_workspace(self, get, session_id):
         """统一解析请求应使用的工作目录（含多用户隔离与越权收敛）。
 
-        优先级：小程序渠道强制用户目录 > 客户端传入（收敛校验）> 配置默认。
+        优先级：终端渠道强制用户目录 > 客户端传入（收敛校验）> 配置默认。
         opencode/claude/codex 三个 CLI 分支共用本方法，避免各自实现走样。
         """
-        if _is_miniprogram(get):
+        if _is_terminal_channel(get):
             return self._resolve_user_workspace(session_id)
         override = str(get.get('workspace', '')).strip()
         if override:
@@ -1574,10 +1601,10 @@ class AgentMain:
             tpl_sp = self._resolve_template_system_prompt(get, cfg_key='opencode')
             if tpl_sp:
                 final_system_prompt = tpl_sp
-            # 小程序渠道兜底人设：single 模式跳过了 SOUL/AGENTS 全量加载，而小程序
+            # 终端渠道兜底人设：single 模式跳过了 SOUL/AGENTS 全量加载，而小程序
             # 不传 system_prompt，若不补则模型无任何角色设定（"裸奔"），回答风格不稳。
             # 显式传入的提示词优先，仅在为空时填充。
-            if not final_system_prompt and _is_miniprogram(get):
+            if not final_system_prompt and _is_terminal_channel(get):
                 final_system_prompt = _MINIPROGRAM_SINGLE_PERSONA
             # 工具：优先前端传入，否则留空由 agent（strict_tools=False）补全全套默认工具
             tools = raw_tools if raw_tools else []
@@ -1591,8 +1618,15 @@ class AgentMain:
         # 工作空间：多用户必须隔离，否则不同用户的文件会互相覆盖/互读。
         #   - 终端渠道（小程序）：一律用该用户的隔离目录，忽略客户端传参，
         #     杜绝通过 workspace 参数指向任意路径（此前无穿越校验）。
-        #   - 管理端（网页/CLI）：保留自定义能力，但仍做根目录收敛校验。
-        if _is_miniprogram(get):
+        #   - clawbot：服务间调用（服务密钥 + service:clawbot 令牌），参数来自
+        #     服务端 config.json 而非终端用户，可信；但指定 hermes 工作目录是
+        #     它的硬需求（模板要读该目录下的 SOUL.md/USER.md/MEMORY.md），
+        #     故单独放行，且仍走 _clamp_workspace 收敛到允许根内。
+        #   - 管理端（网页/CLI）：保留自定义能力，仍做根目录收敛校验。
+        if _client_channel(get) == "clawbot" and workspace_override:
+            workspace = self._clamp_workspace(
+                os.path.abspath(os.path.expanduser(workspace_override)))
+        elif _is_terminal_channel(get):
             workspace = self._resolve_user_workspace(session_id)
         elif workspace_override:
             workspace = os.path.abspath(os.path.expanduser(workspace_override))
@@ -1715,11 +1749,11 @@ class AgentMain:
             # 实测发现经理会把工作目录（/home/sxkiss/bt）、技能数量、部门清单、
             # MCP 服务名等原样写进自我介绍，等于把服务端部署细节泄露给终端用户。
             # 这里对 miniprogram 渠道追加一段输出约束（只约束"说什么"，不削弱编排能力）。
-            if _is_miniprogram(get):
+            if _is_terminal_channel(get):
                 manager_sp = _append_miniprogram_guard(manager_sp)
             agent_config["system_prompt"] = manager_sp
 
-        elif _is_miniprogram(get):
+        elif _is_terminal_channel(get):
             # 单 Agent 模式的小程序渠道同样需要输出约束。
             # 此前该约束只加在集团模式分支，切到 single 后泄露防护会静默失效。
             agent_config["system_prompt"] = _append_miniprogram_guard(
@@ -1951,7 +1985,7 @@ class AgentMain:
         # 只能靠 jobs/ 下 wx_ 前缀反推。这里显式记录渠道，便于排查与审计。
         logger.info(
             "[chat_start] channel=%s session=%s mode=%s job=%s",
-            "miniprogram" if _is_miniprogram(get) else "web",
+            _client_channel(get) or "web",
             session_id, get.get("mode", "") or "group", job.key,
         )
         return public.return_data(True, data={
@@ -2002,11 +2036,11 @@ class AgentMain:
             yield self.sse_pack(event="error", data={"msg": "没有可订阅的任务（不存在或已过期）"})
             return
 
-        # 渠道日志：SSE 订阅同样记录来源，便于小程序断流/续传问题时定位
-        _mp = _is_miniprogram(get)
+        # 渠道日志：SSE 订阅同样记录来源，便于小程序/clawbot 断流/续传问题定位
+        _mp = _is_terminal_channel(get)
         logger.info(
             "[chat_events] channel=%s session=%s job=%s last_id=%s",
-            "miniprogram" if _mp else "web",
+            _client_channel(get) or "web",
             session_id, job.key, get.get('last_id', -1),
         )
         # 小程序（终端用户）剥掉思维链等内部事件；网页管理端保留全部
@@ -3465,8 +3499,8 @@ async def api_chat_messages(request: Request):
 # ============================================================
 # 小程序本地存储在清缓存 / 换设备时会丢，签到这类有积累价值的数据
 # 必须落服务端。身份来自 token 的 sub（wx:<openid>），与用户工作目录、
-# 会话 ID 共用同一把钥匙 —— 微信侧（clawbot）将来接入时复用同一 user_key
-# 即可共享数据与会话。
+# 会话 ID 共用同一把钥匙 —— 微信机器人（clawbot）侧用同一 user_key 作
+# session_id，两边即共享同一条会话与同一份数据（见下方 bot 转发区）。
 _MP_STORE = None
 
 
@@ -3577,6 +3611,146 @@ async def api_mp_profile_post(request: Request):
     except Exception:
         logger.warning("[mp_profile] 写入失败", exc_info=True)
         return JSONResponse(public.returnMsg(False, "保存失败"), status_code=500)
+
+
+# ============================================================
+# 微信机器人（clawbot）：每用户独立实例
+# ============================================================
+# 模型（2026-09-24 修正）：不是"一个共享机器人 + 绑定码认领"，而是
+# **每个小程序用户拥有自己的微信机器人实例**，由用户本人在小程序里扫码登录。
+#
+# 为什么不需要绑定码：取二维码的请求本身就携带用户 token，网关解析出
+# user_key 后才向 clawbot 申请二维码 —— "这个二维码属于谁"在创建时即确定，
+# 扫码结果直接落在该用户槽位，中间没有可劫持环节。
+#
+# 会话共用：clawbot 用 session_id = user_key 调 /api/chat/start，与小程序
+# 的 wx_session_id(openid) 完全一致 → 两边是同一条会话、同一份用户数据。
+#
+# 网关在此只做转发与身份注入，不持有任何 bot 登录态（都在 clawbot 侧）。
+#
+# 服务密钥：clawbot 与网关之间的服务间凭据。clawbot 不需要它也能工作
+# （槽位由网关转发创建），但保留供服务间直连（如内部状态查询）使用。
+
+def _service_key_path() -> str:
+    return os.path.join(BASE_DIR, "workspace", "clawbot.key")
+
+
+def _service_secret() -> str:
+    """服务间共享密钥。首次访问自动生成并落盘（workspace/ 在 gitignore 内）。
+
+    与用户 token 分离：它只证明"调用方是 clawbot"，不代表任何终端用户身份，
+    因此绝不能用它去读写用户数据。
+    """
+    path = _service_key_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        import secrets as _secrets
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        key = _secrets.token_urlsafe(32)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(key)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        logger.info("[clawbot] 已生成服务密钥: %s", path)
+        return key
+    except Exception:
+        logger.warning("服务密钥读写失败", exc_info=True)
+        return ""
+
+
+def _check_service_key(request: Request) -> bool:
+    """校验服务密钥（常量时间比较，防时序侧信道）。"""
+    import hmac as _hmac
+    expected = _service_secret()
+    got = str(request.headers.get("x-service-key") or "").strip()
+    if not expected or not got:
+        return False
+    return _hmac.compare_digest(expected, got)
+
+
+def _clawbot_base_url() -> str:
+    """clawbot 服务地址。默认本机 9877，可用 config.clawbot_url 覆盖。"""
+    return str((agent_main.config or {}).get("clawbot_url") or "").strip().rstrip("/") \
+        or "http://127.0.0.1:9877"
+
+
+def _clawbot_forward(method: str, path: str, payload=None, params=None) -> JSONResponse:
+    """把请求转发给 clawbot 并原样回传其 JSON（自动附带服务密钥）。
+
+    clawbot 未启动是"功能不可用"而非"服务端错误"，故单独给出 503 文案，
+    避免前端把它当成 500 去重试或报"服务器异常"。
+    """
+    import requests as _rq
+    url = f"{_clawbot_base_url()}{path}"
+    headers = {"x-service-key": _service_secret()}
+    try:
+        if method == "GET":
+            resp = _rq.get(url, params=params or {}, headers=headers, timeout=20)
+        else:
+            resp = _rq.post(url, json=payload or {}, headers=headers, timeout=20)
+    except Exception:
+        logger.warning("[clawbot] 转发失败 %s %s", method, path, exc_info=True)
+        return JSONResponse(public.returnMsg(False, "微信机器人服务未启动"), status_code=503)
+    try:
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+    except Exception:
+        return JSONResponse(public.returnMsg(False, "微信机器人返回异常"), status_code=502)
+
+
+@app.post("/api/mp/bot/qrcode")
+async def api_mp_bot_qrcode(request: Request):
+    """小程序为**当前登录用户**申请专属二维码（需用户 token）。
+
+    身份来自 token，客户端无法为他人取码 —— 这是"每用户独立 bot"的安全边界。
+    """
+    user_key, err = _mp_guard(request)
+    if err:
+        return err
+    return _clawbot_forward("POST", "/internal/bots/qrcode", {"user_key": user_key})
+
+
+@app.get("/api/mp/bot/status")
+async def api_mp_bot_status(request: Request):
+    """小程序查询**自己**机器人的连接状态（需用户 token）。"""
+    user_key, err = _mp_guard(request)
+    if err:
+        return err
+    return _clawbot_forward("GET", "/internal/bots/status", params={"user_key": user_key})
+
+
+@app.post("/api/mp/bot/disconnect")
+async def api_mp_bot_disconnect(request: Request):
+    """用户断开自己的机器人（需用户 token）：清除登录态，可重新扫码。"""
+    user_key, err = _mp_guard(request)
+    if err:
+        return err
+    return _clawbot_forward("POST", "/internal/bots/disconnect", {"user_key": user_key})
+
+
+@app.post("/api/service/token")
+async def api_service_token(request: Request):
+    """clawbot 换取长期令牌（需服务密钥），用于调用聊天接口。
+
+    与用户 token 同一套签名体系（sub=service:clawbot），但 TTL 长、专供服务间
+    调用；用户登出不影响它，服务密钥轮换即可吊销。
+    """
+    if not _check_service_key(request):
+        return JSONResponse({"status": False, "msg": "服务密钥无效", "code": 401}, status_code=401)
+    try:
+        from auth import create_token
+        ttl_hours = 24 * 365 * 5   # 5 年：服务令牌，避免频繁轮换
+        token = create_token(BASE_DIR, ttl_hours, sub="service:clawbot")
+        return JSONResponse(public.return_data(True, data={
+            "token": token,
+            "expires_in": ttl_hours * 3600,
+        }))
+    except Exception:
+        logger.warning("[mp_bind] 服务令牌签发失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "签发失败"), status_code=500)
 
 
 @app.post("/api/chat/delete")
