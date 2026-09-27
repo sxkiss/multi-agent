@@ -19,51 +19,6 @@
   </view>
 
   <view class="card">
-    <view class="card-head"><text class="card-title">微信机器人</text></view>
-
-    <!-- 已连接：显示状态 -->
-    <block wx:if="{{botStatus === 'active'}}">
-      <view class="row">
-        <text class="row-label">状态</text>
-        <text class="row-value bot-on">已连接</text>
-      </view>
-      <text class="row-hint">你的专属微信机器人已上线。在微信里给它发消息，即可与小程序共享同一条会话</text>
-      <view class="row" catchtap="disconnectBot">
-        <text class="row-label danger">断开机器人</text>
-      </view>
-    </block>
-
-    <!-- 等待扫码：展示二维码 -->
-    <block wx:elif="{{botStatus === 'waiting' || botStatus === 'scaned'}}">
-      <view class="bot-qr-wrap">
-        <image class="bot-qr" src="{{botQr}}" mode="aspectFit" catchlongpress="saveBotQr"></image>
-        <text class="bot-qr-tip">
-          {{botStatus === 'scaned' ? '已扫码，请在手机上确认' : '用微信扫码，登录你的专属机器人'}}
-        </text>
-      </view>
-      <text class="row-hint">扫码后，你的微信就是这个机器人的主人。长按二维码可保存到相册</text>
-    </block>
-
-    <!-- 过期 / 出错 -->
-    <block wx:elif="{{botStatus === 'expired' || botStatus === 'error'}}">
-      <view class="row" catchtap="connectBot">
-        <text class="row-label">连接微信机器人</text>
-        <text class="row-value">重新获取二维码</text>
-      </view>
-      <text class="row-hint">{{botError || '二维码已过期，请重新获取'}}</text>
-    </block>
-
-    <!-- 未连接 -->
-    <block wx:else>
-      <view class="row" catchtap="connectBot">
-        <text class="row-label">连接微信机器人</text>
-        <text class="row-value">{{botLoading ? '获取中…' : '扫码连接'}}</text>
-      </view>
-      <text class="row-hint">每个用户拥有独立的微信机器人。扫码登录后，在微信里与它对话，记录与小程序同步</text>
-    </block>
-  </view>
-
-  <view class="card">
     <view class="card-head"><text class="card-title">存储</text></view>
     <view class="row" catchtap="clearCache">
       <text class="row-label">清除缓存</text>
