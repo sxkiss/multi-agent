@@ -173,24 +173,78 @@ Page({
     }
   },
 
-  /** 长按保存二维码：微信支持长按识别，也可保存后从相册识别。 */
-  saveBotQr() {
+  /**
+   * 长按二维码 → 弹出菜单（扫码 / 保存 / 分享），不再直接保存。
+   *
+   * 为什么改成菜单：直接保存是"替用户做了决定"——多数时候用户只是想
+   * 扫码或转发给另一台设备，保存完还得自己去相册里翻。菜单把三件事
+   * 摆出来，让用户选。
+   */
+  onBotQrLongPress() {
     const qr = this.data.botQr
     if (!qr) return
-    // data URI → 临时文件
+    wx.showActionSheet({
+      itemList: ['扫码（长按图片识别）', '保存到相册', '分享给朋友'],
+      success: (res) => {
+        if (res.tapIndex === 0) this.scanBotQr()
+        else if (res.tapIndex === 1) this.saveBotQr()
+        else if (res.tapIndex === 2) this.shareBotQr()
+      },
+      fail: () => { /* 用户取消 */ }
+    })
+  },
+
+  /** 菜单项：扫码 —— 大图预览，微信内置长按识别二维码 */
+  scanBotQr() {
+    const path = this.writeBotQrTemp()
+    if (!path) return
+    wx.previewImage({
+      current: path,
+      urls: [path]
+    })
+  },
+
+  /** 菜单项：保存到相册 */
+  saveBotQr() {
+    const path = this.writeBotQrTemp()
+    if (!path) return
+    wx.saveImageToPhotosAlbum({
+      filePath: path,
+      success: () => wx.showToast({ title: '已保存到相册', icon: 'none' }),
+      fail: () => wx.showToast({ title: '保存失败，可长按图片识别', icon: 'none' })
+    })
+  },
+
+  /** 菜单项：分享 —— 调微信官方图片分享菜单（转发好友/收藏等） */
+  shareBotQr() {
+    const path = this.writeBotQrTemp()
+    if (!path) return
+    if (typeof wx.showShareImageMenu !== 'function') {
+      wx.showToast({ title: '当前版本不支持分享，请先保存', icon: 'none' })
+      return
+    }
+    wx.showShareImageMenu({
+      path,
+      fail: () => { /* 用户取消 */ }
+    })
+  },
+
+  /**
+   * 二维码 data URI → 本地临时文件。
+   * 三个菜单项都要它，故抽出来；失败统一提示并回退到"长按识别"。
+   */
+  writeBotQrTemp() {
+    const qr = this.data.botQr
+    if (!qr) return ''
     const fs = wx.getFileSystemManager()
     const filePath = `${wx.env.USER_DATA_PATH}/bot_qr.png`
     try {
       fs.writeFileSync(filePath, qr.split(',')[1], 'base64')
+      return filePath
     } catch (e) {
-      wx.showToast({ title: '保存失败', icon: 'none' })
-      return
+      wx.showToast({ title: '操作失败，请重新获取二维码', icon: 'none' })
+      return ''
     }
-    wx.saveImageToPhotosAlbum({
-      filePath,
-      success: () => wx.showToast({ title: '已保存到相册', icon: 'none' }),
-      fail: () => wx.showToast({ title: '长按图片即可识别', icon: 'none' })
-    })
   },
 
   /** 断开机器人：清除登录态，之后可重新扫码（换号场景）。 */
