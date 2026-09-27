@@ -1,10 +1,14 @@
-// request.js — 统一网络层
+// request.js — 统一网络层（支持多节点故障转移）
 //
 // 所有请求自动附带 Bearer token；遇到 401 通知调用方跳转登录。
 //
 // 渠道标识：小程序侧无法自定义 User-Agent/Referer（微信客户端会强制覆盖），
 // 因此统一用 X-Client-* 自定义头声明来源，供服务端识别渠道、做访问控制。
-const { baseUrl, timeout } = require('./config.js')
+//
+// 多节点故障转移：nodes 列表按优先级遍历，只有连接层失败（statusCode=0）才换节点；
+// HTTP 有响应（含 401/500/404）说明链路通，直接返回，不换节点掩盖业务错误。
+// 节点信息从 config.js 动态读取，无需修改这里。
+const { getBaseUrl, timeout, CONFIG, markNodeFailed } = require('./config.js')
 
 /**
  * 延迟获取 App 实例。
@@ -24,7 +28,7 @@ function appInstance() {
 function clientHeaders() {
   return {
     'X-Client-Type': 'miniprogram',
-    'X-Client-Version': '1.1.0',
+    'X-Client-Version': '1.4.0',
     'X-Client-Appid': 'wxbb9e77f84a643da8'
   }
 }
@@ -36,10 +40,12 @@ function authHeader() {
 }
 
 /**
- * 普通请求。
+ * 单次网络请求（不重试）。
+ * node 可选：指定节点时跳过故障转移逻辑，用于 failover 内部透传。
  * @returns Promise<{ok:boolean, data:any, msg:string, statusCode:number}>
  */
-function request({ url, method = 'GET', data = {}, header = {} }) {
+function request({ url, method = 'GET', data = {}, header = {}, node }) {
+  const baseUrl = node || getBaseUrl()
   return new Promise((resolve) => {
     wx.request({
       url: baseUrl + url,
@@ -82,17 +88,67 @@ function request({ url, method = 'GET', data = {}, header = {} }) {
   })
 }
 
+/**
+ * 节点故障转移：把一次请求依次打到 nodes 列表里的每个节点。
+ *
+ * @returns Promise<{ok, data, msg, statusCode, unauthorized, tried}>
+ *   - tried: 尝试过的节点列表，便于排查"哪个节点坏了"
+ */
+function requestWithFailover({ url, method = 'GET', data = {}, header = {} }) {
+  const nodes = (CONFIG && CONFIG.nodes) || []
+
+  // 单节点（或 local 调试）时无需故障转移：保持原行为，避免多一次包装
+  if (nodes.length <= 1 || CONFIG.useLocal) {
+    return request({ url, method, data, header })
+  }
+
+  return new Promise((resolve) => {
+    let idx = 0
+    const tried = []
+
+    function attempt() {
+      if (idx >= nodes.length) {
+        // 所有节点都不通：返回最后一个的错误，附带尝试过的节点便于排查
+        resolve({
+          ok: false,
+          data: null,
+          msg: '网络连接失败，请检查网络后重试',
+          statusCode: 0,
+          tried
+        })
+        return
+      }
+      const node = nodes[idx]
+      idx += 1
+      tried.push(node)
+
+      request({ url, method, data, header, node }).then((res) => {
+        // HTTP 有响应 = 链路通，业务结果直接返回（401/500/404 等不换节点）
+        if (res.statusCode !== 0) {
+          resolve(res)
+          return
+        }
+        // 连接层失败：换下一个节点
+        markNodeFailed(node)
+        attempt()
+      })
+    }
+
+    attempt()
+  })
+}
+
 const api = {
   // ---- 鉴权 ----
   login(password) {
-    return request({ url: '/api/auth/login', method: 'POST', data: { password } })
+    return requestWithFailover({ url: '/api/auth/login', method: 'POST', data: { password } })
   },
   // 微信登录：wx.login 拿 code → 服务端换 openid 并签发 token
   wxLogin(code) {
-    return request({ url: '/api/auth/wxlogin', method: 'POST', data: { code } })
+    return requestWithFailover({ url: '/api/auth/wxlogin', method: 'POST', data: { code } })
   },
   authStatus() {
-    return request({ url: '/api/auth/status' })
+    return requestWithFailover({ url: '/api/auth/status' })
   },
 
   // ---- 会话 ----
@@ -100,20 +156,20 @@ const api = {
   // 不是某个会话的消息；某会话的消息要用 /api/chat/messages。
   // 早期小程序误用 history 取消息，导致每次刷新历史都是空白。
   messages(sessionId) {
-    return request({ url: '/api/chat/messages', data: { session_id: sessionId } })
+    return requestWithFailover({ url: '/api/chat/messages', data: { session_id: sessionId } })
   },
   history(params) {
-    return request({ url: '/api/chat/history', data: params })
+    return requestWithFailover({ url: '/api/chat/history', data: params })
   },
   start(data) {
     // 带上渠道标识：服务端据此裁剪系统提示，避免回答里泄露网关内部信息
-    return request({ url: '/api/chat/start', method: 'POST', data: Object.assign({ client_type: 'miniprogram' }, data) })
+    return requestWithFailover({ url: '/api/chat/start', method: 'POST', data: Object.assign({ client_type: 'miniprogram' }, data) })
   },
   stop(sessionId) {
-    return request({ url: '/api/chat/stop', method: 'POST', data: { session_id: sessionId } })
+    return requestWithFailover({ url: '/api/chat/stop', method: 'POST', data: { session_id: sessionId } })
   },
   status(sessionId) {
-    return request({ url: '/api/chat/status', data: { session_id: sessionId } })
+    return requestWithFailover({ url: '/api/chat/status', data: { session_id: sessionId } })
   },
 
   // ---- 用户数据（服务端权威存储，见 utils/store.js）----
@@ -121,22 +177,35 @@ const api = {
   // 身份由 Bearer token 决定，不接受客户端传 user_key。
   mpProfile(action, payload) {
     if (action) {
-      return request({
+      return requestWithFailover({
         url: '/api/mp/profile',
         method: 'POST',
         data: Object.assign({ action }, payload || {})
       })
     }
-    return request({ url: '/api/mp/profile' })
+    return requestWithFailover({ url: '/api/mp/profile' })
+  },
+
+  // ---- 微信机器人（每用户独立实例，扫码连接）----
+  // 取码请求携带用户 token，服务端据此创建"属于你的"机器人槽位；
+  // 连接后微信里的对话与小程序共用同一条会话（session_id = user_key）。
+  botQrcode() {
+    return requestWithFailover({ url: '/api/mp/bot/qrcode', method: 'POST' })
+  },
+  botStatus() {
+    return requestWithFailover({ url: '/api/mp/bot/status' })
+  },
+  botDisconnect() {
+    return requestWithFailover({ url: '/api/mp/bot/disconnect', method: 'POST' })
   },
 
   // ---- 元信息 ----
   agents() {
-    return request({ url: '/api/agents' })
+    return requestWithFailover({ url: '/api/agents' })
   },
   config() {
-    return request({ url: '/api/config' })
+    return requestWithFailover({ url: '/api/config' })
   }
 }
 
-module.exports = { api, request, authHeader, clientHeaders, baseUrl }
+module.exports = { api, request, requestWithFailover, authHeader, clientHeaders, getBaseUrl, CONFIG }

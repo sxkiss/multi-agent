@@ -71,6 +71,33 @@
   border-color: #4a7cf7;
 }
 
+/* 机器人二维码：白底才能被微信识别，不能跟随暗色主题 */
+.bot-qr-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16rpx 0 8rpx;
+}
+
+.bot-qr {
+  width: 400rpx;
+  height: 400rpx;
+  background: #ffffff;
+  border-radius: 16rpx;
+  padding: 12rpx;
+  box-sizing: border-box;
+}
+
+.bot-qr-tip {
+  margin-top: 16rpx;
+  font-size: 24rpx;
+  color: #8b909a;
+}
+
+.bot-on {
+  color: #34d399;
+}
+
 .foot {
   margin-top: 8rpx;
   font-size: 22rpx;
