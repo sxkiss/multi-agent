@@ -74,6 +74,12 @@ Page({
     botQrSrc: '',             // 实际显示用的 src（本地文件路径，见 resolveQrSrc）
     botError: '',
     botLoading: false,
+    // 忙碌态：机器人在微信里收到消息、正在生成回复时为 true。
+    // 顶部据此显示动态提示，否则用户发了消息看不到任何反馈。
+    botBusy: false,
+    botBusyPeer: '',          // 已脱敏的对方标识
+    botBusyPreview: '',       // 消息内容预览
+    botBusyElapsed: 0,        // 已耗时（秒）
 
     // 对话区显隐开关：false = 隐藏对话 UI（代码不删，随时可恢复）
     chatHidden: true
@@ -104,21 +110,38 @@ Page({
 
   // ─────────────────────── 微信机器人 ───────────────────────
 
-  /** 查询自己机器人的连接状态；通过则启动轮询等待扫码结果。 */
+  /** 查询自己机器人的连接状态，并按状态决定是否轮询。 */
   async loadBotStatus() {
     const r = await auth.ensureLogin()
     if (!r.ok) return
     const res = await api.botStatus()
     if (!res.ok || !res.data) return
-    const d = res.data
-    this.setData({
+    this.applyBotStatus(res.data)
+    // 等待扫码：轮询等确认结果；已连接：也要轮询，否则微信里发消息
+    // 时"正在处理"状态永远不会刷新到界面（这是顶部无状态显示的直接原因）
+    if (this.data.botStatus === 'waiting' || this.data.botStatus === 'scaned' ||
+        this.data.botStatus === 'active') {
+      this.startBotPolling()
+    }
+  },
+
+  /** 把后端状态写进 data（轮询与首次加载共用，避免两处字段写漏） */
+  applyBotStatus(d) {
+    const patch = {
       botStatus: d.status || 'new',
       botQr: d.qr_payload || '',
-      botQrSrc: this.resolveQrSrc(d.qr_payload || ''),
-      botError: d.error || ''
-    })
-    // 正在等待扫码：启动轮询，扫描确认后自动更新界面
-    if (d.status === 'waiting' || d.status === 'scaned') this.startBotPolling()
+      botError: d.error || '',
+      botBusy: !!d.busy,
+      botBusyPeer: d.busy_peer || '',
+      botBusyPreview: d.busy_preview || '',
+      botBusyElapsed: Number(d.busy_elapsed) || 0
+    }
+    // 二维码只在变化时重解析：resolveQrSrc 要落盘写文件，
+    // 每 3 秒刷一次会白白产生大量 IO
+    if ((d.qr_payload || '') !== this.data.botQr) {
+      patch.botQrSrc = this.resolveQrSrc(d.qr_payload || '')
+    }
+    this.setData(patch)
   },
 
   /** 取二维码：请求携带用户 token，服务端据此创建"属于你的"机器人槽位。 */
@@ -146,25 +169,28 @@ Page({
     this.startBotPolling()
   },
 
-  /** 轮询扫码结果：3 秒一次，登录成功 / 过期 / 出错即停。 */
+  /**
+   * 轮询机器人状态：3 秒一次。
+   *
+   * 覆盖三种情形：
+   *   1. waiting/scaned —— 等扫码确认，登录成功即停
+   *   2. active         —— 持续轮询，实时反映"正在处理微信消息"（忙碌态）
+   *   3. 其余           —— 不轮询（未连接/已过期，无需刷新）
+   * 注意 active 不能停：一停忙碌态就再也不会更新到界面。
+   */
   startBotPolling() {
     this.stopBotPolling()
     this._botTimer = setInterval(async () => {
       const res = await api.botStatus()
       if (!res.ok || !res.data) return
       const d = res.data
-      if (d.status !== this.data.botStatus || (d.qr_payload || '') !== this.data.botQr) {
-        this.setData({
-          botStatus: d.status,
-          botQr: d.qr_payload || '',
-          botQrSrc: this.resolveQrSrc(d.qr_payload || ''),
-          botError: d.error || ''
-        })
-      }
-      if (d.status === 'active') {
-        this.stopBotPolling()
+      const wasActive = this.data.botStatus === 'active'
+      this.applyBotStatus(d)
+      // 从等待扫码变为已连接：提示一次，但继续轮询（还要看忙碌态）
+      if (d.status === 'active' && !wasActive) {
         wx.showToast({ title: '连接成功', icon: 'success' })
-      } else if (d.status === 'expired' || d.status === 'error') {
+      } else if (d.status === 'expired' || d.status === 'error' ||
+                 d.status === 'new' || d.status === 'unknown') {
         this.stopBotPolling()
       }
     }, 3000)
