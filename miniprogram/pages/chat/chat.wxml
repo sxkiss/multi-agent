@@ -28,12 +28,12 @@
       <!-- 等待扫码：展示二维码 -->
       <block wx:elif="{{botStatus === 'waiting' || botStatus === 'scaned'}}">
         <view class="bot-qr-wrap">
-          <image class="bot-qr" src="{{botQr}}" mode="aspectFit" bindlongpress="saveBotQr"></image>
+          <image class="bot-qr" src="{{botQr}}" mode="aspectFit" bindlongpress="onBotQrLongPress"></image>
           <text class="bot-qr-tip">
             {{botStatus === 'scaned' ? '已扫码，请在手机上确认' : '用微信扫码，登录你的专属机器人'}}
           </text>
         </view>
-        <text class="bot-hint">扫码后，你的微信就是这个机器人的主人。长按二维码可保存到相册</text>
+        <text class="bot-hint">扫码后，你的微信就是这个机器人的主人。长按二维码可选择扫码、保存或分享</text>
         <view class="bot-row bot-row-tap" bindtap="disconnectBot">
           <text class="bot-row-label danger">取消连接</text>
         </view>
