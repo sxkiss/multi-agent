@@ -64,7 +64,18 @@ Page({
     menuVisible: false,
     longPressIndex: -1,
     menuIndex: -1,
-    menuMessage: { images: [] }
+    menuMessage: { images: [] },
+
+    // ── 微信机器人（从「我的」迁入本页）─────────────────────
+    // 本页 tab 已改名为「连接机器人」，对话 UI 隐藏但代码保留（见 chat.wxml
+    // 的 chatHidden 开关），机器人状态机是本页的主职责。
+    botStatus: 'unknown',     // unknown | new | waiting | scaned | active | expired | error
+    botQr: '',                // 二维码 data URI（waiting/scaned 时有值）
+    botError: '',
+    botLoading: false,
+
+    // 对话区显隐开关：false = 隐藏对话 UI（代码不删，随时可恢复）
+    chatHidden: true
   },
 
   onLoad() {
@@ -83,6 +94,129 @@ Page({
   onShow() {
     // 字号可能刚在「我的」页被改过，每次显示时同步一次
     this.applyFontSize()
+    this.loadBotStatus()
+  },
+
+  onHide() {
+    this.stopBotPolling()
+  },
+
+  // ─────────────────────── 微信机器人 ───────────────────────
+
+  /** 查询自己机器人的连接状态；通过则启动轮询等待扫码结果。 */
+  async loadBotStatus() {
+    const r = await auth.ensureLogin()
+    if (!r.ok) return
+    const res = await api.botStatus()
+    if (!res.ok || !res.data) return
+    const d = res.data
+    this.setData({
+      botStatus: d.status || 'new',
+      botQr: d.qr_payload || '',
+      botError: d.error || ''
+    })
+    // 正在等待扫码：启动轮询，扫描确认后自动更新界面
+    if (d.status === 'waiting' || d.status === 'scaned') this.startBotPolling()
+  },
+
+  /** 取二维码：请求携带用户 token，服务端据此创建"属于你的"机器人槽位。 */
+  async connectBot() {
+    if (this.data.botLoading) return
+    this.setData({ botLoading: true })
+    const r = await auth.ensureLogin()
+    if (!r.ok) {
+      this.setData({ botLoading: false })
+      wx.showToast({ title: r.reason || '请先登录', icon: 'none' })
+      return
+    }
+    const res = await api.botQrcode()
+    this.setData({ botLoading: false })
+    if (!res.ok || !res.data || !res.data.qr_payload) {
+      wx.showToast({ title: res.msg || '获取失败，请重试', icon: 'none' })
+      return
+    }
+    this.setData({
+      botStatus: 'waiting',
+      botQr: res.data.qr_payload,
+      botError: ''
+    })
+    this.startBotPolling()
+  },
+
+  /** 轮询扫码结果：3 秒一次，登录成功 / 过期 / 出错即停。 */
+  startBotPolling() {
+    this.stopBotPolling()
+    this._botTimer = setInterval(async () => {
+      const res = await api.botStatus()
+      if (!res.ok || !res.data) return
+      const d = res.data
+      if (d.status !== this.data.botStatus || (d.qr_payload || '') !== this.data.botQr) {
+        this.setData({
+          botStatus: d.status,
+          botQr: d.qr_payload || '',
+          botError: d.error || ''
+        })
+      }
+      if (d.status === 'active') {
+        this.stopBotPolling()
+        wx.showToast({ title: '连接成功', icon: 'success' })
+      } else if (d.status === 'expired' || d.status === 'error') {
+        this.stopBotPolling()
+      }
+    }, 3000)
+  },
+
+  stopBotPolling() {
+    if (this._botTimer) {
+      clearInterval(this._botTimer)
+      this._botTimer = null
+    }
+  },
+
+  /** 长按保存二维码：微信支持长按识别，也可保存后从相册识别。 */
+  saveBotQr() {
+    const qr = this.data.botQr
+    if (!qr) return
+    // data URI → 临时文件
+    const fs = wx.getFileSystemManager()
+    const filePath = `${wx.env.USER_DATA_PATH}/bot_qr.png`
+    try {
+      fs.writeFileSync(filePath, qr.split(',')[1], 'base64')
+    } catch (e) {
+      wx.showToast({ title: '保存失败', icon: 'none' })
+      return
+    }
+    wx.saveImageToPhotosAlbum({
+      filePath,
+      success: () => wx.showToast({ title: '已保存到相册', icon: 'none' }),
+      fail: () => wx.showToast({ title: '长按图片即可识别', icon: 'none' })
+    })
+  },
+
+  /** 断开机器人：清除登录态，之后可重新扫码（换号场景）。 */
+  disconnectBot() {
+    wx.showModal({
+      title: '断开机器人',
+      content: '断开后微信里的对话将停止，重新扫码即可恢复。小程序数据不受影响。',
+      confirmText: '断开',
+      confirmColor: '#f87171',
+      success: async (r) => {
+        if (!r.confirm) return
+        await auth.ensureLogin()
+        const res = await api.botDisconnect()
+        if (!res.ok) {
+          wx.showToast({ title: res.msg || '操作失败', icon: 'none' })
+          return
+        }
+        this.setData({ botStatus: 'new', botQr: '', botError: '' })
+        wx.showToast({ title: '已断开', icon: 'none' })
+      }
+    })
+  },
+
+  /** 临时开关：把隐藏的对话区调出来（chatHidden=false 即可，代码一直在）。 */
+  toggleChat() {
+    this.setData({ chatHidden: !this.data.chatHidden })
   },
 
   /** 读取本地字号设置并应用（与「我的」页共用 utils/store.js） */
@@ -93,17 +227,15 @@ Page({
   },
 
   onUnload() {
+    // 页面卸载：断 SSE + 停轮询（与 onHide 不同，这里是真正的离开）
     this.abortStream()
-  },
-
-  onHide() {
-    // 页面隐藏时不断开 SSE：后端任务是后台式的，回来可续传
+    this.stopBotPolling()
   },
 
   /**
-   * 分享：优先分享当前这条回答。
-   * 通过点击气泡右侧的"分享"进入；无选中时分享小程序本身。
-   */
+    * 分享：优先分享当前这条回答。
+    * 通过点击气泡右侧的"分享"进入；无选中时分享小程序本身。
+    */
   onShareAppMessage() {
     const idx = this.data.menuIndex
     const msg = idx >= 0 ? this.data.messages[idx] : null

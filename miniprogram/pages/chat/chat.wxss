@@ -1,4 +1,96 @@
-/* pages/chat/chat.wxss */
+/* pages/chat/chat.wxss
+   注：本页 tab 已改为「连接机器人」，机器人样式为本页主样式；
+   对话相关样式（.list/.bubble/.composer 等）全部保留，随时可恢复对话。 */
+
+/* ───────────── 机器人连接区 ───────────── */
+
+.bot-scroll {
+  flex: 1;
+  padding: 24rpx;
+  box-sizing: border-box;
+}
+
+.bot-card {
+  padding: 28rpx;
+  background: #1a1d24;
+  border-radius: 20rpx;
+}
+
+.bot-card-head {
+  margin-bottom: 16rpx;
+}
+
+.bot-card-title {
+  font-size: 30rpx;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+.bot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16rpx 0;
+}
+
+.bot-row-tap {
+  /* 可点区域给一点反馈，避免用户不确定是否点中 */
+  border-top: 1rpx solid #23262e;
+}
+
+.bot-row-tap:active {
+  opacity: 0.7;
+}
+
+.bot-row-label {
+  font-size: 30rpx;
+  color: #e8eaed;
+}
+
+.bot-row-label.danger {
+  color: #f87171;
+}
+
+.bot-row-value {
+  font-size: 26rpx;
+  color: #8b909a;
+}
+
+.bot-hint {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #5c616b;
+  line-height: 1.6;
+}
+
+/* 机器人二维码：白底才能被微信识别，不能跟随暗色主题 */
+.bot-qr-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16rpx 0 8rpx;
+}
+
+.bot-qr {
+  width: 400rpx;
+  height: 400rpx;
+  background: #ffffff;
+  border-radius: 16rpx;
+  padding: 12rpx;
+  box-sizing: border-box;
+}
+
+.bot-qr-tip {
+  margin-top: 16rpx;
+  font-size: 24rpx;
+  color: #8b909a;
+}
+
+.bot-on {
+  color: #34d399;
+}
+
 .page {
   display: flex;
   flex-direction: column;
