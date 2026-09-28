@@ -200,7 +200,16 @@ class Bash:
                     "duration": f"{elapsed:.2f}s"
                 })
             except subprocess.TimeoutExpired:
-                return _xml_response("error", f"Command timed out after {timeout} ms")
+                # 前台超时 → 自动转后台（参考 bt_agent 后台模式）
+                cmd_id, err = _CMD_MANAGER.start_command(command, cwd)
+                if err:
+                    return _xml_response("error", err)
+                result = (f"<terminal_id>new</terminal_id>\n"
+                          f"<terminal_cwd>{cwd}</terminal_cwd>\n"
+                          f"注意：命令已达到 {timeout} ms 前台等待时间上限，已自动切换为后台执行。\n"
+                          f"<command_id>{cmd_id}</command_id>\n"
+                          f"命令在后台运行中，请稍后调用 check_command_status 工具查看执行状态。\n")
+                return _xml_response("running", result)
             except Exception as e:
                 return _xml_response("error", str(e))
         else:
@@ -268,10 +277,11 @@ class Bash:
 RunCommand = Bash
 
 
+@register_tool(category="Agent", name_cn="检查命令状态", risk_level="low")
 class CheckCommandStatus:
     """
     Check the status and output of a non-blocking command.
-    
+
     Args:
         command_id: ID of the command to get status for.
         output_priority: Priority for displaying command output. 'bottom' (show newest lines) or 'top'.

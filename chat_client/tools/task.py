@@ -111,7 +111,7 @@ class AgentRegistry:
         self.register(AgentDefinition(
             name="search",
             description="A specialist for searching the codebase and file system. Use this for exploration and information gathering.",
-            allowed_tools=["Glob", "Grep", "LS", "Read", "CheckCommandStatus", "RunCommand"],
+            allowed_tools=["Glob", "Grep", "Read", "CheckCommandStatus", "Bash"],
             system_prompt_template="You are a search specialist. Your goal is to find information in the codebase efficiently. Use Glob and Grep tools to locate files and content. Use Read to inspect file contents. Do not modify files.",
             department="research"
         ))
@@ -128,7 +128,7 @@ class AgentRegistry:
         self.register(AgentDefinition(
             name="coder",
             description="A specialist for writing and modifying code.",
-            allowed_tools=["Glob", "Grep", "LS", "Read", "Write", "DeleteFile", "SearchReplace", "RunCommand", "CheckCommandStatus", "StopCommand", "Task"],
+            allowed_tools=["Glob", "Grep", "Read", "Write", "Edit", "Patch", "Bash", "CheckCommandStatus", "StopCommand", "Task"],
             system_prompt_template="You are a coding specialist. Your goal is to implement features and fix bugs. You can read and write files. You can also run commands to verify your work. If you need to search extensively, delegate to the search agent.",
             department="dev"
         ))
@@ -610,7 +610,7 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
                 if not _d:
                     continue
                 _dname, _dtask, _dout = _d
-                t_dept = _dept_title.get(_dept_of.get(_dname, ""), "")
+                t_dept = dept_title.get(_dept_of.get(_dname, ""), "")
                 dep_ctx.append(f"[{t_dept or '未分部'} · {_dname}] 任务:{_dtask}\n产出:{_dout[:1200]}")
             if dep_ctx:
                 sp += "\n\n[依赖步骤产出（请衔接，不要重复）]\n" + "\n---\n".join(dep_ctx)
@@ -621,7 +621,7 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
             full_prompt += f"\n\n[Expected Output] {seout}"
 
         # 推送步骤开始
-        emit_progress("crew_step", {"agent": sname, "dept": _dept_title.get(_dept_of.get(sname, ""), sname),
+        emit_progress("crew_step", {"agent": sname, "dept": dept_title.get(_dept_of.get(sname, ""), sname),
                                      "status": "running", "step": i, "task": stask[:60]})
 
         agent = Agent(session_id=session_id, config=config)
@@ -641,7 +641,7 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
             except Exception:
                 logger.warning("未处理的异常", exc_info=True)
         # 推送步骤完成
-        emit_progress("crew_step", {"agent": sname, "dept": _dept_title.get(_dept_of.get(sname, ""), sname),
+        emit_progress("crew_step", {"agent": sname, "dept": dept_title.get(_dept_of.get(sname, ""), sname),
                                      "status": "done", "step": i})
 
         return i, sname, stask, step_out

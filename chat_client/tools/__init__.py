@@ -8,6 +8,7 @@ import functools
 import inspect
 import json
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 import os
@@ -18,6 +19,8 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FutureTimeout
 from typing import Any, get_type_hints
+
+from .base import _xml_response, inject_tool_name  # noqa: F401  (工具结果统一封装)
 
 # 项目根目录（chat_client 的上一级），作为所有工具的默认工作目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -245,11 +248,12 @@ def _scan_dangerous_payload(kwargs: dict[str, Any]):
     return False, None
 
 
-def _risk_denied_response(reason: str) -> str:
-    return (
+def _risk_denied_response(reason: str, tool_name: str = "") -> str:
+    xml = (
         f"\n<tool>\n<toolcall_status>error</toolcall_status>\n"
         f"<toolcall_result>\n{reason}\n</toolcall_result>\n</tool>\n"
     )
+    return inject_tool_name(xml, tool_name)
 
 
 class ToolRegistry:
@@ -382,7 +386,8 @@ class ToolRegistry:
                 self._audit(tool_label, risk, audit_kwargs, 0, "blocked-dangerous", pattern or "")
                 return _risk_denied_response(
                     "此操作命中危险命令黑名单，已被安全策略拦截，拒绝执行。"
-                    "请勿尝试绕过，请告知用户该操作被禁止。"
+                    "请勿尝试绕过，请告知用户该操作被禁止。",
+                    tool_name=tool_label,
                 )
 
         # 2. high 风险工具：需用户确认；成员代理豁免（招聘即授权）
@@ -394,7 +399,8 @@ class ToolRegistry:
                 f"此操作（{tool_label}）为高风险操作，执行前必须获得用户的明确确认。"
                 "请停止调用该工具，向用户说明将要执行的操作内容与潜在风险，"
                 "待用户明确同意后再重试；若用户已同意但工具仍被拦截，"
-                "请联系管理员在面板设置或通过环境变量 AI_AGENT_RISK_GUARD=off 调整安全策略。"
+                "请联系管理员在面板设置或通过环境变量 AI_AGENT_RISK_GUARD=off 调整安全策略。",
+                tool_name=tool_label,
             )
 
         # 3. medium 风险：放行并记录日志
@@ -405,7 +411,7 @@ class ToolRegistry:
         verr = self._validate_args(name, kwargs)
         if verr:
             self._audit(tool_label, risk, audit_kwargs, 0, "invalid-params", verr)
-            return _risk_denied_response(f"参数校验未通过：{verr}")
+            return _risk_denied_response(f"参数校验未通过：{verr}", tool_name=tool_label)
 
         # 5. 带超时执行：防止单个工具卡死整条任务
         timeout_s = meta.get("timeout") or self.default_tool_timeout
@@ -445,7 +451,7 @@ class ToolRegistry:
                  logger.info("[ToolBackground] %s 转后台 task=%s", tool_label, task_id)
                  self._audit(tool_label, risk, audit_kwargs,
                              int((time.time() - started) * 1000), "background", task_id)
-                 return _xml_response("running", msg)
+                 return inject_tool_name(_xml_response("running", msg), tool_label)
         except Exception as e:
             dur = int((time.time() - t0) * 1000)
             self._audit(tool_label, risk, audit_kwargs, dur, "error", str(e))
@@ -453,7 +459,7 @@ class ToolRegistry:
 
         dur = int((time.time() - t0) * 1000)
         self._audit(tool_label, risk, audit_kwargs, dur, "ok", str(result)[:200])
-        return result
+        return inject_tool_name(result, tool_label)
 
     def _load_states(self) -> dict[str, Any]:
         """从文件加载工具状态"""
