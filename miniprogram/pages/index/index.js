@@ -8,7 +8,7 @@ const store = require('../../utils/store.js')
 const auth = require('../../utils/auth.js')
 
 // 应用版本：与 app.json / 上传版本保持一致
-const APP_VERSION = '1.1.0'
+const APP_VERSION = '1.3.0'
 
 Page({
   data: {

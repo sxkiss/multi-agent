@@ -342,15 +342,15 @@ class TestMiniprogramChannelGuard(unittest.TestCase):
     def test_guard_appended_and_idempotent_shape(self):
         out = W._append_miniprogram_guard("BASE")
         self.assertTrue(out.startswith("BASE"), "应在原提示词之后追加，不覆盖")
-        self.assertIn("【渠道约束：小程序】", out)
+        self.assertIn("【渠道约束：终端用户】", out)
         self.assertIn("严禁透露任何服务端内部信息", out)
 
     def test_guard_handles_empty_prompt(self):
         """小程序 single 模式若没兜底人设，原提示词可能为空，拼接不得报错"""
         out = W._append_miniprogram_guard("")
-        self.assertIn("【渠道约束：小程序】", out)
+        self.assertIn("【渠道约束：终端用户】", out)
         out_none = W._append_miniprogram_guard(None)
-        self.assertIn("【渠道约束：小程序】", out_none)
+        self.assertIn("【渠道约束：终端用户】", out_none)
 
     def test_single_persona_exists_and_forbids_fabrication(self):
         p = W._MINIPROGRAM_SINGLE_PERSONA
@@ -361,6 +361,13 @@ class TestMiniprogramChannelGuard(unittest.TestCase):
         """约束必须是模块级常量：两处各写一份会漏改"""
         self.assertTrue(hasattr(W, "_MINIPROGRAM_CHANNEL_GUARD"))
         self.assertIn("渠道约束", W._MINIPROGRAM_CHANNEL_GUARD)
+        # 渠道泛化后旧名为别名，必须与新版指向同一常量，防止改一处漏一处
+        self.assertTrue(hasattr(W, "_TERMINAL_CHANNEL_GUARD"))
+        self.assertIs(W._MINIPROGRAM_CHANNEL_GUARD, W._TERMINAL_CHANNEL_GUARD)
+        self.assertIs(W._MINIPROGRAM_SINGLE_PERSONA, W._TERMINAL_SINGLE_PERSONA)
+        # clawbot 与小程序同属终端渠道，受同一约束
+        self.assertIn("clawbot", W._TERMINAL_CHANNELS)
+        self.assertIn("miniprogram", W._TERMINAL_CHANNELS)
 
 
 if __name__ == "__main__":
