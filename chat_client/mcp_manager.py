@@ -37,8 +37,52 @@ _FALLBACK_MARKET_URL = "https://api.mcp.github.com/v0/servers"
 # 默认源列表：主源失败时自动兜底第二个，避免单点网络问题让市场整体不可用
 _PLACEHOLDER_MARKET_URLS = [_DEFAULT_MARKET_URL, _FALLBACK_MARKET_URL]
 
+# 单次拉取的翻页上限。registry 不返回 total，且本机实测每页 12~18s，
+# 不设上限会一直翻页直到网络失败，接口挂住数分钟（前端表现为一直转圈）。
+# 上限内的条目数已足够面板浏览与安装，剩余部分靠 60min 缓存逐次补齐。
+_MAX_MARKET_PAGES = 12
+
 
 # ---- 市场接口兼容层：两个源的字段命名/结构差异在此处收敛 ----
+
+
+_PAGE_PARAM_CACHE: dict[str, str] = {}  # {源 URL: 生效的分页参数名}
+
+
+def _detect_page_param(url: str, errors: list[str]) -> str:
+    """探测该源接受的分页参数名，结果按 URL 缓存。
+
+    两个源对每页条数的参数名不一致：MCP 官方 registry 认 limit
+    （不认 page_size，会被静默忽略而只返回默认 30 条），GitHub 市场认
+    page_size。参数名写死会让其中一方每页只拿 30 条，翻页次数翻三倍，
+    实测首拉超过 4 分钟且经常中途超时——前端表现为市场一直转圈。
+    """
+    cached = _PAGE_PARAM_CACHE.get(url)
+    if cached:
+        return cached
+
+    import requests as _requests
+
+    headers = {"User-Agent": "mcp-market", "Accept": "application/json"}
+    # 候选按"更可能生效"排序：registry 在前，GitHub 在后
+    for cand in ("limit", "page_size"):
+        try:
+            resp = _requests.get(url, params={cand: 100}, timeout=(10, 25), headers=headers)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            servers = data.get("servers") if isinstance(data, dict) else None
+            if isinstance(servers, list) and len(servers) > 30:
+                # 超过默认页大小，说明该参数确实生效
+                _PAGE_PARAM_CACHE[url] = cand
+                logger.info("[mcp_market] %s 分页参数识别为 %s", url, cand)
+                return cand
+        except Exception:
+            continue
+
+    # 探测不出（网络抖动等）：退回 limit，下次请求仍会重新探测
+    errors.append(f"{url}: 分页参数探测失败，暂用 limit")
+    return "limit"
 
 
 def _try_get_json(url: str, params: dict, errors: list[str]) -> dict | None:
@@ -367,8 +411,11 @@ class McpManager:
         errors = []
 
         for url in urls:
+            # 各源分页参数名不同（registry=limit / GitHub=page_size），先探测再拉
+            page_param = _detect_page_param(url, errors)
+
             # 首页：拿不到就换下一个源（错误信息由 _try_get_json 统一收集）
-            data = _try_get_json(url, {"page_size": 100}, errors)
+            data = _try_get_json(url, {page_param: 100}, errors)
             if data is None:
                 continue
 
@@ -377,18 +424,33 @@ class McpManager:
                 errors.append(f"{url}: 缺少 servers 字段")
                 continue
 
-            # 翻页拉全量（各源实际每页均为 30 条，需多页才能拉完）
+            # 翻页拉全量：每页 100 条，按已拿到的首页条数估算总量与页数上限
             all_servers = list(servers)
             meta = data.get("metadata") or {}
             total = meta.get("total") or 0
             cursor = _next_cursor(meta)
-            max_pages = max(10, (total // 30) + 3)  # 按总数估计页数，留余量
+            page_size = len(servers) or 100
+            # 本机到 registry 实测每页 12~18s 且常抖动，故必须设硬上限：
+            # 无 total 时按 _MAX_MARKET_PAGES 收敛，否则会一直翻到网络失败为止
+            # （表现为接口挂住数分钟、前端一直转圈）。
+            if total:
+                max_pages = min(_MAX_MARKET_PAGES, (total // page_size) + 2 or _MAX_MARKET_PAGES)
+            else:
+                max_pages = _MAX_MARKET_PAGES
             page = 0
+            consecutive_fails = 0
             while cursor and page < max_pages:
                 page += 1
-                page_data = _try_get_json(url, {"page_size": 100, "cursor": cursor}, errors)
+                page_data = _try_get_json(url, {page_param: 100, "cursor": cursor}, errors)
                 if page_data is None:
-                    break  # 翻页失败不致命：保留已拉取的部分，错误已计入 errors
+                    consecutive_fails += 1
+                    # 单页失败不致命（保留已拉取数据）；但连续失败说明源已不可用，
+                    # 继续翻只是白等，直接收工返回已有部分。
+                    if consecutive_fails >= 3:
+                        logger.info("[mcp_market] %s 连续 %d 页失败，停止翻页", url, consecutive_fails)
+                        break
+                    continue
+                consecutive_fails = 0
                 all_servers.extend(page_data.get("servers", []))
                 cursor = _next_cursor(page_data.get("metadata") or {})
 
