@@ -305,6 +305,14 @@ def _map_agent_chunk(chunk):
         return [("usage", {"usage": chunk.get("usage", {})})]
     if t == "meta_info":
         return [("meta_info", {"user_msg_id": chunk.get("user_msg_id"), "ai_msg_id": chunk.get("ai_msg_id")})]
+    if t == "compact_summary":
+        # 自动上下文压缩产生的摘要：作为独立事件透传，前端可据此提示"上下文已压缩"。
+        # 终端渠道由 HIDDEN_EVENTS_FOR_TERMINAL 静默丢弃，不刷屏。
+        return [("compact_summary", {
+            "msg_id": chunk.get("msg_id"),
+            "content": chunk.get("content", ""),
+            "timestamp": chunk.get("timestamp"),
+        })]
     if t and t not in _KNOWN_SSE_EVENTS:
         # 仅对真正未知的 type 降级；降级时也必须保留完整 chunk 作 data，
         # 不可取 chunk.get("response") —— tool_call/tool_result 等 chunk

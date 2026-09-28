@@ -29,7 +29,7 @@ from chat_client.memory import MemoryManager
 from chat_client.retrieval import ExternalRAGService, RAGService, Mem0Service
 
 from .tools import registry, set_session_allow_high
-from .tools.base import _xml_response
+from .tools.base import _xml_response, inject_tool_name
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +201,10 @@ class Agent:
 
         # 压缩失败连击计数：达到阈值层数上限前，失败只升级阈值、不硬截断
         self._compress_fail_streak = 0
+        # 本会话已成功压缩的轮数（实例内累加，用于 90%→95%→97% 渐进）。
+        # 不能用 history 里的摘要条数代替：每轮成功都会删旧摘要插新摘要，
+        # 该数恒为 1，渐进逻辑会永远卡在第二层。
+        self._compress_round = 0
         
         # 将 MemoryManager 确定的 session_dir 传递给 RAGService
         self.rag = RAGService(
@@ -815,7 +819,9 @@ Here is some useful information about the environment you are running in:
                     
                     #处理不存在的工具
                     if not tool_exists:
-                        result_str = _xml_response("error", f"Error: Tool '{func_name}' does not exist.")
+                        result_str = inject_tool_name(
+                            _xml_response("error", f"Error: Tool '{func_name}' does not exist."),
+                            func_name)
                         content_structure = [{"type": "text", "text": result_str}]
                         self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
                         messages.append({
@@ -828,7 +834,9 @@ Here is some useful information about the environment you are running in:
                     #处理未启用的工具
                     if not tool_enabled:
                         tool_id = registry.get_tool_id(func_name)
-                        result_str = _xml_response("error", f"Error: Tool '{func_name}' (ID: {tool_id}) is not enabled. You do not have permission to use this tool.")
+                        result_str = inject_tool_name(
+                            _xml_response("error", f"Error: Tool '{func_name}' (ID: {tool_id}) is not enabled. You do not have permission to use this tool."),
+                            func_name)
                         content_structure = [{"type": "text", "text": result_str}]
                         self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
                         messages.append({
@@ -914,9 +922,13 @@ Here is some useful information about the environment you are running in:
                         if func:
                             result_str = func(**args)
                         else:
-                            result_str = _xml_response("error", f"Error: Tool {func_name} not found.")
+                            result_str = inject_tool_name(
+                                _xml_response("error", f"Error: Tool {func_name} not found."),
+                                func_name)
                     except Exception as e:
-                        result_str = _xml_response("error", f"Error executing tool: {e!s}")
+                        result_str = inject_tool_name(
+                            _xml_response("error", f"Error executing tool: {e!s}"),
+                            func_name)
 
                     yield {
                         "type": "tool_result",
@@ -1228,28 +1240,28 @@ Here is some useful information about the environment you are running in:
 
         messages = [{"role": "system", "content": system_prompt}]
         
-        # 自动上下文压缩：当完整历史超过预算时，执行 AI 摘要压缩
-        # 参考 opencode：压缩完整历史记录，而非滑动窗口
+        # 自动上下文压缩：当滑动窗口超过预算时，执行 AI 摘要压缩。
+        # 【重要】必须用 window 而非 full_history 计量：滑动窗口才是真正发给模型的量。
+        # 旧代码用 full_history 计量，而压缩只截断窗口不删历史 → full_history 单调递增，
+        # 导致压缩成功后阈值仍天天被突破，每轮请求都白白多打一次摘要 API（实测 794K→1071K）。
         # 语义：1KB = 1024 tokens（256 KB → 262144 tokens）
         budget_tokens = self.context_window_kb * 1024
         if budget_tokens > 0:
-            total_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in full_history)
+            window_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in window)
+            full_history_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in full_history)
             
             # 渐进式压缩：一轮 90% → 二轮 95% → 三轮 97%
-            # 已有摘要数 = round + 1；首次触发 90%，二次 95%，三次 97%
-            existing_summaries = sum(
-                1 for m in full_history
-                if m.get("is_summary") or (
-                    isinstance(m.get("content"), str)
-                    and m["content"].startswith("[自动压缩的历史摘要]")
-                )
-            )
+            # 轮次取实例内累加计数（成功才 +1）；history 中摘要条数恒为 1，不能用作轮次。
             COMPRESS_THRESHOLDS = [0.90, 0.95, 0.97]
-            threshold = COMPRESS_THRESHOLDS[min(existing_summaries, len(COMPRESS_THRESHOLDS) - 1)]
+            threshold = COMPRESS_THRESHOLDS[min(self._compress_round, len(COMPRESS_THRESHOLDS) - 1)]
             
-            if total_tokens > budget_tokens * threshold:
+            if window_tokens > budget_tokens * threshold:
                 try:
-                    logger.info(f"完整历史超过 {threshold*100:.0f}% 阈值 ({total_tokens}/{budget_tokens} tokens)，执行自动压缩...")
+                    logger.info(
+                        f"滑动窗口超过 {threshold*100:.0f}% 阈值 "
+                        f"(window {window_tokens} / budget {budget_tokens} tokens，"
+                        f"完整历史 {full_history_tokens}，第 {self._compress_round + 1} 轮)，执行自动压缩..."
+                    )
                     # 安全切割：cut 点对齐到 user 轮次边界，保证工具调用序列完整
                     if len(full_history) > KEEP_RECENT_TURNS:
                         safe_cut = len(full_history) - KEEP_RECENT_TURNS
@@ -1275,7 +1287,15 @@ Here is some useful information about the environment you are running in:
                         early_msgs = full_history[start_idx:cut_idx]
                         recent_msgs = full_history[cut_idx:]
                         early_ids = [m.get("id") for m in early_msgs if m.get("id")]
-                        if early_msgs:
+                        if not early_msgs:
+                            # 摘要紧邻 cut 点、且保留区内没有新的 user 轮次 → 无事可压。
+                            # 这是正常状态（不是失败），但必须记日志，否则日志里只见"触发"不见结果，
+                            # 排查时无法区分"压缩了但没记"和"压根没压"。
+                            logger.info(
+                                f"跳过压缩：无可压缩增量（start_idx={start_idx} == cut_idx={cut_idx}），"
+                                f"最近 {KEEP_RECENT_TURNS} 条内无新 user 轮次"
+                            )
+                        else:
                             # 构建摘要输入（工具输出截断，总量限制）
                             # 重要：如果已有旧摘要，最新摘要必须能承接旧摘要（旧摘要随后被替换/隐藏），
                             # 因此把旧摘要内容作为"上轮摘要"前置，新摘要命中"增量+承接"。
@@ -1337,7 +1357,15 @@ Here is some useful information about the environment you are running in:
                                     max_tokens=1000,
                                     timeout=30  # 压缩是旁路调用：最多等 30s，失败即跳过，不让主请求陪等
                                 )
-                                summary_content = summary_resp.choices[0].message.content or ""
+                                _msg = summary_resp.choices[0].message
+                                summary_content = (_msg.content or "").strip()
+                                # thinking 模型常把全部输出放进 reasoning_content，content 为 None。
+                                # 只读 content 会把这类成功响应误判成"返回空"（实测连击 6 次），
+                                # 故回退取 reasoning_content。
+                                if not summary_content:
+                                    summary_content = (
+                                        getattr(_msg, "reasoning_content", None) or ""
+                                    ).strip()
                             except Exception as e:
                                 logger.warning(f"AI 摘要请求异常: {e}")
                                 summary_content = ""
@@ -1346,7 +1374,7 @@ Here is some useful information about the environment you are running in:
                             if not summary_content.strip():
                                 self._compress_fail_streak += 1
                                 logger.warning(
-                                    f"AI 压缩摘要第 {existing_summaries + 1} 轮失败（返回空，连击 "
+                                    f"AI 压缩摘要第 {self._compress_round + 1} 轮失败（返回空，连击 "
                                     f"{self._compress_fail_streak}），跳过压缩"
                                     + ("；已到失败上限，本轮起允许硬截断兜底" if self._compress_fail_streak >= 3 else "")
                                 )
@@ -1364,9 +1392,11 @@ Here is some useful information about the environment you are running in:
                                     # 否则 get_sliding_window() 找到"最新摘要"还是旧的那条。
                                     if prev_summary_ids:
                                         self.memory.remove_messages(prev_summary_ids)
+                                    # 只有成功落盘并重建窗口后，才认定这一轮压缩完成并递进阈值层
+                                    self._compress_round += 1
                                     window = self.memory.get_sliding_window()
-                                    total_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in window)
-                                    logger.info(f"第 {existing_summaries + 1} 轮压缩成功，窗口 tokens: {total_tokens}")
+                                    window_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in window)
+                                    logger.info(f"第 {self._compress_round} 轮压缩成功，窗口 tokens: {window_tokens}")
                                 except Exception as e:
                                     logger.warning(f"写入压缩摘要失败: {e}")
                 except Exception as e:
@@ -1374,7 +1404,7 @@ Here is some useful information about the environment you are running in:
 
             # 硬截断兜底：仅当压缩已连续失败 3 次（90/95/97 三层都试过）且仍超预算时才执行。
             # 正常路径压缩失败只是升级阈值层，下一轮再试，绝不因一次失败就丢消息。
-            if total_tokens > budget_tokens and self._compress_fail_streak >= 3:
+            if window_tokens > budget_tokens and self._compress_fail_streak >= 3:
                 kept = []
                 current_tokens = 0
                 for msg in reversed(window):
