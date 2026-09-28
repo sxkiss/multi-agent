@@ -1,4 +1,176 @@
-/* pages/chat/chat.wxss */
+/* pages/chat/chat.wxss
+   注：本页 tab 已改为「连接机器人」，机器人样式为本页主样式；
+   对话相关样式（.list/.bubble/.composer 等）全部保留，随时可恢复对话。 */
+
+/* ───────────── 机器人连接区 ───────────── */
+
+.bot-scroll {
+  flex: 1;
+  padding: 24rpx;
+  box-sizing: border-box;
+}
+
+.bot-card {
+  padding: 28rpx;
+  background: #1a1d24;
+  border-radius: 20rpx;
+}
+
+.bot-card-head {
+  margin-bottom: 16rpx;
+}
+
+.bot-card-title {
+  font-size: 30rpx;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+.bot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16rpx 0;
+}
+
+.bot-row-tap {
+  /* 可点区域给一点反馈，避免用户不确定是否点中 */
+  border-top: 1rpx solid #23262e;
+}
+
+.bot-row-tap:active {
+  opacity: 0.7;
+}
+
+.bot-row-label {
+  font-size: 30rpx;
+  color: #e8eaed;
+}
+
+.bot-row-label.danger {
+  color: #f87171;
+}
+
+.bot-row-value {
+  font-size: 26rpx;
+  color: #8b909a;
+}
+
+.bot-hint {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #5c616b;
+  line-height: 1.6;
+}
+
+/* 已连接后的使用说明块：与下方「断开机器人」之间留间距，避免挤在一起 */
+.bot-guide {
+  margin-top: 12rpx;
+  padding: 16rpx 20rpx;
+  background: #f6f7f9;
+  border-radius: 12rpx;
+}
+
+.bot-guide-title {
+  display: block;
+  font-size: 24rpx;
+  font-weight: 600;
+  color: #2f333a;
+  margin-bottom: 4rpx;
+}
+
+/* 末尾提示降级为更弱的灰色，与上面三条步骤区分开 */
+.bot-guide-note {
+  margin-top: 10rpx;
+  color: #8b909a;
+}
+
+/* 第 1 步整行可点（复制关键词）：行内左右布局，右侧是「复制」按钮。
+   点击区域比只给按钮大，手机上更好按。 */
+.bot-guide-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+}
+
+.bot-guide-step {
+  margin-top: 4rpx;
+  flex: 1;
+}
+
+.bot-guide-copy-btn {
+  flex-shrink: 0;
+  padding: 4rpx 16rpx;
+  font-size: 22rpx;
+  color: #2f6fed;
+  border: 1rpx solid #2f6fed;
+  border-radius: 999rpx;
+}
+
+/* 机器人二维码：白底才能被微信识别，不能跟随暗色主题 */
+.bot-qr-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16rpx 0 8rpx;
+}
+
+.bot-qr {
+  width: 400rpx;
+  height: 400rpx;
+  background: #ffffff;
+  border-radius: 16rpx;
+  padding: 12rpx;
+  box-sizing: border-box;
+}
+
+.bot-qr-tip {
+  margin-top: 16rpx;
+  font-size: 24rpx;
+  color: #8b909a;
+}
+
+/* 忙碌条：机器人正在处理微信消息时的顶部反馈 */
+.bot-busy {
+  margin: 12rpx 0;
+  padding: 16rpx 20rpx;
+  background: #16241c;
+  border: 1rpx solid #2a4a38;
+  border-radius: 12rpx;
+}
+
+.bot-busy-dot {
+  display: inline-block;
+  width: 12rpx;
+  height: 12rpx;
+  margin-right: 12rpx;
+  border-radius: 50%;
+  background: #34d399;
+  vertical-align: middle;
+}
+
+.bot-busy-text {
+  font-size: 26rpx;
+  color: #34d399;
+  vertical-align: middle;
+}
+
+.bot-busy-preview {
+  display: block;
+  margin-top: 10rpx;
+  font-size: 22rpx;
+  color: #8b909a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bot-on {
+  color: #34d399;
+}
+
 .page {
   display: flex;
   flex-direction: column;
@@ -13,10 +185,20 @@
 }
 
 .empty {
-  margin-top: 120rpx;
+  margin-top: 140rpx;
   text-align: center;
+}
+
+.empty-title {
+  color: #e8eaed;
+  font-size: 34rpx;
+  font-weight: 500;
+}
+
+.empty-sub {
+  margin-top: 12rpx;
   color: #5c616b;
-  font-size: 28rpx;
+  font-size: 26rpx;
 }
 
 .msg {
@@ -32,10 +214,16 @@
   max-width: 78%;
   padding: 20rpx 24rpx;
   border-radius: 20rpx;
-  font-size: 28rpx;
+  /* 字号继承自页面根节点的 font-size（「我的」页可调），不写死 */
   line-height: 1.65;
   word-break: break-word;
   white-space: pre-wrap;
+  transition: opacity 0.15s;
+}
+
+/* 长按时的视觉反馈：告诉用户"选中了" */
+.bubble.pressed {
+  opacity: 0.72;
 }
 
 .bubble.user {
@@ -78,24 +266,128 @@
   text-align: center;
 }
 
-.composer {
+/* ───────────── 代码块 ───────────── */
+
+.code-block {
+  margin: 12rpx 0;
+  background: #12141a;
+  border: 1rpx solid #2c303a;
+  border-radius: 12rpx;
+  overflow: hidden;
+}
+
+.code-head {
   display: flex;
   align-items: center;
-  gap: 16rpx;
+  justify-content: space-between;
+  padding: 8rpx 16rpx;
+  border-bottom: 1rpx solid #2c303a;
+}
+
+.code-lang {
+  font-size: 22rpx;
+  color: #6b7280;
+}
+
+.code-lang {
+  margin-right: 16rpx;
+}
+
+.code-open {
+  flex: 1;
+  font-size: 22rpx;
+  color: #d0a35a;
+}
+
+.code-copy {
+  padding: 4rpx 16rpx;
+  font-size: 22rpx;
+  color: #6ea8fe;
+  border: 1rpx solid #2f4a7a;
+  border-radius: 20rpx;
+}
+
+.code-body {
+  padding: 12rpx 16rpx;
+}
+
+.code-text {
+  display: block;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #7dd3a8;
+  white-space: pre;
+  font-family: Menlo, Consolas, monospace;
+}
+
+/* ───────────── 图片 ───────────── */
+
+.md-image {
+  display: block;
+  width: 100%;
+  margin: 12rpx 0;
+  border-radius: 12rpx;
+  background: #12141a;
+}
+
+/* ───────────── 输入区 ───────────── */
+
+.composer {
   padding: 16rpx 24rpx;
   padding-bottom: calc(16rpx + env(safe-area-inset-bottom));
   background: #15181e;
   border-top: 1rpx solid #23262e;
 }
 
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.icon-btn {
+  flex-shrink: 0;
+  width: 64rpx;
+  height: 64rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f1115;
+  border: 1rpx solid #2c303a;
+  border-radius: 50%;
+}
+
+.icon-text {
+  font-size: 28rpx;
+}
+
 .input {
   flex: 1;
+  min-width: 0;
   padding: 16rpx 20rpx;
   font-size: 28rpx;
   color: #e8eaed;
   background: #0f1115;
   border: 1rpx solid #2c303a;
   border-radius: 28rpx;
+}
+
+.voice-btn {
+  flex: 1;
+  min-width: 0;
+  padding: 18rpx 20rpx;
+  text-align: center;
+  font-size: 28rpx;
+  color: #8b909a;
+  background: #0f1115;
+  border: 1rpx solid #2c303a;
+  border-radius: 28rpx;
+}
+
+.voice-btn.recording {
+  color: #fff;
+  background: #4a7cf7;
+  border-color: #4a7cf7;
 }
 
 .btn {
@@ -106,4 +398,95 @@
 .btn.stop {
   background: #3a3f4b;
   color: #e8eaed;
+}
+
+/* ───────────── 快捷指令面板 ───────────── */
+
+.quick-panel {
+  padding: 16rpx 24rpx;
+  background: #15181e;
+  border-top: 1rpx solid #23262e;
+}
+
+.quick-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.quick-title {
+  font-size: 24rpx;
+  color: #8b909a;
+}
+
+.quick-close {
+  font-size: 24rpx;
+  color: #6ea8fe;
+}
+
+.quick-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+.quick-item {
+  padding: 10rpx 20rpx;
+  font-size: 25rpx;
+  color: #e8eaed;
+  background: #1a1d24;
+  border: 1rpx solid #2c303a;
+  border-radius: 28rpx;
+}
+
+/* ───────────── 长按菜单 ───────────── */
+
+.mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 100;
+}
+
+.action-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: #1a1d24;
+  border-radius: 24rpx 24rpx 0 0;
+  z-index: 101;
+}
+
+.as-title {
+  padding: 20rpx 24rpx;
+  font-size: 24rpx;
+  color: #6b7280;
+  text-align: center;
+}
+
+.as-item {
+  padding: 26rpx 24rpx;
+  font-size: 30rpx;
+  color: #e8eaed;
+  text-align: center;
+  border-top: 1rpx solid #23262e;
+}
+
+.as-item.danger {
+  color: #f87171;
+}
+
+.as-cancel {
+  padding: 26rpx 24rpx;
+  margin-top: 12rpx;
+  font-size: 30rpx;
+  color: #8b909a;
+  text-align: center;
+  border-top: 1rpx solid #23262e;
 }

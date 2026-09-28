@@ -15,7 +15,7 @@
 // 使用前提：Nginx 反代必须配置 `proxy_buffering off`，否则流式会被缓冲
 // 成一次性返回（真机常见坑）。
 
-const { baseUrl } = require('./config.js')
+const { getBaseUrl, CONFIG } = require('./config.js')
 const app = getApp()
 
 // ---------- UTF-8 解码 ----------
@@ -69,7 +69,18 @@ function decodeUTF8Manual(bytes) {
 
 /**
  * 解析一个完整的 SSE 事件块（形如 "id: 1\nevent: message\ndata: {...}\n"）。
- * @returns {id:number, event:string, data:any} 或 null
+ *
+ * 返回 {id, event, data, rawData}：
+ *   - data    ：尝试 JSON 解析的结果；失败则为原始字符串。
+ *   - rawData ：data 字段的原始文本（未经 JSON 解析）。
+ *
+ * 必须保留 rawData 的原因：
+ *   message 事件的 data 是**纯文本分片**（如 "390"、"老板好"），服务端为防
+ *   SSE 断行已把换行转义成字面 "\n"，并未加 JSON 引号。此时 JSON.parse 会
+ *   把纯数字分片转成 number（"390" → 390）、把空格/空串判为无效，导致
+ *   调用方取不到文本而整片丢弃——表现为回答里的数字莫名消失。
+ *   因此调用方（chat.js）优先用 rawData，语义与浏览器端一致。
+ * @returns {id:number, event:string, data:any, rawData:string} 或 null
  */
 function parseEventBlock(block) {
   if (!block || !block.trim()) return null
@@ -102,9 +113,9 @@ function parseEventBlock(block) {
   try {
     data = JSON.parse(raw)
   } catch (e) {
-    data = raw // 非 JSON 时按字符串透传（如 message 事件是纯文本 JSON 串）
+    data = raw // 非 JSON 时按字符串透传
   }
-  return { id, event, data }
+  return { id, event, data, rawData: raw }
 }
 
 /**
@@ -118,11 +129,17 @@ function parseEventBlock(block) {
  * @param {function} opts.onEnd   () => void
  * @returns {object} RequestTask，可调用 .abort() 主动断开
  */
-function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd }) {
+function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd, nodeIndex = 0, tryIndex = 0 }) {
   const token = (app && app.globalData && app.globalData.token) || wx.getStorageSync('token') || ''
+  // 节点选择：外部传 nodeIndex 时用指定节点（故障转移/重连用），否则取当前节点。
+  // 与 request.js 的故障转移共用同一份 CONFIG.nodes，避免两处配置漂移。
+  const nodes = (CONFIG && CONFIG.nodes) || []
+  const baseUrl = nodeIndex > 0 && nodes[nodeIndex] ? nodes[nodeIndex] : getBaseUrl()
   const url =
     `${baseUrl}/api/chat/events?session_id=${encodeURIComponent(sessionId)}` +
     `&last_id=${lastId}` +
+    // 渠道标识：SSE 订阅同样需要，便于服务端按渠道审计与限流
+    `&client_type=miniprogram` +
     (token ? `&token=${encodeURIComponent(token)}` : '')
 
   // 跨块缓冲区：承载尚未构成完整事件（未遇到 \n\n）的残余文本
@@ -135,9 +152,19 @@ function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd }) {
     method: 'GET',
     enableChunked: true, // 关键：开启分块接收，否则只能一次性拿到完整响应
     responseType: 'arraybuffer',
+    // 关键：SSE 是长连接，绝不能沿用微信默认 60s 超时。
+    // 实测未设置时每 ~60s 被强制断开（日志可见反复订阅、last_id 卡住），
+    // 长任务（多轮工具/生成图片）会被反复打断，重连次数耗尽后直接失去流。
+    // 官方文档只说明默认 60000ms、未定义 0 的语义，故显式给一个足够大的值，
+    // 配合 last_id 续传兜底（超时后按 lastId 重连，不丢事件）。
+    timeout: 600000, // 10 分钟；超时后由断线重连续传
     header: {
       Accept: 'text/event-stream',
       'Cache-Control': 'no-cache',
+      // 渠道标识：SSE 同样需要，便于服务端按渠道限流/审计
+      'X-Client-Type': 'miniprogram',
+      'X-Client-Version': '1.4.0',
+      'X-Client-Appid': 'wxbb9e77f84a643da8',
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     },
     success() {
@@ -148,6 +175,17 @@ function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd }) {
     fail(err) {
       if (!ended) {
         ended = true
+        // 节点故障转移：tryIndex > 0 表示当前是重试，还有后续节点可试
+        const totalNodes = nodes.length
+        if (tryIndex < totalNodes - 1) {
+          // 还有下一个节点，切过去重连（不触发前端 onError，用户无感知）
+          subscribe({
+            sessionId, lastId, onEvent, onError, onEnd,
+            nodeIndex: tryIndex + 1
+          })
+          return
+        }
+        // 所有节点都试过了：把错误透传给前端
         onError && onError(err.errMsg || '事件流连接失败')
       }
     }

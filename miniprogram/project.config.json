@@ -1,5 +1,5 @@
 {
-  "description": "AI Agent 网关小程序客户端",
+  "description": "基于开源助手改造的服务型助手",
   "packOptions": {
     "ignore": [],
     "include": []

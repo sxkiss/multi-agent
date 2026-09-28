@@ -71,10 +71,11 @@ button:active{background:#1e40af}
   </div>
 </div>
 
+<script src="/static/js/panel-auth.js"></script>
 <script>
 const $ = id => document.getElementById(id)
 function api(url, opts) {
-  return fetch(url, opts).then(r => r.json())
+  return fetch(url, PanelAuth.authOpts(opts)).then(r => r.json())
 }
 
 async function load() {
@@ -131,7 +132,7 @@ async function testCodex() {
   $('testMsg').textContent = '测试中...'
   $('testMsg').className = 'small'
   try {
-    const r = await fetch('/api/codex/test', { method: 'POST' })
+    const r = await fetch('/api/codex/test', PanelAuth.authOpts({ method: 'POST' }))
     const d = await r.json()
     if (d.status) {
       $('testMsg').textContent = '测试成功 ✓ codex CLI 工作正常'

@@ -54,6 +54,10 @@ PUBLIC_PREFIX = (
     "/api/auth/wxlogin",
     "/api/auth/status",
     "/api/auth/logout",
+    # clawbot 服务间接口：用 x-service-key 认证（见 web_server._check_service_key），
+    # 不走用户 Bearer token。若在此拦截，clawbot 无法换取服务令牌。
+    # 安全性由接口内部的服务密钥校验保证，不因免鉴权而降低。
+    "/api/service/token",
     "/favicon.png",
     "/static/",
     "/assets/",

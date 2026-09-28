@@ -14,8 +14,16 @@ const fs = require('fs')
 const ci = require('miniprogram-ci')
 
 const ROOT = path.resolve(__dirname, '..')
-const KEY = path.join(ROOT, 'private.key')
 const APPID = JSON.parse(fs.readFileSync(path.join(ROOT, 'project.config.json'), 'utf8')).appid
+
+// 上传密钥：优先 private.key，其次后台下载的 private.<appid>.key
+function resolveKey() {
+  const fixed = path.join(ROOT, 'private.key')
+  if (fs.existsSync(fixed)) return fixed
+  const hit = fs.readdirSync(ROOT).find((f) => /^private\..+\.key$/.test(f))
+  return hit ? path.join(ROOT, hit) : fixed
+}
+const KEY = resolveKey()
 
 async function main() {
   if (!fs.existsSync(KEY)) {

@@ -16,6 +16,7 @@ import datetime
 import importlib
 import inspect
 import json
+import hashlib
 import os
 import random
 import re
@@ -130,6 +131,35 @@ def _validate_session_id(session_id) -> tuple:
     return True, sid
 
 
+def _session_history_mtime(session_file: str) -> float:
+    """会话历史的最后修改时间（快照与 journal 取较新者）。
+
+    只取 sessions.json 会在"只有 journal"的会话上抛 FileNotFoundError /
+    得到过期时间，导致列表排序错乱。
+    """
+    latest = 0.0
+    for path in (session_file, session_file[: -len('sessions.json')] + 'sessions.journal.jsonl'):
+        try:
+            latest = max(latest, os.path.getmtime(path))
+        except OSError:
+            continue
+    return latest
+
+
+def _session_has_history(session_file: str) -> bool:
+    """会话是否存在任何可读历史（快照或增量日志任一存在即为真）。
+
+    不能只判断 sessions.json：memory.py 的 add_message 只把新消息 append 到
+    journal，快照要等 journal 累积到 JOURNAL_COMPACT_BYTES 才合并生成。
+    新会话在相当长一段时间内根本没有 sessions.json，若以此做门禁，
+    历史接口会静默返回空（实测小程序每次刷新都是空白）。
+    """
+    if os.path.exists(session_file):
+        return True
+    jpath = session_file[: -len('sessions.json')] + 'sessions.journal.jsonl'
+    return os.path.exists(jpath)
+
+
 def _load_session_history(session_file: str) -> list:
     """读取会话完整历史 = sessions.json 快照 + sessions.journal.jsonl 增量。
 
@@ -176,6 +206,92 @@ _KNOWN_SSE_EVENTS = {
 }
 
 
+def _is_miniprogram(params) -> bool:
+    """判断请求是否来自微信小程序渠道。
+
+    小程序侧无法自定义 User-Agent/Referer（微信客户端强制覆盖），故由客户端
+    在请求参数中显式声明 client_type=miniprogram；同时兼容从 header 传入
+    （后台任务等场景会把 header 透传进 params）。
+    """
+    try:
+        v = str((params or {}).get("client_type", "")).strip().lower()
+    except Exception:
+        return False
+    return v == "miniprogram"
+
+
+# 对外终端渠道：这些渠道的用户是外部使用者而非管理员，必须：
+#   1) 追加输出约束，禁止泄露服务端内部信息
+#   2) 剥掉思维链等内部事件
+# clawbot（微信 clawbot 个人号）与小程序同属此类，共用同一套防护。
+_TERMINAL_CHANNELS = {"miniprogram", "clawbot"}
+
+
+def _client_channel(params) -> str:
+    """取渠道标识（已归一化小写）；非终端渠道返回空串。"""
+    try:
+        v = str((params or {}).get("client_type", "")).strip().lower()
+    except Exception:
+        return ""
+    return v
+
+
+def _is_terminal_channel(params) -> bool:
+    """是否为面向外部用户的终端渠道（小程序 / clawbot）。"""
+    return _client_channel(params) in _TERMINAL_CHANNELS
+
+
+# 终端用户渠道不下发的内部事件：模型思维链会复述系统提示词、暴露内部指令
+# 与部署信息（实测出现「渠道约束：小程序」等条款原文）。网页管理端保留原文
+# 便于调试，小程序等终端渠道直接剥掉。
+# 注意：必须定义在模块级——chat_events 属于 AgentMain 类，此前误将常量放进
+# ChatJob 类，导致 self._HIDDEN... 抛 AttributeError、SSE 生成器整体崩溃、
+# 小程序收不到任何回复。
+HIDDEN_EVENTS_FOR_TERMINAL = {"message_think", "compact_summary"}
+
+
+# 终端渠道（小程序 / clawbot）的输出约束：严禁泄露服务端内部信息。
+# 抽成模块级常量，供集团模式（经理）与单 Agent 模式共用 —— 两处若各写一份，
+# 后续修改极易漏改一处，导致某个模式悄悄失去防护。
+_TERMINAL_CHANNEL_GUARD = """
+
+【渠道约束：终端用户】
+当前对话来自终端用户（微信小程序 / 微信机器人）。回答时必须遵守：
+1. 严禁透露任何服务端内部信息，包括但不限于：工作目录/绝对路径、主机名、
+   操作系统与部署环境、技能数量、成员与部门清单、MCP 服务名、模型与网关地址、
+   密钥或配置片段、日志与内部任务 ID。
+2. 涉及运行环境时只说"我已接入相关工具与服务"这类无信息量的表述，不展开细节。
+3. 自我介绍保持简洁：只说明你能帮用户做什么，不描述内部架构与团队编制。
+4. 汇报结果时同样只给结论与用户需要的证据，不附带服务端路径或内部过程细节。
+5. 若用户明确询问上述内部信息（如"你的工作目录是什么""你有几个技能"），
+   统一回答"这些属于服务端配置，暂不提供"，不例外透漏。"""
+
+# 兼容旧名（测试与外部引用仍可用）
+_MINIPROGRAM_CHANNEL_GUARD = _TERMINAL_CHANNEL_GUARD
+
+
+# 终端渠道单 Agent 模式的默认人设。
+# single 模式按设计会跳过 SOUL/AGENTS/USER/MEMORY 全量加载（网页端由前端显式
+# 传 system_prompt / prompt_id 补齐），但小程序/clawbot 不传任何提示词，若不给
+# 兜底，模型将"裸奔"——没有角色设定、回答风格不稳定。故此处补一个精简人设。
+_TERMINAL_SINGLE_PERSONA = """你是一个专业、可靠的 AI 助手，通过微信为用户提供服务。
+
+要求：
+1. 直接回答问题、完成任务，结论先行，简洁清晰，适合手机阅读。
+2. 涉及实际操作（读写文件、执行命令、查询系统、抓取网页等）时，先调用工具拿到
+   真实结果再作答；严禁在没有工具结果的情况下编造过程或结论。
+3. 高风险操作会被安全策略拦截确认：此时向用户说明将要执行的操作与风险，等待同意。
+4. 不确定的事情直说不确定，不要编造。"""
+
+# 兼容旧名
+_MINIPROGRAM_SINGLE_PERSONA = _TERMINAL_SINGLE_PERSONA
+
+
+def _append_miniprogram_guard(system_prompt: str) -> str:
+    """为终端渠道的系统提示词追加上输出约束（其它渠道原样返回）"""
+    return (system_prompt or "") + _TERMINAL_CHANNEL_GUARD
+
+
 def _map_agent_chunk(chunk):
     """将 agent.chat() 产出的 chunk 映射为 SSE (event, data) 列表"""
     t = chunk.get("type")
@@ -189,6 +305,14 @@ def _map_agent_chunk(chunk):
         return [("usage", {"usage": chunk.get("usage", {})})]
     if t == "meta_info":
         return [("meta_info", {"user_msg_id": chunk.get("user_msg_id"), "ai_msg_id": chunk.get("ai_msg_id")})]
+    if t == "compact_summary":
+        # 自动上下文压缩产生的摘要：作为独立事件透传，前端可据此提示"上下文已压缩"。
+        # 终端渠道由 HIDDEN_EVENTS_FOR_TERMINAL 静默丢弃，不刷屏。
+        return [("compact_summary", {
+            "msg_id": chunk.get("msg_id"),
+            "content": chunk.get("content", ""),
+            "timestamp": chunk.get("timestamp"),
+        })]
     if t and t not in _KNOWN_SSE_EVENTS:
         # 仅对真正未知的 type 降级；降级时也必须保留完整 chunk 作 data，
         # 不可取 chunk.get("response") —— tool_call/tool_result 等 chunk
@@ -254,10 +378,17 @@ class ChatJob:
             except Exception:
                 logger.warning("ChatJob.append persist 写入失败", exc_info=True)
 
-    def snapshot_from(self, last_id):
-        """返回 (last_id 之后的事件, 当前状态)"""
+    def snapshot_from(self, last_id, drop_events=None):
+        """返回 (last_id 之后的事件, 当前状态)。
+
+        drop_events：需要对本订阅者隐藏的事件名集合。按订阅者过滤而非任务级，
+        因为同一 job 可能被网页端与小程序端同时订阅（渠道不同、可见性不同）。
+        """
         with self._lock:
-            pending = [e for e in self.events if e["id"] > last_id]
+            pending = [
+                e for e in self.events
+                if e["id"] > last_id and (not drop_events or e["event"] not in drop_events)
+            ]
             return pending, self.status
 
     def finish(self, status):
@@ -620,6 +751,82 @@ class AgentMain:
                 os.makedirs(ws, exist_ok=True)
             except Exception:
                 return BASE_DIR
+        return ws
+
+    # 每个渠道用户的工作目录根。所有用户级 workspace 必须落在此目录下，
+    # 便于统一清理，也天然形成路径穿越的边界。
+    USER_WORKSPACE_ROOT = os.path.join(BASE_DIR, "workspace", "users")
+
+    # 管理端自定义 workspace 的允许根（收敛越界访问）。
+    # 管理端需要操作项目目录本身，故允许 BASE_DIR 及其子目录。
+    ADMIN_WORKSPACE_ROOTS = (BASE_DIR, os.path.expanduser("~"))
+
+    def _clamp_workspace(self, path):
+        """把管理端传入的 workspace 收敛到允许根内，越界则回退默认。
+
+        此前 `workspace` 参数直接 os.makedirs + 交给 Agent 当 cwd，
+        可指向 /etc、/root 等任意目录，属于可被前端利用的越权写入。
+        """
+        try:
+            real = os.path.realpath(path)
+            for root in self.ADMIN_WORKSPACE_ROOTS:
+                r = os.path.realpath(root)
+                if real == r or real.startswith(r + os.sep):
+                    if not os.path.isdir(real):
+                        os.makedirs(real, exist_ok=True)
+                    return real
+            logger.warning("[安全] workspace 越界被拒: %s（允许根: %s）", path, self.ADMIN_WORKSPACE_ROOTS)
+        except Exception:
+            logger.warning("[安全] workspace 解析失败，回退默认: %s", path, exc_info=True)
+        return self._resolve_workspace()
+
+    def _resolve_request_workspace(self, get, session_id):
+        """统一解析请求应使用的工作目录（含多用户隔离与越权收敛）。
+
+        优先级：终端渠道强制用户目录 > 客户端传入（收敛校验）> 配置默认。
+        opencode/claude/codex 三个 CLI 分支共用本方法，避免各自实现走样。
+        """
+        if _is_terminal_channel(get):
+            return self._resolve_user_workspace(session_id)
+        override = str(get.get('workspace', '')).strip()
+        if override:
+            return self._clamp_workspace(os.path.abspath(os.path.expanduser(override)))
+        return self._resolve_workspace()
+
+    def _resolve_user_workspace(self, session_id):
+        """按用户为粒度解析隔离工作目录：workspace/users/<用户键>/
+
+        隔离粒度说明（重要）：
+        - 会话级隔离不足：同一用户新开对话后，上次生成的文件就找不到了。
+        - 全局共享（原实现）更糟：多用户并存时互相覆盖、可读彼此文件。
+        因此按"用户"隔离：同一用户无论多少会话/多少设备，都落在同一目录
+        （换设备续聊不丢文件）；不同用户彼此不可见。
+
+        用户键来源：
+        - 小程序：会话 ID 形如 wx_<sha256(openid)[:24]>，天然按微信用户稳定。
+        - 网页/CLI：会话 ID 为普通字符串，退化为按会话隔离（管理员自用场景）。
+        """
+        try:
+            sid = str(session_id or "").strip()
+        except Exception:
+            sid = ""
+        if not sid:
+            return self.USER_WORKSPACE_ROOT
+        # 用户键：取会话 ID 中"用户标识"部分。
+        # wx_<hash> 取整个（hash 已由 openid 派生，不含其它用户信息）。
+        # 其它会话 ID 直接取其哈希，避免把用户可控字符串当路径。
+        if sid.startswith("wx_"):
+            user_key = sid[:64]
+        else:
+            user_key = "s_" + hashlib.sha256(sid.encode("utf-8")).hexdigest()[:24]
+        # 二次清洗：即使前缀判断失效，也绝不允许出现路径分隔符
+        user_key = re.sub(r"[^0-9A-Za-z_.-]", "_", user_key)[:64] or "default"
+        ws = os.path.join(self.USER_WORKSPACE_ROOT, user_key)
+        try:
+            os.makedirs(ws, exist_ok=True)
+        except Exception:
+            logger.warning("用户工作目录创建失败: %s", ws, exc_info=True)
+            return BASE_DIR
         return ws
 
     def _merge_config(self, base, update):
@@ -1402,6 +1609,11 @@ class AgentMain:
             tpl_sp = self._resolve_template_system_prompt(get, cfg_key='opencode')
             if tpl_sp:
                 final_system_prompt = tpl_sp
+            # 终端渠道兜底人设：single 模式跳过了 SOUL/AGENTS 全量加载，而小程序
+            # 不传 system_prompt，若不补则模型无任何角色设定（"裸奔"），回答风格不稳。
+            # 显式传入的提示词优先，仅在为空时填充。
+            if not final_system_prompt and _is_terminal_channel(get):
+                final_system_prompt = _MINIPROGRAM_SINGLE_PERSONA
             # 工具：优先前端传入，否则留空由 agent（strict_tools=False）补全全套默认工具
             tools = raw_tools if raw_tools else []
         else:
@@ -1411,14 +1623,22 @@ class AgentMain:
             strict_mode = True
             tools = ["Task", "RunCrew", "CreateDepartment", "RecruitMember"]
 
-        # 工作空间：优先使用前端传入的 workspace，否则按模式配置
-        if workspace_override:
+        # 工作空间：多用户必须隔离，否则不同用户的文件会互相覆盖/互读。
+        #   - 终端渠道（小程序）：一律用该用户的隔离目录，忽略客户端传参，
+        #     杜绝通过 workspace 参数指向任意路径（此前无穿越校验）。
+        #   - clawbot：服务间调用（服务密钥 + service:clawbot 令牌），参数来自
+        #     服务端 config.json 而非终端用户，可信；但指定 hermes 工作目录是
+        #     它的硬需求（模板要读该目录下的 SOUL.md/USER.md/MEMORY.md），
+        #     故单独放行，且仍走 _clamp_workspace 收敛到允许根内。
+        #   - 管理端（网页/CLI）：保留自定义能力，仍做根目录收敛校验。
+        if _client_channel(get) == "clawbot" and workspace_override:
+            workspace = self._clamp_workspace(
+                os.path.abspath(os.path.expanduser(workspace_override)))
+        elif _is_terminal_channel(get):
+            workspace = self._resolve_user_workspace(session_id)
+        elif workspace_override:
             workspace = os.path.abspath(os.path.expanduser(workspace_override))
-            if not os.path.isdir(workspace):
-                try:
-                    os.makedirs(workspace, exist_ok=True)
-                except Exception:
-                    workspace = self._resolve_workspace(mode)
+            workspace = self._clamp_workspace(workspace)
         else:
             workspace = self._resolve_workspace(mode)
 
@@ -1532,7 +1752,21 @@ class AgentMain:
    成员之间可通过 ConsultPeer 互相咨询，无需经过你中转。
 4. 高风险操作会被安全策略拦截确认：此时向 Boss 说明将要执行的操作与风险，等待明确同意。
 5. 交付时面向 Boss 汇报：结论先行、要点清晰、附关键证据。"""
+
+            # 小程序渠道：不向用户暴露网关内部信息。
+            # 实测发现经理会把工作目录（/home/sxkiss/bt）、技能数量、部门清单、
+            # MCP 服务名等原样写进自我介绍，等于把服务端部署细节泄露给终端用户。
+            # 这里对 miniprogram 渠道追加一段输出约束（只约束"说什么"，不削弱编排能力）。
+            if _is_terminal_channel(get):
+                manager_sp = _append_miniprogram_guard(manager_sp)
             agent_config["system_prompt"] = manager_sp
+
+        elif _is_terminal_channel(get):
+            # 单 Agent 模式的小程序渠道同样需要输出约束。
+            # 此前该约束只加在集团模式分支，切到 single 后泄露防护会静默失效。
+            agent_config["system_prompt"] = _append_miniprogram_guard(
+                agent_config.get("system_prompt", "")
+            )
 
         try:
             agent = Agent(session_id=session_id, config=agent_config)
@@ -1590,7 +1824,7 @@ class AgentMain:
             # RAG 上下文注入（全局 Mem0，适用于子进程模式）
             system_prompt = self._inject_rag_context(get, system_prompt, user_input)
 
-            workspace = str(get.get('workspace', '')).strip()
+            workspace = self._resolve_request_workspace(get, session_id)
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
             # 自定义 API 配置（优先前端传入，回退全局配置）
             custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
@@ -1638,7 +1872,7 @@ class AgentMain:
             # RAG 上下文注入（全局 Mem0，适用于子进程模式）
             system_prompt = self._inject_rag_context(get, system_prompt, user_input)
 
-            workspace = str(get.get('workspace', '')).strip()
+            workspace = self._resolve_request_workspace(get, session_id)
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
             # 自定义 API 配置（优先前端传入，回退全局配置）
             custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
@@ -1682,7 +1916,7 @@ class AgentMain:
             system_prompt = self._resolve_template_system_prompt(get, cfg_key='opencode')
             # RAG 上下文注入（全局 Mem0，适用于子进程模式）
             system_prompt = self._inject_rag_context(get, system_prompt, user_input)
-            workspace = str(get.get('workspace', '')).strip()
+            workspace = self._resolve_request_workspace(get, session_id)
             reasoning_effort = str(get.get('reasoning_effort', 'max')).strip().lower() or 'max'
             custom_base_url = str(get.get('base_url', '')).strip() or self.config.get('api_base_url', '')
             custom_api_key = str(get.get('api_key', '')).strip() or self.config.get('api_key', '')
@@ -1755,6 +1989,13 @@ class AgentMain:
             daemon=True,
         )
         t.start()
+        # 渠道日志：此前小程序请求在日志里与网页/CLI 完全无法区分，
+        # 只能靠 jobs/ 下 wx_ 前缀反推。这里显式记录渠道，便于排查与审计。
+        logger.info(
+            "[chat_start] channel=%s session=%s mode=%s job=%s",
+            _client_channel(get) or "web",
+            session_id, get.get("mode", "") or "group", job.key,
+        )
         return public.return_data(True, data={
             "session_id": session_id,
             "job": job.key,
@@ -1803,6 +2044,16 @@ class AgentMain:
             yield self.sse_pack(event="error", data={"msg": "没有可订阅的任务（不存在或已过期）"})
             return
 
+        # 渠道日志：SSE 订阅同样记录来源，便于小程序/clawbot 断流/续传问题定位
+        _mp = _is_terminal_channel(get)
+        logger.info(
+            "[chat_events] channel=%s session=%s job=%s last_id=%s",
+            _client_channel(get) or "web",
+            session_id, job.key, get.get('last_id', -1),
+        )
+        # 小程序（终端用户）剥掉思维链等内部事件；网页管理端保留全部
+        drop = HIDDEN_EVENTS_FOR_TERMINAL if _mp else None
+
         try:
             last_id = int(get.get('last_id', -1))
         except (TypeError, ValueError):
@@ -1813,7 +2064,7 @@ class AgentMain:
         max_idle_seconds = 900  # P2-27: 最大空闲 15min，超时向客户端返回结束信号防止无限挂起
         idle_start = asyncio.get_event_loop().time()
         while True:
-            pending, status = job.snapshot_from(last_id)
+            pending, status = job.snapshot_from(last_id, drop)
             for e in pending:
                 yield self.sse_pack(event=e["event"], id=e["id"], data=e["data"])
                 last_id = e["id"]
@@ -2149,7 +2400,7 @@ class AgentMain:
         if not bin_path:
             return public.returnMsg(False, "未定位到 codex 二进制")
         try:
-            proc = subprocess.run(
+            proc = _subp.run(
                 [bin_path, "--version"], capture_output=True, text=True, timeout=10
             )
             ver = (proc.stdout or proc.stderr or "").strip().splitlines()[0] if (proc.stdout or proc.stderr) else ""
@@ -2268,10 +2519,10 @@ class AgentMain:
                         if not os.path.isdir(session_path):
                             continue
                         session_file = os.path.join(session_path, 'sessions.json')
-                        if not os.path.exists(session_file):
+                        if not _session_has_history(session_file):
                             continue
                         try:
-                            mtime = os.path.getmtime(session_file)
+                            mtime = _session_history_mtime(session_file)
                             time_str = datetime.datetime.fromtimestamp(mtime).astimezone().strftime('%Y-%m-%d %H:%M:%S')
                             title = session_id
                             history = _load_session_history(session_file)
@@ -2340,8 +2591,7 @@ class AgentMain:
                                     mtime = os.path.getmtime(meta_file)
                                 else:
                                     mtime = 0
-                                if os.path.exists(sub_file):
-                                    mtime = max(mtime, os.path.getmtime(sub_file))
+                                mtime = max(mtime, _session_history_mtime(sub_file))
                                 time_str = datetime.datetime.fromtimestamp(mtime).astimezone().strftime('%Y-%m-%d %H:%M:%S')
                                 if os.path.exists(meta_file):
                                     with open(meta_file, 'r', encoding='utf-8') as f:
@@ -2349,7 +2599,7 @@ class AgentMain:
                                 else:
                                     meta = {"source": "crew", "parent": session_id, "agent": "", "dept": ""}
                                 title = sub_dir[:36]
-                                if os.path.exists(sub_file):
+                                if _session_has_history(sub_file):
                                     history = _load_session_history(sub_file)
                                     if history:
                                         for msg in history:
@@ -2437,7 +2687,7 @@ class AgentMain:
                     break
 
         # ── native 历史（包括集团子代理）：从 sessions.json 读取 ──────────────
-        if os.path.exists(native_file):
+        if _session_has_history(native_file):
             try:
                 history = _load_session_history(native_file)
                 try:
@@ -2582,7 +2832,7 @@ class AgentMain:
         session_id = sid
         sessions_dir = get.get('sessions_dir', '') or 'sessions'
         session_file = os.path.join(self.plugin_path, sessions_dir, session_id, 'sessions.json')
-        if not os.path.exists(session_file):
+        if not _session_has_history(session_file):
             return public.returnMsg(False, "会话记录不存在")
         try:
             history = _load_session_history(session_file)
@@ -2862,12 +3112,22 @@ _preload_thread.start()
 
 # ---- 智能体定时任务调度线程 ----
 def _scheduled_runner(task: dict):
-    """到点执行：以独立会话启动集团任务"""
+    """到点执行：以独立会话启动任务。
+
+    为什么固定 single 而非默认 group：group 是经理视角，只保留编排类工具
+    （Task/RunCrew/CreateDepartment/RecruitMember），成员子代理拿不到
+    ClawbotSendMedia 这类执行工具。定时任务常需要"生成文件并发回微信"，
+    走 group 会在最后一步卡死——经理知道要发，但手上没工具。single 模式
+    strict_tools=False，补全全套默认工具，任务自己就能干完。
+    """
     sid = f"sched_{task.get('id','x')}_{int(time.time())}"
     payload = {
         "session_id": sid,
         "message": str(task.get("objective", "")),
         "model": str(task.get("model", "")),
+        # 未显式指定 agents 时走 single：编排层对"无人值守的任务"没有价值，
+        # 反而因工具受限挡住发送类操作。
+        "mode": "group" if task.get("agents") else "single",
     }
     if task.get("agents"):
         payload["crew_agents"] = task["agents"]
@@ -3250,6 +3510,265 @@ async def api_opencode_status(request: Request):
 async def api_chat_messages(request: Request):
     params = dict(request.query_params)
     return JSONResponse(agent_main.get_chat(params))
+
+
+# ============================================================
+# 小程序用户数据（服务端权威存储）
+# ============================================================
+# 小程序本地存储在清缓存 / 换设备时会丢，签到这类有积累价值的数据
+# 必须落服务端。身份来自 token 的 sub（wx:<openid>），与用户工作目录、
+# 会话 ID 共用同一把钥匙 —— 微信机器人（clawbot）侧用同一 user_key 作
+# session_id，两边即共享同一条会话与同一份数据（见下方 bot 转发区）。
+_MP_STORE = None
+
+
+def _mp_store():
+    """惰性初始化：避免 import 期就创建目录（测试环境可能无写权限）。"""
+    global _MP_STORE
+    if _MP_STORE is None:
+        from mp_store import MpStore
+        _MP_STORE = MpStore(os.path.join(BASE_DIR, "workspace", "users"))
+    return _MP_STORE
+
+
+def _mp_user_key(request: Request) -> str:
+    """从 Bearer token 解析用户键；非微信登录态返回空串。
+
+    不接受客户端传入的 user_key —— 身份只能来自服务端签发的 token，
+    否则任何调用方都能读写他人数据。
+    """
+    from auth import extract_token, verify_token, wx_session_id
+    token = extract_token(request)
+    if not token:
+        return ""
+    payload = verify_token(BASE_DIR, token)
+    if not payload:
+        return ""
+    sub = str(payload.get("sub") or "")
+    if not sub.startswith("wx:"):
+        return ""
+    openid = sub[3:]
+    if not openid:
+        return ""
+    return wx_session_id(openid)
+
+
+def _mp_guard(request: Request):
+    """统一身份校验：返回 (user_key, error_response)。"""
+    user_key = _mp_user_key(request)
+    if not user_key:
+        return "", JSONResponse(
+            {"status": False, "msg": "未授权：请重新登录", "code": 401},
+            status_code=401,
+        )
+    return user_key, None
+
+
+@app.get("/api/mp/profile")
+async def api_mp_profile_get(request: Request):
+    """拉取用户全量数据（签到 / 资料 / 设置 / 统计）。"""
+    user_key, err = _mp_guard(request)
+    if err:
+        return err
+    try:
+        store = _mp_store()
+        doc = store.touch_visit(user_key)
+        return JSONResponse(public.return_data(True, data={
+            "doc": doc,
+            "today": store.today(),
+        }))
+    except Exception:
+        logger.warning("[mp_profile] 读取失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "读取失败"), status_code=500)
+
+
+@app.post("/api/mp/profile")
+async def api_mp_profile_post(request: Request):
+    """写操作：签到 / 资料 / 设置。
+
+    请求体 {"action": "checkin"} 或 {"action": "update", "patch": {...}}。
+    签到由服务端判定日期与连击（客户端时区不可信）。
+    """
+    user_key, err = _mp_guard(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        return JSONResponse(public.returnMsg(False, "参数错误"))
+
+    action = str(body.get("action") or "").strip()
+    try:
+        store = _mp_store()
+        if action == "checkin":
+            r = store.checkin(user_key)
+            return JSONResponse(public.return_data(True, data={
+                "already": r["already"],
+                "streak": r["streak"],
+                "total": r["total"],
+                "last": r["last"],
+                "doc": r["doc"],
+                "today": store.today(),
+            }))
+        if action == "update":
+            patch = body.get("patch")
+            if not isinstance(patch, dict):
+                return JSONResponse(public.returnMsg(False, "缺少 patch"))
+            doc = store.update(user_key, patch)
+            return JSONResponse(public.return_data(True, data={"doc": doc}))
+        if action == "import":
+            # 首次迁移：本地已有数据并入服务端，只填空不覆盖（见 mp_store.import_data）
+            data_in = body.get("data")
+            if not isinstance(data_in, dict):
+                return JSONResponse(public.returnMsg(False, "缺少 data"))
+            doc = store.import_data(user_key, data_in)
+            return JSONResponse(public.return_data(True, data={"doc": doc}))
+        return JSONResponse(public.returnMsg(False, "未知 action"))
+    except Exception:
+        logger.warning("[mp_profile] 写入失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "保存失败"), status_code=500)
+
+
+# ============================================================
+# 微信机器人（clawbot）：每用户独立实例
+# ============================================================
+# 模型（2026-09-24 修正）：不是"一个共享机器人 + 绑定码认领"，而是
+# **每个小程序用户拥有自己的微信机器人实例**，由用户本人在小程序里扫码登录。
+#
+# 为什么不需要绑定码：取二维码的请求本身就携带用户 token，网关解析出
+# user_key 后才向 clawbot 申请二维码 —— "这个二维码属于谁"在创建时即确定，
+# 扫码结果直接落在该用户槽位，中间没有可劫持环节。
+#
+# 会话共用：clawbot 用 session_id = user_key 调 /api/chat/start，与小程序
+# 的 wx_session_id(openid) 完全一致 → 两边是同一条会话、同一份用户数据。
+#
+# 网关在此只做转发与身份注入，不持有任何 bot 登录态（都在 clawbot 侧）。
+#
+# 服务密钥：clawbot 与网关之间的服务间凭据。clawbot 不需要它也能工作
+# （槽位由网关转发创建），但保留供服务间直连（如内部状态查询）使用。
+
+def _service_key_path() -> str:
+    return os.path.join(BASE_DIR, "workspace", "clawbot.key")
+
+
+def _service_secret() -> str:
+    """服务间共享密钥。首次访问自动生成并落盘（workspace/ 在 gitignore 内）。
+
+    与用户 token 分离：它只证明"调用方是 clawbot"，不代表任何终端用户身份，
+    因此绝不能用它去读写用户数据。
+    """
+    path = _service_key_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        import secrets as _secrets
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        key = _secrets.token_urlsafe(32)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(key)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        logger.info("[clawbot] 已生成服务密钥: %s", path)
+        return key
+    except Exception:
+        logger.warning("服务密钥读写失败", exc_info=True)
+        return ""
+
+
+def _check_service_key(request: Request) -> bool:
+    """校验服务密钥（常量时间比较，防时序侧信道）。"""
+    import hmac as _hmac
+    expected = _service_secret()
+    got = str(request.headers.get("x-service-key") or "").strip()
+    if not expected or not got:
+        return False
+    return _hmac.compare_digest(expected, got)
+
+
+def _clawbot_base_url() -> str:
+    """clawbot 服务地址。默认本机 9877，可用 config.clawbot_url 覆盖。"""
+    return str((agent_main.config or {}).get("clawbot_url") or "").strip().rstrip("/") \
+        or "http://127.0.0.1:9877"
+
+
+def _clawbot_forward(method: str, path: str, payload=None, params=None) -> JSONResponse:
+    """把请求转发给 clawbot 并原样回传其 JSON（自动附带服务密钥）。
+
+    clawbot 未启动是"功能不可用"而非"服务端错误"，故单独给出 503 文案，
+    避免前端把它当成 500 去重试或报"服务器异常"。
+    """
+    import requests as _rq
+    url = f"{_clawbot_base_url()}{path}"
+    headers = {"x-service-key": _service_secret()}
+    try:
+        if method == "GET":
+            resp = _rq.get(url, params=params or {}, headers=headers, timeout=20)
+        else:
+            resp = _rq.post(url, json=payload or {}, headers=headers, timeout=20)
+    except Exception:
+        logger.warning("[clawbot] 转发失败 %s %s", method, path, exc_info=True)
+        return JSONResponse(public.returnMsg(False, "微信机器人服务未启动"), status_code=503)
+    try:
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+    except Exception:
+        return JSONResponse(public.returnMsg(False, "微信机器人返回异常"), status_code=502)
+
+
+@app.post("/api/mp/bot/qrcode")
+async def api_mp_bot_qrcode(request: Request):
+    """小程序为**当前登录用户**申请专属二维码（需用户 token）。
+
+    身份来自 token，客户端无法为他人取码 —— 这是"每用户独立 bot"的安全边界。
+    """
+    user_key, err = _mp_guard(request)
+    if err:
+        return err
+    return _clawbot_forward("POST", "/internal/bots/qrcode", {"user_key": user_key})
+
+
+@app.get("/api/mp/bot/status")
+async def api_mp_bot_status(request: Request):
+    """小程序查询**自己**机器人的连接状态（需用户 token）。"""
+    user_key, err = _mp_guard(request)
+    if err:
+        return err
+    return _clawbot_forward("GET", "/internal/bots/status", params={"user_key": user_key})
+
+
+@app.post("/api/mp/bot/disconnect")
+async def api_mp_bot_disconnect(request: Request):
+    """用户断开自己的机器人（需用户 token）：清除登录态，可重新扫码。"""
+    user_key, err = _mp_guard(request)
+    if err:
+        return err
+    return _clawbot_forward("POST", "/internal/bots/disconnect", {"user_key": user_key})
+
+
+@app.post("/api/service/token")
+async def api_service_token(request: Request):
+    """clawbot 换取长期令牌（需服务密钥），用于调用聊天接口。
+
+    与用户 token 同一套签名体系（sub=service:clawbot），但 TTL 长、专供服务间
+    调用；用户登出不影响它，服务密钥轮换即可吊销。
+    """
+    if not _check_service_key(request):
+        return JSONResponse({"status": False, "msg": "服务密钥无效", "code": 401}, status_code=401)
+    try:
+        from auth import create_token
+        ttl_hours = 24 * 365 * 5   # 5 年：服务令牌，避免频繁轮换
+        token = create_token(BASE_DIR, ttl_hours, sub="service:clawbot")
+        return JSONResponse(public.return_data(True, data={
+            "token": token,
+            "expires_in": ttl_hours * 3600,
+        }))
+    except Exception:
+        logger.warning("[mp_bind] 服务令牌签发失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "签发失败"), status_code=500)
 
 
 @app.post("/api/chat/delete")
