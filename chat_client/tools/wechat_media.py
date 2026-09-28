@@ -42,6 +42,11 @@ DEFAULT_CLAWBASE = "http://127.0.0.1:9877"
 _SEND_TIMEOUT = 120          # 上传+发送可能较久（大文件），放宽到 2 分钟
 _SECRET_PATH = os.path.join(PROJECT_ROOT, "workspace", "clawbot.key")
 
+# JSON 序列化常见占位串：模型/上游可能把 None 序列化成 "null"/"None" 等字符串。
+# 若当真实 user_key 传出去，会命中 clawbot 的"机器人未运行"（找不到该槽位）。
+# 语义上是"未指定"，应回落自动取当前会话，而不是当作真实用户。
+_PLACEHOLDER_KEYS = {"", "null", "none", "undefined", "nil", "n/a", "unknown"}
+
 
 def _clawbot_url() -> str:
     """clawbot 服务地址：config.clawbot_url 覆盖，否则本机 9877。"""
@@ -62,6 +67,22 @@ def _clawbot_url() -> str:
     except Exception:
         pass
     return DEFAULT_CLAWBASE
+
+
+def _hint_target_key(uk: str) -> str:
+    """发送失败时说明"应该发给谁"，附在"机器人未运行"这类报错上。
+
+    为什么不列举其他在线账号：媒体发出去不可逆，一旦把候选 user_key 列成名单，
+    调用方（模型）就可能挑错，把文件发到另一个人的微信里。正确语义是——有对话
+    上下文时目标唯一锁定当前会话，不存在"挑一个"的余地；没有上下文时才必须由
+    调用方显式指定，此时也只说明规则，不给候选名单（避免诱导乱猜）。
+    """
+    sid = (_current_session_id() or "").strip()
+    if sid:
+        return (f"发送目标已锁定当前会话 user_key={sid}（媒体不可跨账号发送）。"
+                "该账号未登录/未运行时，请在小程序重新扫码连接，而不是改用其他账号。")
+    return (f"当前无对话上下文，必须显式传入正确的 user_key（形如 wx_<hash>，"
+            f"可到 clawbot bottings 目录核对账号状态）；本次传入的是 {uk}。")
 
 
 def _service_key() -> str:
@@ -86,8 +107,10 @@ def ClawbotSendMedia(path: str, user_key: str | None = None,
     Args:
         path: 待发送文件的**绝对路径**。
         user_key: 目标用户的会话键，形如 wx_<hash>。**留空则取当前会话**
-            （普通对话场景够用）。定时任务 / 子会话等没有会话上下文的场景
-            必须显式指定，否则无法定位发给谁。
+            （普通对话场景够用）。
+            注意：有对话上下文时**只能发给当前会话**，显式传其他 user_key
+            会被拒绝（媒体发出去无法撤回，不允许跨账号发送）。
+            仅定时任务 / 子会话等无会话上下文的场景才需显式指定。
         media_type: 媒体类型，留空按扩展名自动推断。可选 image / video / file / voice。
             无法识别扩展名时必须显式指定（例如 .mp3 之外格式的音频）。
         caption: 附带说明文字。发 图片/视频/文件 时会额外发一条文本；
@@ -119,7 +142,22 @@ def ClawbotSendMedia(path: str, user_key: str | None = None,
     # 为什么要支持显式传：定时任务 / 子会话由系统拉起，没有对话线程上下文，
     # set_current_job 从未被调用 → _current_session_id() 返回 None，工具就
     # 定位不到发给谁。这类场景必须让调用方显式指定 user_key。
-    uk = (user_key or "").strip() or (_current_session_id() or "")
+    # 占位串（"null"/"None"/"undefined" 等）视为未指定 → 回落当前会话。
+    # 全部小写比较，覆盖大小写混用（"NULL"/"Null"）。
+    uk = (user_key or "").strip()
+    if uk.lower() in _PLACEHOLDER_KEYS:
+        uk = ""
+    sid = (_current_session_id() or "").strip()
+    # 跨账号硬拦截：有对话上下文时，目标必须是当前会话。显式传别的 user_key
+    # 一律拒绝——媒体发出去不可逆，发错人无法撤回。定时任务等无上下文场景
+    # （sid 为空）才放行显式指定，因为那时没有"当前会话"可锁。
+    if sid and uk and uk != sid:
+        return _xml_response(
+            "error",
+            f"拒绝跨账号发送：当前会话是 {sid}，而你要求发给 {uk}。"
+            "媒体一旦发出无法撤回，只能发给当前对话方。若确需发给该账号，"
+            "请在该账号的会话里调用本工具。")
+    uk = uk or sid
     if not uk:
         return _xml_response(
             "error",
@@ -151,7 +189,12 @@ def ClawbotSendMedia(path: str, user_key: str | None = None,
         return _xml_response("error", f"微信机器人返回异常 HTTP {resp.status_code}")
 
     if isinstance(body, dict) and body.get("status") is False:
-        return _xml_response("error", str(body.get("msg") or "发送失败"))
+        msg = str(body.get("msg") or "发送失败")
+        # "未运行/未登录"通常是该账号掉线或从未扫码。说明"该发给谁"，
+        # 但绝不列举其他在线账号（见 _hint_target_key：媒体不可逆，不能诱导换人）。
+        if "未运行" in msg or "未连接" in msg or "未登录" in msg:
+            msg += "。" + _hint_target_key(uk)
+        return _xml_response("error", msg)
 
     data = body.get("data") if isinstance(body, dict) else None
     if isinstance(data, dict):

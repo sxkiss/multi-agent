@@ -3112,12 +3112,22 @@ _preload_thread.start()
 
 # ---- 智能体定时任务调度线程 ----
 def _scheduled_runner(task: dict):
-    """到点执行：以独立会话启动集团任务"""
+    """到点执行：以独立会话启动任务。
+
+    为什么固定 single 而非默认 group：group 是经理视角，只保留编排类工具
+    （Task/RunCrew/CreateDepartment/RecruitMember），成员子代理拿不到
+    ClawbotSendMedia 这类执行工具。定时任务常需要"生成文件并发回微信"，
+    走 group 会在最后一步卡死——经理知道要发，但手上没工具。single 模式
+    strict_tools=False，补全全套默认工具，任务自己就能干完。
+    """
     sid = f"sched_{task.get('id','x')}_{int(time.time())}"
     payload = {
         "session_id": sid,
         "message": str(task.get("objective", "")),
         "model": str(task.get("model", "")),
+        # 未显式指定 agents 时走 single：编排层对"无人值守的任务"没有价值，
+        # 反而因工具受限挡住发送类操作。
+        "mode": "group" if task.get("agents") else "single",
     }
     if task.get("agents"):
         payload["crew_agents"] = task["agents"]
