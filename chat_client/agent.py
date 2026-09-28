@@ -29,7 +29,7 @@ from chat_client.memory import MemoryManager
 from chat_client.retrieval import ExternalRAGService, RAGService, Mem0Service
 
 from .tools import registry, set_session_allow_high
-from .tools.base import _xml_response
+from .tools.base import _xml_response, inject_tool_name
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +85,34 @@ def _close_stream(stream) -> None:
         logger.debug("关闭响应流失败（已忽略）", exc_info=True)
 
 
+def bad_args_hint(func_name: str) -> str:
+    """工具参数非法（多为输出被截断）时回灌给模型的错误提示。
+
+    单独抽出便于测试与复用：重点是让模型明白"别重发同一份超长参数"，
+    而不是像旧实现那样静默按空参数执行、让模型误以为成功而无限重试。
+    """
+    return _xml_response(
+        "error",
+        f"Error: 工具 {func_name} 的参数不是合法 JSON（很可能是内容过长被截断）。"
+        "不要重复提交同一份超长参数：请把大文件拆成多次较小的写入"
+        "（先写骨架，再分次追加），或改用更短的实现后重试。",
+    )
+
+
 class Agent:
     # 集团协作工具：需要多 Agent 编排，单 Agent / Codex-X 模式不加载
     _GROUP_TOOLS: set[str] = {"RunCrew", "ConsultPeer", "CreateDepartment", "RecruitMember"}
+
+    # 工具参数连续非法的熔断阈值：达到即结束本轮，避免"截断→非法→空跑→再截断"死循环
+    BAD_ARGS_MAX_STREAK = 3
+
+    @staticmethod
+    def next_bad_args_streak(current: int) -> int:
+        """累计工具参数非法次数（解析成功时由调用方直接重置为 0）"""
+        try:
+            return int(current) + 1
+        except (TypeError, ValueError):
+            return 1
 
     def __init__(self, session_id: str, config: dict[str, Any] | None = None):
         self.session_id = session_id
@@ -99,6 +124,8 @@ class Agent:
         self.model_name = self.config.get("model_name") or self.config.get("default_model")
         self.rag_trigger_threshold = self.config.get("rag_trigger_threshold", 10)
         self.max_tool_iterations = self.config.get("max_tool_iterations", 9999)
+        # 工具参数非法（多为输出被截断）的连续计数，用于熔断，防止无限重试烧 token
+        self._bad_args_streak = 0
         self.context_window_kb = self.config.get("context_window_kb", 512)
         self.enabled_tools = self.config.get("tools", [])
         self.original_tools = list(self.enabled_tools)  # 保存用户原始指定工具，防止被默认工具覆盖
@@ -174,6 +201,10 @@ class Agent:
 
         # 压缩失败连击计数：达到阈值层数上限前，失败只升级阈值、不硬截断
         self._compress_fail_streak = 0
+        # 本会话已成功压缩的轮数（实例内累加，用于 90%→95%→97% 渐进）。
+        # 不能用 history 里的摘要条数代替：每轮成功都会删旧摘要插新摘要，
+        # 该数恒为 1，渐进逻辑会永远卡在第二层。
+        self._compress_round = 0
         
         # 将 MemoryManager 确定的 session_dir 传递给 RAGService
         self.rag = RAGService(
@@ -788,7 +819,9 @@ Here is some useful information about the environment you are running in:
                     
                     #处理不存在的工具
                     if not tool_exists:
-                        result_str = _xml_response("error", f"Error: Tool '{func_name}' does not exist.")
+                        result_str = inject_tool_name(
+                            _xml_response("error", f"Error: Tool '{func_name}' does not exist."),
+                            func_name)
                         content_structure = [{"type": "text", "text": result_str}]
                         self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
                         messages.append({
@@ -801,7 +834,9 @@ Here is some useful information about the environment you are running in:
                     #处理未启用的工具
                     if not tool_enabled:
                         tool_id = registry.get_tool_id(func_name)
-                        result_str = _xml_response("error", f"Error: Tool '{func_name}' (ID: {tool_id}) is not enabled. You do not have permission to use this tool.")
+                        result_str = inject_tool_name(
+                            _xml_response("error", f"Error: Tool '{func_name}' (ID: {tool_id}) is not enabled. You do not have permission to use this tool."),
+                            func_name)
                         content_structure = [{"type": "text", "text": result_str}]
                         self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
                         messages.append({
@@ -820,14 +855,40 @@ Here is some useful information about the environment you are running in:
                     try:
                         if args_str and args_str.strip():
                             args = json.loads(args_str)
+                            self._bad_args_streak = 0  # 解析成功即重置熔断计数
                         else:
                             args = {}
+                            self._bad_args_streak = 0
                     except json.JSONDecodeError:
+                        # 关键修复：此前非法 JSON 被静默降级为 {} 继续执行，模型看不到
+                        # 任何错误，于是不断重试同一个超大 Write（参数被输出上限截断），
+                        # 形成"截断 → 非法 → 空跑 → 再截断"的死循环刷 token。
+                        # 改为：把明确错误回灌给模型 + 连续多次即熔断，逼它改用分段写入。
+                        self._bad_args_streak = self.next_bad_args_streak(self._bad_args_streak)
                         logger.warning(
-                            "[Tool-Args] 工具 %s 的参数不是合法 JSON，按空参数处理: %r",
-                            func_name, (args_str or "")[:200]
+                            "[Tool-Args] 工具 %s 的参数不是合法 JSON（连续第 %d 次）: %r",
+                            func_name, self._bad_args_streak, (args_str or "")[:200]
                         )
-                        args = {}
+                        _err_structure = [{"type": "text", "text": bad_args_hint(func_name)}]
+                        self.memory.add_message("tool", _err_structure, tool_call_id=call_id, id=ai_msg_id)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": _err_structure
+                        })
+                        if self._bad_args_streak >= self.BAD_ARGS_MAX_STREAK:
+                            # 熔断：连续多次同类失败，直接结束本轮，避免无限烧 token
+                            logger.error("[Tool-Args] 连续 %d 次非法参数，熔断结束本轮", self._bad_args_streak)
+                            yield {
+                                "type": "warning",
+                                "data": f"工具 {func_name} 参数连续多次非法（内容可能过长被截断），已停止重试。"
+                                        "请换用更小的实现或分段写入。"
+                            }
+                            # return 是本文件既有的中止模式（同 _is_cancelled 分支），
+                            # 且需标记未执行的工具，保持消息序列合法
+                            self._mark_unexecuted_tools(assistant_msg_kwargs["tool_calls"], messages, ai_msg_id)
+                            return
+                        continue
 
                     # 类型矫正：按 schema 把字符串化的数字/布尔参数转回真实类型
                     # （模型常把 timeout 等数值传成字符串，导致 _validate_args 报 type error）
@@ -861,9 +922,13 @@ Here is some useful information about the environment you are running in:
                         if func:
                             result_str = func(**args)
                         else:
-                            result_str = _xml_response("error", f"Error: Tool {func_name} not found.")
+                            result_str = inject_tool_name(
+                                _xml_response("error", f"Error: Tool {func_name} not found."),
+                                func_name)
                     except Exception as e:
-                        result_str = _xml_response("error", f"Error executing tool: {e!s}")
+                        result_str = inject_tool_name(
+                            _xml_response("error", f"Error executing tool: {e!s}"),
+                            func_name)
 
                     yield {
                         "type": "tool_result",
@@ -961,9 +1026,13 @@ Here is some useful information about the environment you are running in:
     def _sanitize_messages_for_api(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """清理消息列表中非法的 tool_calls，防止 API 返回 400 错误。
 
-        当流式请求中断时，累积的 tool call arguments 可能是截断的 JSON。
-        这些消息被保存到历史后，下次请求会发给 API，导致:
-        "Assistant tool call arguments must be valid JSON" 400 错误。
+        处理两类问题：
+        1. 非法 JSON（含为空）的 tool call arguments —— 截断/空参数会导致
+           "Assistant tool call arguments must be valid JSON" 400 错误。
+        2. assistant 已声明 tool_call 但无配对 tool 结果（悬空声明）——
+           进程被杀/崩溃/续写中断时，"声明先落库、结果来不及回填"会在历史里
+           留下悬空记录，DeepSeek 等严格校验的网关直接以
+           "tool calls and tool results do not match" 拒绝请求。
         """
         # 预扫描：收集所有原始 assistant tool_call 的 ID，用于匹配 tool 结果
         all_tc_ids: set[str] = set()
@@ -1030,6 +1099,70 @@ Here is some useful information about the environment you are running in:
                     continue
 
             sanitized.append(msg)
+
+        # ---- 配对自检：为每个仍存活的 tool_call 补齐缺失的结果 ----
+        # 悬空声明会让 DeepSeek 等严格网关返回 400（tool calls and tool results
+        # do not match），且会随历史永久残留，导致后续每次请求都失败（只能新建会话）。
+        # 这里在发送前补齐合成结果，保证发给 API 的序列自洽。
+        replied_ids = {
+            m.get("tool_call_id")
+            for m in sanitized
+            if m.get("role") == "tool" and m.get("tool_call_id")
+        }
+        missing = valid_tool_call_ids - replied_ids
+        if missing:
+            pending: dict[str, dict] = {
+                tid: {
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "content": [{
+                        "type": "text",
+                        "text": _xml_response(
+                            "error",
+                            "工具未执行：该调用在上一次执行中断（进程退出或服务重启），无可用结果。",
+                        ),
+                    }],
+                }
+                for tid in missing
+            }
+            # 逐块重建：每个 assistant 声明后必须紧跟其全部 tool 结果（按声明顺序）。
+            # 既有的结果原样保留，缺失的用合成结果补齐，保证发给 API 的序列自洽。
+            repaired: list[dict[str, Any]] = []
+            i = 0
+            n = len(sanitized)
+            while i < n:
+                msg = sanitized[i]
+                repaired.append(msg)
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    # 收集紧跟其后的既有 tool 结果
+                    j = i + 1
+                    following: list[dict[str, Any]] = []
+                    while j < n and sanitized[j].get("role") == "tool":
+                        following.append(sanitized[j])
+                        j += 1
+                    by_id = {m.get("tool_call_id"): m for m in following if m.get("tool_call_id")}
+                    used: set[str] = set()
+                    for tc in msg["tool_calls"]:
+                        tid = tc.get("id")
+                        if not tid or tid in used:
+                            continue
+                        result = by_id.get(tid) or pending.pop(tid, None)
+                        if result is not None:
+                            repaired.append(result)
+                            used.add(tid)
+                    # 未被声明匹配的既有结果原样保留（正常历史下不会出现）
+                    for m in following:
+                        if m.get("tool_call_id") not in used:
+                            repaired.append(m)
+                    i = j
+                    continue
+                i += 1
+            repaired.extend(pending.values())  # 兜底：无归属的剩余结果补到末尾
+            logger.warning(
+                "[Sanitize] 补齐 %d 个无结果的 tool_call（工具执行中断残留）: %s",
+                len(missing), sorted(missing)[:5],
+            )
+            return repaired
 
         return sanitized
 
@@ -1107,28 +1240,28 @@ Here is some useful information about the environment you are running in:
 
         messages = [{"role": "system", "content": system_prompt}]
         
-        # 自动上下文压缩：当完整历史超过预算时，执行 AI 摘要压缩
-        # 参考 opencode：压缩完整历史记录，而非滑动窗口
+        # 自动上下文压缩：当滑动窗口超过预算时，执行 AI 摘要压缩。
+        # 【重要】必须用 window 而非 full_history 计量：滑动窗口才是真正发给模型的量。
+        # 旧代码用 full_history 计量，而压缩只截断窗口不删历史 → full_history 单调递增，
+        # 导致压缩成功后阈值仍天天被突破，每轮请求都白白多打一次摘要 API（实测 794K→1071K）。
         # 语义：1KB = 1024 tokens（256 KB → 262144 tokens）
         budget_tokens = self.context_window_kb * 1024
         if budget_tokens > 0:
-            total_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in full_history)
+            window_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in window)
+            full_history_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in full_history)
             
             # 渐进式压缩：一轮 90% → 二轮 95% → 三轮 97%
-            # 已有摘要数 = round + 1；首次触发 90%，二次 95%，三次 97%
-            existing_summaries = sum(
-                1 for m in full_history
-                if m.get("is_summary") or (
-                    isinstance(m.get("content"), str)
-                    and m["content"].startswith("[自动压缩的历史摘要]")
-                )
-            )
+            # 轮次取实例内累加计数（成功才 +1）；history 中摘要条数恒为 1，不能用作轮次。
             COMPRESS_THRESHOLDS = [0.90, 0.95, 0.97]
-            threshold = COMPRESS_THRESHOLDS[min(existing_summaries, len(COMPRESS_THRESHOLDS) - 1)]
+            threshold = COMPRESS_THRESHOLDS[min(self._compress_round, len(COMPRESS_THRESHOLDS) - 1)]
             
-            if total_tokens > budget_tokens * threshold:
+            if window_tokens > budget_tokens * threshold:
                 try:
-                    logger.info(f"完整历史超过 {threshold*100:.0f}% 阈值 ({total_tokens}/{budget_tokens} tokens)，执行自动压缩...")
+                    logger.info(
+                        f"滑动窗口超过 {threshold*100:.0f}% 阈值 "
+                        f"(window {window_tokens} / budget {budget_tokens} tokens，"
+                        f"完整历史 {full_history_tokens}，第 {self._compress_round + 1} 轮)，执行自动压缩..."
+                    )
                     # 安全切割：cut 点对齐到 user 轮次边界，保证工具调用序列完整
                     if len(full_history) > KEEP_RECENT_TURNS:
                         safe_cut = len(full_history) - KEEP_RECENT_TURNS
@@ -1154,7 +1287,15 @@ Here is some useful information about the environment you are running in:
                         early_msgs = full_history[start_idx:cut_idx]
                         recent_msgs = full_history[cut_idx:]
                         early_ids = [m.get("id") for m in early_msgs if m.get("id")]
-                        if early_msgs:
+                        if not early_msgs:
+                            # 摘要紧邻 cut 点、且保留区内没有新的 user 轮次 → 无事可压。
+                            # 这是正常状态（不是失败），但必须记日志，否则日志里只见"触发"不见结果，
+                            # 排查时无法区分"压缩了但没记"和"压根没压"。
+                            logger.info(
+                                f"跳过压缩：无可压缩增量（start_idx={start_idx} == cut_idx={cut_idx}），"
+                                f"最近 {KEEP_RECENT_TURNS} 条内无新 user 轮次"
+                            )
+                        else:
                             # 构建摘要输入（工具输出截断，总量限制）
                             # 重要：如果已有旧摘要，最新摘要必须能承接旧摘要（旧摘要随后被替换/隐藏），
                             # 因此把旧摘要内容作为"上轮摘要"前置，新摘要命中"增量+承接"。
@@ -1216,7 +1357,15 @@ Here is some useful information about the environment you are running in:
                                     max_tokens=1000,
                                     timeout=30  # 压缩是旁路调用：最多等 30s，失败即跳过，不让主请求陪等
                                 )
-                                summary_content = summary_resp.choices[0].message.content or ""
+                                _msg = summary_resp.choices[0].message
+                                summary_content = (_msg.content or "").strip()
+                                # thinking 模型常把全部输出放进 reasoning_content，content 为 None。
+                                # 只读 content 会把这类成功响应误判成"返回空"（实测连击 6 次），
+                                # 故回退取 reasoning_content。
+                                if not summary_content:
+                                    summary_content = (
+                                        getattr(_msg, "reasoning_content", None) or ""
+                                    ).strip()
                             except Exception as e:
                                 logger.warning(f"AI 摘要请求异常: {e}")
                                 summary_content = ""
@@ -1225,7 +1374,7 @@ Here is some useful information about the environment you are running in:
                             if not summary_content.strip():
                                 self._compress_fail_streak += 1
                                 logger.warning(
-                                    f"AI 压缩摘要第 {existing_summaries + 1} 轮失败（返回空，连击 "
+                                    f"AI 压缩摘要第 {self._compress_round + 1} 轮失败（返回空，连击 "
                                     f"{self._compress_fail_streak}），跳过压缩"
                                     + ("；已到失败上限，本轮起允许硬截断兜底" if self._compress_fail_streak >= 3 else "")
                                 )
@@ -1243,9 +1392,11 @@ Here is some useful information about the environment you are running in:
                                     # 否则 get_sliding_window() 找到"最新摘要"还是旧的那条。
                                     if prev_summary_ids:
                                         self.memory.remove_messages(prev_summary_ids)
+                                    # 只有成功落盘并重建窗口后，才认定这一轮压缩完成并递进阈值层
+                                    self._compress_round += 1
                                     window = self.memory.get_sliding_window()
-                                    total_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in window)
-                                    logger.info(f"第 {existing_summaries + 1} 轮压缩成功，窗口 tokens: {total_tokens}")
+                                    window_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in window)
+                                    logger.info(f"第 {self._compress_round} 轮压缩成功，窗口 tokens: {window_tokens}")
                                 except Exception as e:
                                     logger.warning(f"写入压缩摘要失败: {e}")
                 except Exception as e:
@@ -1253,7 +1404,7 @@ Here is some useful information about the environment you are running in:
 
             # 硬截断兜底：仅当压缩已连续失败 3 次（90/95/97 三层都试过）且仍超预算时才执行。
             # 正常路径压缩失败只是升级阈值层，下一轮再试，绝不因一次失败就丢消息。
-            if total_tokens > budget_tokens and self._compress_fail_streak >= 3:
+            if window_tokens > budget_tokens and self._compress_fail_streak >= 3:
                 kept = []
                 current_tokens = 0
                 for msg in reversed(window):
@@ -1300,13 +1451,14 @@ Here is some useful information about the environment you are running in:
 
             m = {"role": reconstructed["role"], "content": content}
             if "tool_calls" in reconstructed:
-                tc = []
-                for c in reconstructed["tool_calls"]:
-                    fn = ((c or {}).get("function") or {})
-                    name = (fn.get("name") or "").strip()
-                    args = (fn.get("arguments") or "").strip()
-                    if name and args:
-                        tc.append(c)
+                # 只要求有函数名即可：无参数的工具（如 get_system_resources）arguments
+                # 可能为空串，此处若一并丢弃，会导致 assistant 声明与其后的 tool 结果
+                # 双双消失，模型看不到"自己调用过该工具"。空参数由
+                # _sanitize_messages_for_api 统一替换为合法空 JSON "{}"。
+                tc = [
+                    c for c in reconstructed["tool_calls"]
+                    if (((c or {}).get("function") or {}).get("name") or "").strip()
+                ]
                 if tc:
                     m["tool_calls"] = tc
             if "tool_call_id" in reconstructed:

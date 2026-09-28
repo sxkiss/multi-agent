@@ -24,8 +24,10 @@ App({
   },
 
   onPageNotFound(res) {
-    // 避免路径错误时白屏，直接回主页
-    wx.redirectTo({ url: '/pages/chat/chat' })
+    // 避免路径错误时白屏，回到首页。
+    // 必须用 reLaunch：加了 tabBar 之后，tabBar 页面不能用 redirectTo 跳转
+    // （会报 fail can not redirectTo a tabbar page），首页属于 tabBar 页。
+    wx.reLaunch({ url: '/pages/index/index' })
   },
 
   setToken(token) {

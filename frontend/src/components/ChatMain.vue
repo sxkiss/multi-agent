@@ -584,7 +584,7 @@ export default {
 
 /* 流式助手消息：在顶部显示头像 + 名字行 */
 .message.assistant::before {
-  content: "AI 助手";
+  content: "多智能体协作助手";
   display: flex;
   align-items: center;
   gap: 8px;

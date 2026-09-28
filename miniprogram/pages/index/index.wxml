@@ -1,0 +1,80 @@
+<!--pages/index/index.wxml——首页（默认启动页）
+  聊天退为 tab 之一：它是能力入口，不是小程序门面。 -->
+<view class="page" style="font-size:{{fontPx}}rpx">
+
+  <!-- 资料卡 -->
+  <view class="card profile">
+    <button class="avatar-btn" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
+      <image wx:if="{{profile.avatarUrl}}" class="avatar" src="{{profile.avatarUrl}}" mode="aspectFill" />
+      <view wx:else class="avatar avatar-empty">{{profileInitial}}</view>
+    </button>
+    <view class="profile-right">
+      <input
+        class="nickname"
+        type="nickname"
+        value="{{profile.nickName}}"
+        placeholder="点击设置昵称"
+        bindblur="onNicknameBlur"
+      />
+      <view class="uid">账号 {{uidMasked}}</view>
+    </view>
+  </view>
+
+  <!-- 签到卡 -->
+  <view class="card">
+    <view class="card-head">
+      <text class="card-title">签到</text>
+      <view class="checkin-btn {{checkedToday ? 'done' : ''}}" catchtap="doCheckin">
+        {{checkedToday ? '今日已签' : '签到'}}
+      </view>
+    </view>
+
+    <view class="streak">
+      <text class="streak-num">{{checkin.streak}}</text>
+      <text class="streak-unit">天</text>
+      <text class="streak-label">连续 · 累计 {{checkin.total}} 天</text>
+    </view>
+
+    <view class="calendar">
+      <view
+        wx:for="{{calendar}}"
+        wx:key="day"
+        class="cal-cell {{item.checked ? 'on' : ''}} {{item.isToday ? 'today' : ''}}"
+      >{{item.day}}</view>
+    </view>
+  </view>
+
+  <!-- 功能入口 -->
+  <view class="card">
+    <view class="card-head"><text class="card-title">快捷入口</text></view>
+    <view class="grid">
+      <view class="grid-item" catchtap="goChat">
+        <text class="gi-icon">💬</text>
+        <text class="gi-text">发起对话</text>
+      </view>
+      <view class="grid-item" catchtap="goChatQuick">
+        <text class="gi-icon">⚡</text>
+        <text class="gi-text">快捷指令</text>
+      </view>
+      <view class="grid-item" catchtap="goProfile">
+        <text class="gi-icon">⚙</text>
+        <text class="gi-text">设置</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 统计 -->
+  <view class="card stat-row">
+    <view class="stat">
+      <text class="stat-num">{{usedDays}}</text>
+      <text class="stat-label">使用天数</text>
+    </view>
+    <view class="stat-divider"></view>
+    <view class="stat">
+      <text class="stat-num">{{msgCount < 0 ? '—' : msgCount}}</text>
+      <text class="stat-label">累计消息</text>
+    </view>
+  </view>
+
+  <view class="foot">v{{version}} · 数据已同步到账号</view>
+</view>

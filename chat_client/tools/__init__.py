@@ -8,6 +8,7 @@ import functools
 import inspect
 import json
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 import os
@@ -19,11 +20,100 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FutureTimeout
 from typing import Any, get_type_hints
 
+from .base import _xml_response, inject_tool_name  # noqa: F401  (工具结果统一封装)
+
 # 项目根目录（chat_client 的上一级），作为所有工具的默认工作目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ============================================================
-# 会话级工具权限上下文（替代全局 bool）：
+# 后台任务管理器：所有工具超时后自动转入后台执行
+# 对齐终端工具的 CommandManager，但覆盖范围是全部 66 个工具
+# ============================================================
+class _BgTask:
+    """单条后台任务的状态数据"""
+    __slots__ = ("task_id", "tool", "args", "future", "status", "result",
+                 "start_time", "session_id")
+
+    def __init__(self, task_id: str, tool: str, args: tuple, future,
+                 session_id: str = ""):
+        self.task_id = task_id
+        self.tool = tool
+        self.args = args
+        self.future = future
+        self.status = "running"      # running | done | failed | stopped
+        self.result: str = ""
+        self.start_time = time.time()
+        self.session_id = session_id
+
+
+class BackgroundTaskManager:
+    """统一后台任务注册/查询/完成通知。
+
+    设计要点：
+    - 任务一旦注册就**不允许取消**：Python 线程池的 future.cancel() 对已
+      运行的 task 无效（文档明确说返回 False），强行 cancel 只会让线程继续
+      跑但结果被丢弃。不如直接纳入管理，让用户能查结果。
+    - 完成通知通过 job.append 推 SSE 事件（同终端工具的通知链路）。
+    - 内存上限 200 条，超时就淘汰最旧的；长时间任务可能撑爆内存就靠这个兜底。
+    """
+    def __init__(self):
+        self._tasks: dict[str, _BgTask] = {}
+        self._lock = threading.Lock()
+        self._MAX = 200
+
+    def register(self, task_id: str, tool: str, args: tuple,
+                 future, session_id: str) -> None:
+        with self._lock:
+            if len(self._tasks) >= self._MAX:
+                # LRU：淘汰最早注册的
+                oldest = min(self._tasks, key=lambda k: self._tasks[k].start_time)
+                self._tasks.pop(oldest, None)
+            self._tasks[task_id] = _BgTask(task_id, tool, args, future, session_id)
+
+    def get(self, task_id: str) -> _BgTask | None:
+        with self._lock:
+            return self._tasks.get(task_id)
+
+    def remove(self, task_id: str) -> None:
+        with self._lock:
+            self._tasks.pop(task_id, None)
+
+    def notify_done(self, task_id: str, result: str) -> None:
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if not t:
+                return
+            t.status = "done"
+            t.result = result
+        # 通知 job：通过 emit_progress 推一条 background_done 事件，
+        # 前端/agent 看到后就可以把结果注入到对话上下文里。
+        try:
+            emit_progress("background_done", {
+                "task_id": task_id,
+                "tool": t.tool,
+                "result_preview": result[:500] if result else "",
+            })
+        except Exception:
+            logger.warning("后台任务完成通知失败 task=%s", task_id, exc_info=True)
+
+    def notify_failed(self, task_id: str, error: str) -> None:
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if not t:
+                return
+            t.status = "failed"
+            t.result = f"[执行失败] {error}"
+        try:
+            emit_progress("background_done", {
+                "task_id": task_id,
+                "tool": t.tool,
+                "result_preview": t.result[:500],
+            })
+        except Exception:
+            logger.warning("后台任务失败通知失败 task=%s", task_id, exc_info=True)
+
+
+_BG = BackgroundTaskManager()
 # - 键：session_id（来自 ChatJob.session_id）
 # - 值：是否放行高风险工具（true 表示非严格/破甲模式成员代理）
 # - 无 job/session 上下文时保守返回 False，避免跨会话泄漏
@@ -158,11 +248,12 @@ def _scan_dangerous_payload(kwargs: dict[str, Any]):
     return False, None
 
 
-def _risk_denied_response(reason: str) -> str:
-    return (
+def _risk_denied_response(reason: str, tool_name: str = "") -> str:
+    xml = (
         f"\n<tool>\n<toolcall_status>error</toolcall_status>\n"
         f"<toolcall_result>\n{reason}\n</toolcall_result>\n</tool>\n"
     )
+    return inject_tool_name(xml, tool_name)
 
 
 class ToolRegistry:
@@ -295,7 +386,8 @@ class ToolRegistry:
                 self._audit(tool_label, risk, audit_kwargs, 0, "blocked-dangerous", pattern or "")
                 return _risk_denied_response(
                     "此操作命中危险命令黑名单，已被安全策略拦截，拒绝执行。"
-                    "请勿尝试绕过，请告知用户该操作被禁止。"
+                    "请勿尝试绕过，请告知用户该操作被禁止。",
+                    tool_name=tool_label,
                 )
 
         # 2. high 风险工具：需用户确认；成员代理豁免（招聘即授权）
@@ -307,7 +399,8 @@ class ToolRegistry:
                 f"此操作（{tool_label}）为高风险操作，执行前必须获得用户的明确确认。"
                 "请停止调用该工具，向用户说明将要执行的操作内容与潜在风险，"
                 "待用户明确同意后再重试；若用户已同意但工具仍被拦截，"
-                "请联系管理员在面板设置或通过环境变量 AI_AGENT_RISK_GUARD=off 调整安全策略。"
+                "请联系管理员在面板设置或通过环境变量 AI_AGENT_RISK_GUARD=off 调整安全策略。",
+                tool_name=tool_label,
             )
 
         # 3. medium 风险：放行并记录日志
@@ -318,7 +411,7 @@ class ToolRegistry:
         verr = self._validate_args(name, kwargs)
         if verr:
             self._audit(tool_label, risk, audit_kwargs, 0, "invalid-params", verr)
-            return _risk_denied_response(f"参数校验未通过：{verr}")
+            return _risk_denied_response(f"参数校验未通过：{verr}", tool_name=tool_label)
 
         # 5. 带超时执行：防止单个工具卡死整条任务
         timeout_s = meta.get("timeout") or self.default_tool_timeout
@@ -326,18 +419,39 @@ class ToolRegistry:
         # 捕获当前线程的 job，确保 worker 线程持有正确上下文（避免多会话并发时全局覆盖）
         ctx_job = getattr(_current_job_local, "job", None)
         try:
-            def _wrapped():
-                _restore_job_ctx(ctx_job)
-                return func(*args, **kwargs)
-            fut = self._executor.submit(_wrapped)
-            try:
-                result = fut.result(timeout=timeout_s)
-            except _FutureTimeout:
-                fut.cancel()
-                msg = f"工具执行超时（>{timeout_s}s），已终止等待。可尝试简化请求或拆分任务后重试。"
-                logger.warning("[ToolTimeout] %s 超过 %ss", tool_label, timeout_s)
-                self._audit(tool_label, risk, audit_kwargs, int((time.time() - started) * 1000), "timeout", msg)
-                return _risk_denied_response(msg)
+             def _wrapped():
+                 _restore_job_ctx(ctx_job)
+                 return func(*args, **kwargs)
+             fut = self._executor.submit(_wrapped)
+             try:
+                 result = fut.result(timeout=timeout_s)
+             except _FutureTimeout:
+                 # 超时后不取消任务：Python 线程池的 cancel() 对已运行的 task
+                 # 无效（文档明确返回 False），取消只是丢弃 future 引用，
+                 # 线程仍在跑且无法回收。不如直接纳入后台管理——用户能通过
+                 # TaskStatus 查结果，且不会被白嫖算力而得不到反馈。
+                 task_id = str(uuid.uuid4())
+                 _sid = getattr(ctx_job, "session_id", "") if ctx_job else ""
+                 _BG.register(task_id, tool_label, args, fut, _sid)
+                 # 注册完成回调：无论 done/failed 都通知 job
+                 fut.add_done_callback(
+                     lambda f, tid=task_id, t=tool_label: (
+                         _BG.notify_done(tid, f.result())
+                         if not f.cancelled() and f.exception() is None
+                         else _BG.notify_failed(tid, str(f.exception()))
+                     )
+                 )
+                 msg = (
+                     f"工具 {tool_label} 已达到 {timeout_s}s 前台等待上限，"
+                     f"已自动转为后台执行。<task_id>{task_id}</task_id>\n"
+                     "任务在后台继续运行。完成后你将自动收到通知，届时可通过 "
+                     "TaskStatus 工具查询完整结果。如需等待请停止后续动作；"
+                     "也可立即继续其他工作，系统会在完成时推送通知。"
+                 )
+                 logger.info("[ToolBackground] %s 转后台 task=%s", tool_label, task_id)
+                 self._audit(tool_label, risk, audit_kwargs,
+                             int((time.time() - started) * 1000), "background", task_id)
+                 return inject_tool_name(_xml_response("running", msg), tool_label)
         except Exception as e:
             dur = int((time.time() - t0) * 1000)
             self._audit(tool_label, risk, audit_kwargs, dur, "error", str(e))
@@ -345,7 +459,7 @@ class ToolRegistry:
 
         dur = int((time.time() - t0) * 1000)
         self._audit(tool_label, risk, audit_kwargs, dur, "ok", str(result)[:200])
-        return result
+        return inject_tool_name(result, tool_label)
 
     def _load_states(self) -> dict[str, Any]:
         """从文件加载工具状态"""
@@ -675,6 +789,62 @@ registry = ToolRegistry()
 def register_tool(tool_id=None, **kwargs):
     return registry.register_tool(tool_id, **kwargs)
 
+
+# ============================================================
+# TaskStatus / TaskStop：查询/停止后台任务
+# 所有工具超时后转入后台，都通过这两个工具管理
+# ============================================================
+@register_tool(category="系统", name_cn="查询后台任务状态", risk_level="low")
+def TaskStatus(task_id: str) -> str:
+    """
+    - 查询由 TaskStatus 自动转入后台的工具执行结果
+    - 适用：工具已自动转后台（返回 task_id），用来查进度或最终结果
+    - 参数：task_id（后台任务 ID，格式如 123e4567-e89b-12d3-a456-426614174000）
+
+    防轮询提醒：任务完成后系统将自动推送通知，无需主动轮询。重复调用只会消耗
+    资源，不加速结果返回。
+    """
+    task = _BG.get(task_id)
+    if not task:
+        return _xml_response("error", f"未找到任务 {task_id}，可能已被清理或 ID 错误")
+    result = task.result or "[等待中…]"
+    status = task.status
+    # 运行时还在跑：提醒用户停止轮询
+    if status == "running":
+        result += (
+            "\n\n提醒：你不需要重复调用 TaskStatus。任务完成后你将自动收到通知。"
+            "请停止轮询并等待——重复调用会浪费计算资源和用户配额。"
+            "如果你当前正在循环轮询或使用 Sleep-轮询模式，请立即停止。"
+        )
+    return _xml_response(
+        status,
+        f"<task_id>{task.task_id}</task_id>\n"
+        f"<task_status>{status}</task_status>\n"
+        f"<tool_name>{task.tool}</tool_name>\n"
+        f"<command_run_logs>\n{result}\n</command_run_logs>\n",
+    )
+
+
+@register_tool(category="系统", name_cn="停止后台任务", risk_level="medium")
+def TaskStop(task_id: str) -> str:
+    """
+    - 停止正在运行的后台任务（如果还在运行）
+    - 适用：任务太久或用户不需要了，想取消执行
+    - 参数：task_id（后台任务 ID）
+
+    注意：后台任务实际在 Python 线程池里跑，stop 只是改状态，
+    线程无法强制杀死（Python 线程无 abort）。已完成的不会被影响。
+    """
+    task = _BG.get(task_id)
+    if not task:
+        return _xml_response("error", f"未找到任务 {task_id}")
+    if task.status == "running":
+        task.status = "stopped"
+        _BG.remove(task_id)
+        return _xml_response("done", f"任务 {task_id} 已标记为停止（线程继续运行但结果不再返回）")
+    return _xml_response("done", f"任务 {task_id} 已处于终态 ({task.status})，无需停止")
+
+
 # 导入所有工具以确保它们被注册
 from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注册副作用)
     agent_tools,
@@ -690,4 +860,5 @@ from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注�
     todo,
     webfetch,
     websearch,
+    wechat_media,
 )

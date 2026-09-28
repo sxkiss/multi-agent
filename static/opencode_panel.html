@@ -88,13 +88,14 @@
   </div>
 </div>
 
+<script src="/static/js/panel-auth.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let OC = { templates: {}, default_template: '' };
 let BUILTIN = [];
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  const r = await fetch(path, PanelAuth.authOpts(opts));
   try { return await r.json(); } catch (e) { return { status: false, raw: await r.text() }; }
 }
 

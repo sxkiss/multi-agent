@@ -1,14 +1,36 @@
 {
   "pages": [
+    "pages/index/index",
     "pages/chat/chat",
+    "pages/profile/profile",
     "pages/login/login"
   ],
   "window": {
     "backgroundTextStyle": "light",
     "navigationBarBackgroundColor": "#1a1d24",
-    "navigationBarTitleText": "AI 助手",
+    "navigationBarTitleText": "多智能体协作助手",
     "navigationBarTextStyle": "white",
     "backgroundColor": "#0f1115"
+  },
+  "tabBar": {
+    "color": "#6b7280",
+    "selectedColor": "#4a7cf7",
+    "backgroundColor": "#15181e",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/chat/chat",
+        "text": "连接机器人"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的"
+      }
+    ]
   },
   "style": "v2",
   "sitemapLocation": "sitemap.json"

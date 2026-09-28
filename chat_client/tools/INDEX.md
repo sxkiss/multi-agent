@@ -15,12 +15,7 @@
 | `sys_ops.py` | Tools | 运维增强 13 件套（服务器状态/Docker/防火墙等） |
 | `scheduler.py` | Tools | 定时任务系统（4 个调度工具） |
 | `task.py` | Tools | Task 子代理 + RunCrew 集团模式 + 组织扩张 |
-| `edit.py` | Tools | 文件写入/编辑 |
-| `edit_append.py` | Tools | 追加内容到文件末尾 |
-| `edit_append_content.py` | Tools | 追加内容变体 |
-| `edit_append_final.py` | Tools | 追加内容最终版 |
-| `edit_extra.py` | Tools | 编辑增强工具 |
-| `edit_tail.py` | Tools | 编辑尾部工具 |
+| `edit.py` | Tools | 文件写入/编辑（含 LargeFileEdit 大文件分段编辑） |
 | `mcp_tool.py` | Tools | MCP 工具封装 |
 | `mem0.py` | Tools | Mem0 记忆工具 |
 | `skill.py` | Tools | 技能安装/卸载工具 |

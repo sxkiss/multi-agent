@@ -1,0 +1,215 @@
+/* pages/index/index.wxss */
+.page {
+  min-height: 100vh;
+  padding: 24rpx 24rpx 40rpx;
+  box-sizing: border-box;
+  background: #0f1115;
+}
+
+.card {
+  margin-bottom: 24rpx;
+  padding: 28rpx;
+  background: #1a1d24;
+  border-radius: 20rpx;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20rpx;
+}
+
+.card-title {
+  font-size: 30rpx;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+/* ───────────── 资料卡 ───────────── */
+
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+}
+
+/* button 自带边框/圆角/内边距，需重置才能在卡片里正常显示 */
+.avatar-btn {
+  flex-shrink: 0;
+  width: 120rpx;
+  height: 120rpx;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.avatar-btn::after {
+  border: none;
+}
+
+.avatar {
+  width: 120rpx;
+  height: 120rpx;
+  border-radius: 50%;
+}
+
+.avatar-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48rpx;
+  color: #8b909a;
+  background: #2c303a;
+}
+
+.profile-right {
+  flex: 1;
+  min-width: 0;
+}
+
+.nickname {
+  font-size: 34rpx;
+  color: #ffffff;
+}
+
+.uid {
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: #6b7280;
+}
+
+/* ───────────── 签到 ───────────── */
+
+.checkin-btn {
+  padding: 10rpx 28rpx;
+  font-size: 26rpx;
+  color: #fff;
+  background: #4a7cf7;
+  border-radius: 28rpx;
+}
+
+.checkin-btn.done {
+  color: #8b909a;
+  background: #2c303a;
+}
+
+.streak {
+  display: flex;
+  align-items: baseline;
+  gap: 8rpx;
+  margin-bottom: 20rpx;
+}
+
+.streak-num {
+  font-size: 56rpx;
+  font-weight: bold;
+  color: #4a7cf7;
+}
+
+.streak-unit {
+  font-size: 26rpx;
+  color: #8b909a;
+}
+
+.streak-label {
+  margin-left: auto;
+  font-size: 24rpx;
+  color: #6b7280;
+}
+
+.calendar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8rpx;
+}
+
+.cal-cell {
+  width: 76rpx;
+  height: 76rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24rpx;
+  color: #6b7280;
+  background: #12141a;
+  border-radius: 12rpx;
+}
+
+.cal-cell.on {
+  color: #fff;
+  background: #4a7cf7;
+}
+
+.cal-cell.today {
+  border: 2rpx solid #4a7cf7;
+  box-sizing: border-box;
+}
+
+/* ───────────── 快捷入口 ───────────── */
+
+.grid {
+  display: flex;
+  gap: 16rpx;
+}
+
+.grid-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10rpx;
+  padding: 24rpx 0;
+  background: #12141a;
+  border-radius: 16rpx;
+}
+
+.gi-icon {
+  font-size: 40rpx;
+}
+
+.gi-text {
+  font-size: 24rpx;
+  color: #a8adb8;
+}
+
+/* ───────────── 统计 ───────────── */
+
+.stat-row {
+  display: flex;
+  align-items: center;
+}
+
+.stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6rpx;
+}
+
+.stat-num {
+  font-size: 40rpx;
+  font-weight: bold;
+  color: #ffffff;
+}
+
+.stat-label {
+  font-size: 24rpx;
+  color: #6b7280;
+}
+
+.stat-divider {
+  width: 2rpx;
+  height: 56rpx;
+  background: #2c303a;
+}
+
+.foot {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #4b5060;
+  text-align: center;
+}
