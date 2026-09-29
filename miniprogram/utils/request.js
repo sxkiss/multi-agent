@@ -89,6 +89,74 @@ function request({ url, method = 'GET', data = {}, header = {}, node }) {
 }
 
 /**
+ * 用旧 token 换新 token（滑动续期）。
+ *
+ * 为什么前端要主动续：后端 JWT 的 exp 签出即固定（默认 24h），到期后所有
+ * 接口一律 401。若等用户发现"用不了了"再处理，体验上是掉登录；这里在 401
+ * 时静默换新并重放原请求，用户完全无感。
+ *
+ * 并发控制：页面常并行发多个请求，若不合并会同时触发 N 次 refresh，
+ * 且先返回的会把后返回的 token 覆盖掉（旧 token 作废，后续请求全 401）。
+ * 故用单例 Promise 让并发请求共用一次刷新。
+ */
+let refreshPromise = null
+
+function refreshToken() {
+  if (refreshPromise) return refreshPromise
+
+  refreshPromise = request({ url: '/api/auth/refresh', method: 'POST' })
+    .then((res) => {
+      if (res.ok && res.data && res.data.token) {
+        const app = appInstance()
+        if (app && app.setToken) {
+          app.setToken(res.data.token)
+        } else {
+          wx.setStorageSync('token', res.data.token)
+        }
+        // 续期可能换回 session_id：与首次登录保持一致地落库，避免"聊天记录丢失"
+        if (res.data.session_id) {
+          wx.setStorageSync('session_id', res.data.session_id)
+          if (app && app.globalData) app.globalData.sessionId = res.data.session_id
+        }
+        return true
+      }
+      return false
+    })
+    .catch(() => false)
+    .finally(() => {
+      // 无论成败都清空：成功后后续请求直接用新 token；失败则允许下次重试，
+      // 否则一次失败会把后续所有请求永久挡住。
+      refreshPromise = null
+    })
+
+  return refreshPromise
+}
+
+/**
+ * 带 401 自动续期的请求：先发一次，遇到 401 就刷新 token 再重放。
+ *
+ * 只对"曾经登录过"的情况续期——本地没有 token 时说明本来就没登录，
+ * 刷新也没有意义，直接把 401 抛给调用方去引导登录。
+ */
+function requestWithRefresh({ url, method = 'GET', data = {}, header = {}, node }) {
+  return request({ url, method, data, header, node }).then((res) => {
+    if (res.statusCode !== 401 || url === '/api/auth/refresh') return res
+
+    const app = appInstance()
+    const hasToken = !!(app && app.globalData && app.globalData.token) ||
+      !!wx.getStorageSync('token')
+    if (!hasToken) return res
+
+    return refreshToken().then((ok) => {
+      if (!ok) return res
+      // 关键：重放时必须重新读 token——authHeader() 在 request() 内部取，
+      // 续期后已写入 storage/globalData，这里重发即可带上新凭据。
+      return request({ url, method, data, header, node })
+    })
+  })
+}
+
+/**
  * 节点故障转移：把一次请求依次打到 nodes 列表里的每个节点。
  *
  * @returns Promise<{ok, data, msg, statusCode, unauthorized, tried}>
@@ -99,7 +167,7 @@ function requestWithFailover({ url, method = 'GET', data = {}, header = {} }) {
 
   // 单节点（或 local 调试）时无需故障转移：保持原行为，避免多一次包装
   if (nodes.length <= 1 || CONFIG.useLocal) {
-    return request({ url, method, data, header })
+    return requestWithRefresh({ url, method, data, header })
   }
 
   return new Promise((resolve) => {
@@ -122,7 +190,7 @@ function requestWithFailover({ url, method = 'GET', data = {}, header = {} }) {
       idx += 1
       tried.push(node)
 
-      request({ url, method, data, header, node }).then((res) => {
+      requestWithRefresh({ url, method, data, header, node }).then((res) => {
         // HTTP 有响应 = 链路通，业务结果直接返回（401/500/404 等不换节点）
         if (res.statusCode !== 0) {
           resolve(res)

@@ -18,6 +18,79 @@
 const { getBaseUrl, CONFIG } = require('./config.js')
 const app = getApp()
 
+// ---------- 临期续期（旁路） ----------
+
+// 距离过期多久之内才刷新：留足余量，确保"一次最长 10 分钟的订阅"全程有效。
+const REFRESH_AHEAD_MS = 30 * 60 * 1000
+let lastRefreshAt = 0
+
+/**
+ * 解析 JWT 的 exp（不验签，仅用于前端判断"快到期了吗"）。
+ *
+ * 为什么可以只解不验：这里只是决定"要不要提前续一下"的触发条件，
+ * 真正的身份校验在服务端；即便 payload 被本地篡改，后续 refresh 请求
+ * 也会因签名不符被拒，不会因此拿到新 token。
+ */
+function tokenExpMs(token) {
+  try {
+    const seg = String(token || '').split('.')[1]
+    if (!seg) return 0
+    const b64 = seg.replace(/-/g, '+').replace(/_/g, '/')
+    // 老基础库没有 atob：回退到 Buffer（若可用），都没有则放弃续期判断。
+    // 取不到 exp 只是"不提前续"，不影响正常订阅——旁路逻辑不该拖垮主流程。
+    let json = ''
+    if (typeof atob === 'function') {
+      json = decodeURIComponent(escape(atob(b64)))
+    } else if (typeof Buffer !== 'undefined') {
+      json = Buffer.from(b64, 'base64').toString('utf8')
+    } else {
+      return 0
+    }
+    const payload = JSON.parse(json)
+    return Number(payload && payload.exp ? payload.exp * 1000 : 0)
+  } catch (e) {
+    return 0
+  }
+}
+
+/**
+ * 临期才续：token 剩余有效期不足阈值时静默换新，供下次连接使用。
+ *
+ * 刻意做成"旁路 + 节流"：
+ * - 不 await：订阅必须同步返回 task，调用方才能 abort，改成异步会破坏契约；
+ * - 节流 5 分钟：SSE 断线会频繁重连，不能每次订阅都打一次网络。
+ */
+function maybeRefreshToken(token) {
+  try {
+    if (!token) return
+    const now = Date.now()
+    if (now - lastRefreshAt < 5 * 60 * 1000) return
+    const exp = tokenExpMs(token)
+    if (!exp || exp - now > REFRESH_AHEAD_MS) return
+
+    lastRefreshAt = now
+    wx.request({
+      url: getBaseUrl() + '/api/auth/refresh',
+      method: 'POST',
+      header: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'X-Client-Type': 'miniprogram'
+      },
+      success(res) {
+        const body = res.data || {}
+        if (res.statusCode === 200 && body.status && body.data && body.data.token) {
+          wx.setStorageSync('token', body.data.token)
+          if (app && app.globalData) app.globalData.token = body.data.token
+          if (app && app.setToken) app.setToken(body.data.token)
+        }
+      }
+    })
+  } catch (e) {
+    // 续期是旁路优化，失败不影响本次订阅，静默即可
+  }
+}
+
 // ---------- UTF-8 解码 ----------
 
 /**
@@ -131,6 +204,14 @@ function parseEventBlock(block) {
  */
 function subscribe({ sessionId, lastId = 0, onEvent, onError, onEnd, nodeIndex = 0, tryIndex = 0 }) {
   const token = (app && app.globalData && app.globalData.token) || wx.getStorageSync('token') || ''
+  // 顺带做一次"临期续期"（不阻塞开连）。
+  //
+  // 为什么 SSE 要单独处理：它不走 request.js 的 401 拦截（用 wx.request
+  // 裸调长连接），且 token 在开连那一刻就拼进 URL、之后不再更新。一次
+  // 订阅最长 10 分钟，恰好横跨 24h 有效期边界时会在连接中途判过期。
+  // 这里只做"快到期才续"的旁路刷新：本次连接仍用现有 token（保证同步
+  // 返回 task 给调用方 abort），但把有效期往后推，下次重连就是新 token。
+  maybeRefreshToken(token)
   // 节点选择：外部传 nodeIndex 时用指定节点（故障转移/重连用），否则取当前节点。
   // 与 request.js 的故障转移共用同一份 CONFIG.nodes，避免两处配置漂移。
   const nodes = (CONFIG && CONFIG.nodes) || []
