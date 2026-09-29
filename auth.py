@@ -41,6 +41,15 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 TOKEN_ISSUER = "bt-agent"
 DEFAULT_TTL_HOURS = 24
+# 续期宽限期：token 过期后多久内仍允许换新（默认 30 天）。
+#
+# 为什么需要宽限：JWT 无状态、exp 写死，若只认严格有效期，用户离开几天回来
+# 就必然 401，只能重新走微信授权。给一段宽限期后，客户端只要还在用（本地
+# 存着 token），就能静默换新，体验上等于"登录态不过期"。
+#
+# 为什么不是无限：宽限期越长，遗失的 token 可兑换新 token 的窗口越长。
+# 30 天是"连续活跃用户无感"与"泄漏后可控"的折中；真正吊销靠轮换 secret。
+DEFAULT_REFRESH_GRACE_DAYS = 30
 PBKDF2_ITERATIONS = 200_000
 
 # 免鉴权路径。登录接口本身 + 静态资源 + 首页 HTML。
@@ -54,6 +63,11 @@ PUBLIC_PREFIX = (
     "/api/auth/wxlogin",
     "/api/auth/status",
     "/api/auth/logout",
+    # 续期必须放行：它的入参本身就是"刚过期"的 token，中间件若按严格
+    # 有效期拦截，请求永远到不了这里，续期形同虚设。
+    # 免鉴权不等于无鉴权——接口内部用 verify_token_allow_expired 校验
+    # 签名与宽限期，安全性由该逻辑保证（见 api_auth_refresh）。
+    "/api/auth/refresh",
     # clawbot 服务间接口：用 x-service-key 认证（见 web_server._check_service_key），
     # 不走用户 Bearer token。若在此拦截，clawbot 无法换取服务令牌。
     # 安全性由接口内部的服务密钥校验保证，不因免鉴权而降低。
@@ -188,6 +202,43 @@ def verify_token(base_dir: str, token: str) -> Optional[dict]:
         return None
     except Exception:
         return None
+
+
+def verify_token_allow_expired(base_dir: str, token: str,
+                               grace_seconds: int) -> Optional[dict]:
+    """校验令牌，但允许"刚过期不久"的情况仍解析出 payload。
+
+    为什么需要：JWT 无状态，签出后 exp 就写死了，服务端没有任何续期入口。
+    纯 verify_token 一旦过期返回 None，前端只能让用户重新走微信授权。
+    续期接口必须能读出"这个 token 是谁的"，才能在确认身份后签新 token——
+    而过期了就验不过，所以这里临时关掉 exp 校验。
+
+    安全边界：只放宽 exp 一项，签名、issuer 仍强制校验（PyJWT 的
+    verify_exp=False 不影响其余声明）；且由调用方用 grace_seconds 限定
+    "过期多久内才算数"，超出宽限期一律拒绝。绝不用于常规鉴权路径。
+    """
+    if grace_seconds <= 0:
+        return None
+    try:
+        payload = jwt.decode(
+            token, _secret(base_dir), algorithms=["HS256"], issuer=TOKEN_ISSUER,
+            options={"verify_exp": False},
+        )
+    except Exception:
+        return None
+    try:
+        exp = int(payload.get("exp") or 0)
+    except (TypeError, ValueError):
+        return None
+    if exp <= 0:
+        return None
+    # 只接受"过期未超过宽限期"；尚未过期或过期太久都不走这条路
+    now = int(time.time())
+    if now < exp:
+        return payload          # 没过期，正常返回（调用方会签新 token）
+    if now - exp > grace_seconds:
+        return None             # 超宽限期：等同于作废
+    return payload
 
 
 # ------------------------------------------------------------------
@@ -355,6 +406,51 @@ def register_auth(app: FastAPI, base_dir: str) -> None:
                 "session_id": wx_session_id(openid),
             },
             "msg": "登录成功",
+        })
+
+    # ---- 续期：用旧 token 换新 token（滑动续期）----
+    @app.post("/api/auth/refresh")
+    async def api_auth_refresh(request: Request):
+        """用旧令牌换发新令牌，避免 24 小时到期后被迫重新微信授权。
+
+        为什么必须单独开接口：JWT 的 exp 签出即固定，服务端没有会话表可
+        以顺延。前端拿到 401（或主动定时调用）时带着旧 token 来这里，
+        验明身份后签一张新的，用户侧完全无感。
+
+        安全边界：
+        - 签名与 issuer 仍强制校验，只放宽 exp 一项；
+        - 过期超过宽限期（默认 30 天）拒绝，退回要求重新登录；
+        - 不提升权限：新 token 的 sub 沿用旧 token，杜绝横向越权；
+        - 服务令牌（sub=service:*）不参与，它本就是 5 年长期令牌。
+        """
+        cfg = load_auth(base_dir)
+        token = extract_token(request)
+        if not token:
+            return JSONResponse(
+                {"status": False, "msg": "缺少令牌", "code": 401}, status_code=401)
+
+        grace_days = int(cfg.get("refresh_grace_days") or DEFAULT_REFRESH_GRACE_DAYS)
+        grace_seconds = max(0, grace_days) * 86400
+        payload = verify_token_allow_expired(base_dir, token, grace_seconds)
+        if not payload:
+            return JSONResponse(
+                {"status": False, "msg": "令牌已失效，请重新登录", "code": 401},
+                status_code=401)
+
+        sub = str(payload.get("sub") or "")
+        if not sub or sub.startswith("service:"):
+            return JSONResponse(
+                {"status": False, "msg": "该令牌不支持续期", "code": 401},
+                status_code=401)
+
+        ttl = int(cfg.get("token_ttl_hours") or DEFAULT_TTL_HOURS)
+        new_token = create_token(base_dir, ttl, sub=sub)
+        data = {"token": new_token, "expires_in": ttl * 3600}
+        # 微信用户沿用同一会话：续期不该把用户踢到新会话，否则聊天记录"丢失"
+        if sub.startswith("wx:"):
+            data["session_id"] = wx_session_id(sub[3:])
+        return JSONResponse({
+            "status": True, "data": data, "msg": "已续期",
         })
 
     # ---- 状态：前端据此判断是否需要显示登录页 ----
