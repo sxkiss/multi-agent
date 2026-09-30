@@ -28,7 +28,7 @@ from chat_client.api_retry import is_retryable_api_err
 from chat_client.memory import MemoryManager
 from chat_client.retrieval import ExternalRAGService, RAGService, Mem0Service
 
-from .tools import registry, set_session_allow_high
+from .tools import registry, set_session_allow_high, get_background_manager
 from .tools.base import _xml_response, inject_tool_name
 
 logger = logging.getLogger(__name__)
@@ -578,6 +578,9 @@ Here is some useful information about the environment you are running in:
                     mcp_tools = mcp_client.get_tool_schemas()
                     if mcp_tools:
                         t.extend(mcp_tools)
+                    # 过滤+合并后仍需去重：内置与 MCP 同名工具可能在过滤后再次共存，
+                    # 上游不接受同名顶层工具（400 duplicate tool name → 503）。
+                    t = registry.dedup_tools(t)
                 return t
 
             # 构建工具列表：使用 enabled_tools（已排除集团工具）而非 _build_tools(None)（返回全部工具含 RunCrew）
@@ -602,6 +605,9 @@ Here is some useful information about the environment you are running in:
                 "output_tokens": 0
             }
             last_message_id = ""
+            # 后台任务收尾等待：整轮只允许一次。否则"等120s → 未完成 → continue"
+            # 会随 max_tool_iterations(9999) 放大成 13 天的空转。
+            _bg_wait_used = False
 
             while iteration_count < self.max_tool_iterations:
                 iteration_count += 1
@@ -610,6 +616,29 @@ Here is some useful information about the environment you are running in:
                 if _is_cancelled():
                     logger.info("[Cancel] 任务已停止，结束主循环")
                     return
+
+                # 后台任务结果回灌：工具转后台后，完成通知只推 SSE（前端可见），
+                # 不会进入 messages，模型因此永远拿不到结果、只能靠轮询 TaskStatus。
+                # 这里每轮迭代取一次"已完成未注入"的结果，追加进上下文，模型下一轮即可读到。
+                # 追加到 messages（本轮内存态）：跨迭代可见；不写 memory，避免污染长期历史。
+                try:
+                    _bg = get_background_manager()
+                    _finished = _bg.drain_finished(self.session_id)
+                    for _t in _finished:
+                        _text = (
+                            f"<background_task_done>\n"
+                            f"<task_id>{_t['task_id']}</task_id>\n"
+                            f"<tool>{_t['tool']}</tool>\n"
+                            f"<status>{_t['status']}</status>\n"
+                            f"<result>\n{_t['result']}\n</result>\n"
+                            f"</background_task_done>\n"
+                            f"以上是你之前转入后台的工具任务的执行结果，现已完成，"
+                            f"请据此继续推进任务，不要重复调用该工具。"
+                        )
+                        messages.append({"role": "system", "content": _text})
+                        logger.info("[Background] 注入后台结果 task=%s tool=%s", _t['task_id'], _t['tool'])
+                except Exception:
+                    logger.warning("[Background] 后台结果注入失败", exc_info=True)
 
                 # Copy messages to avoid polluting history with ephemeral warnings
                 request_messages = list(messages)
@@ -752,7 +781,17 @@ Here is some useful information about the environment you are running in:
                         if yielded_content:
                             # 续写模式：把已输出内容作为上下文附上，要求模型从中断处继续（前端按序拼接，不会重复）
                             # 移除上一轮重试附加的续写上下文，避免重复堆叠
-                            if request_messages and request_messages[-1].get("content", "").startswith("[system-note]"):
+                            # content 可能是多模态 list（[{"type":"text",...}]），直接
+                            # .startswith 会抛 AttributeError，导致重试逻辑自身崩溃、
+                            # 重试从未发生（异常在 except 块内，直接冒泡到最外层）。
+                            _last = request_messages[-1] if request_messages else None
+                            _last_c = _last.get("content", "") if isinstance(_last, dict) else ""
+                            if isinstance(_last_c, list):
+                                _last_c = " ".join(
+                                    p.get("text", "") for p in _last_c
+                                    if isinstance(p, dict) and p.get("type") == "text"
+                                )
+                            if request_messages and str(_last_c).startswith("[system-note]"):
                                 del request_messages[-2:]
                             request_messages.append({"role": "assistant", "content": yielded_content})
                             request_messages.append({"role": "system", "content":
@@ -772,6 +811,57 @@ Here is some useful information about the environment you are running in:
 
                 # 如果没有工具调用，结束循环
                 if not tool_call_chunks:
+                    # 结束前先等后台任务：工具转后台后模型往往"无话可说"直接结束，
+                    # 若此时任务还在跑就 break，结果通知只推 SSE、进不了上下文，
+                    # 模型永远拿不到——后台任务就成了黑盒，只能靠用户追问触发轮询。
+                    # 这里做有限等待（默认 120s），把结果注入后再让模型收尾。
+                    try:
+                        _bg = get_background_manager()
+                        if _bg_wait_used:
+                            # 已等过一轮仍未完成：不再等待，避免放大成死循环
+                            pass
+                        elif _bg.pending_count(self.session_id) > 0:
+                            _bg_wait_used = True
+                            _wait_budget = float(self.config.get("background_wait_seconds", 120))
+                            _poll_interval = 2.0
+                            _waited = 0.0
+                            while (_waited < _wait_budget
+                                   and _bg.pending_count(self.session_id) > 0
+                                   and not _is_cancelled()):
+                                time.sleep(min(_poll_interval, _wait_budget - _waited))
+                                _waited += _poll_interval
+                                # 等到就立刻注入，无需等满预算
+                                for _t in _bg.drain_finished(self.session_id):
+                                    _text = (
+                                        f"<background_task_done>\n"
+                                        f"<task_id>{_t['task_id']}</task_id>\n"
+                                        f"<tool>{_t['tool']}</tool>\n"
+                                        f"<status>{_t['status']}</status>\n"
+                                        f"<result>\n{_t['result']}\n</result>\n"
+                                        f"</background_task_done>\n"
+                                        f"以上是你之前转入后台的工具任务的执行结果，现已完成，"
+                                        f"请据此继续推进任务，不要重复调用该工具。"
+                                    )
+                                    messages.append({"role": "system", "content": _text})
+                                    logger.info("[Background] 等待后注入结果 task=%s", _t['task_id'])
+                            # 还有未完成的：明确告知，让模型如实汇报而非假装完成
+                            if _bg.pending_count(self.session_id) > 0:
+                                messages.append({
+                                    "role": "system",
+                                    "content": (
+                                        f"<background_task_pending>\n"
+                                        f"仍有 {_bg.pending_count(self.session_id)} 个后台任务在运行且已超过等待上限"
+                                        f"（{self.config.get('background_wait_seconds', 120)} 秒）。\n"
+                                        f"请如实告知用户任务仍在进行、稍后可用 TaskStatus 查询结果，"
+                                        f"不要声称任务已完成，也不要重复发起同一工具调用。\n"
+                                        f"</background_task_pending>"
+                                    ),
+                                })
+                                # 让模型带着"未完成"信息再走一轮，而不是直接结束
+                                continue
+                    except Exception:
+                        logger.warning("[Background] 等待后台任务失败", exc_info=True)
+
                     yield {
                         "type": "stop",
                         "usage": total_usage,
