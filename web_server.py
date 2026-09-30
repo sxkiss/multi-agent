@@ -338,6 +338,11 @@ class ChatJob:
         self.label = (label or "")[:40]
         self.key = key or f"{session_id}::{uuid.uuid4().hex[:6]}"
         self.events = []            # [{"id": seq, "event": name, "data": ...}]，回放按 id 过滤，超出上限会丢弃最旧的
+        # 事件游标：单调递增、永不回退。绝不可用 len(self.events) 当 id ——
+        # 事件数超 _MAX_EVENTS 时缓冲区会截断，若 id 是数组下标就会整体回退，
+        # 导致客户端 last_id 永远大于所有现存 id，snapshot_from 恒返回空，
+        # SSE 续传死锁（表现为 last_id 卡在上限-1、工具计数不涨、"连接失败"）。
+        self._seq = -1
         self.status = "running"     # running | done | error | stopped
         self.agent = None
         self.cancel_event = threading.Event()  # chat_stop 置位；Agent 循环在检查点据此提前退出
@@ -362,14 +367,13 @@ class ChatJob:
 
     def append(self, event, data=None):
         with self._lock:
-            self.events.append({"id": len(self.events), "event": event, "data": data})
+            self._seq += 1
+            self.events.append({"id": self._seq, "event": event, "data": data})
             # 限制事件缓存大小，避免长时间挂起的任务撑爆内存
+            # 只截断，绝不重编号：id 来自单调递增的 _seq，截断后依然递增，
+            # 客户端游标永远有效（旧游标最多落后被丢弃的区间，不会恒大于全部 id）。
             if len(self.events) > self._MAX_EVENTS:
-                keep = self.events[-self._MAX_EVENTS:]
-                # 重编 id 保证前端能按连续 seq 回放
-                for i, e in enumerate(keep):
-                    e["id"] = i
-                self.events = keep
+                self.events = self.events[-self._MAX_EVENTS:]
         # 增量落盘（原子追加）
         if self.persist:
             try:
@@ -438,7 +442,8 @@ class ChatJob:
                     else:
                         job._lock.acquire()
                         try:
-                            job.events.append({"id": len(job.events),
+                            job._seq += 1
+                            job.events.append({"id": job._seq,
                                                "event": rec.get("event", "message"),
                                                "data": rec.get("data")})
                         finally:
@@ -447,12 +452,10 @@ class ChatJob:
             return None
         # 与 append() 一致的上限：磁盘上的 jsonl 是完整历史（无截断），
         # 恢复时若全量灌入会把 105MB 级别的历史一次性读进内存。
-        # 只保留最近 _MAX_EVENTS 条，并重编 id 保证前端按连续 seq 回放。
+        # 只保留最近 _MAX_EVENTS 条；id 由 _seq 单调分配，截断时不得重编号，
+        # 否则 id 回退会让前端游标失效（同 append 的 SSE 续传死锁）。
         if len(job.events) > cls._MAX_EVENTS:
-            keep = job.events[-cls._MAX_EVENTS:]
-            for i, e in enumerate(keep):
-                e["id"] = i
-            job.events = keep
+            job.events = job.events[-cls._MAX_EVENTS:]
         # 进程重启后，写这个文件的 agent 线程已不存在，绝不可能仍在运行。
         # 若文件没有 __status__ 行（任务被 kill 而非正常结束），job.status 会停在
         # 构造时的 "running" 变成僵尸任务 —— 它会长期占用该会话的 MAX_PARALLEL
@@ -2102,7 +2105,9 @@ class AgentMain:
         jobs_list = []
         for key, j in sorted(jobs, key=lambda kv: kv[1].created_at):
             with j._lock:
-                lid = len(j.events) - 1
+                # 必须用单调递增的 _seq，不能用 len(events)-1：截断后 len 恒等于
+                # _MAX_EVENTS，会把 last_id 永远上报成上限值，前端据此续传即卡死。
+                lid = j._seq
                 st = j.status
             jobs_list.append({
                 "job": key,
