@@ -578,6 +578,9 @@ Here is some useful information about the environment you are running in:
                     mcp_tools = mcp_client.get_tool_schemas()
                     if mcp_tools:
                         t.extend(mcp_tools)
+                    # 过滤+合并后仍需去重：内置与 MCP 同名工具可能在过滤后再次共存，
+                    # 上游不接受同名顶层工具（400 duplicate tool name → 503）。
+                    t = registry.dedup_tools(t)
                 return t
 
             # 构建工具列表：使用 enabled_tools（已排除集团工具）而非 _build_tools(None)（返回全部工具含 RunCrew）
@@ -778,7 +781,17 @@ Here is some useful information about the environment you are running in:
                         if yielded_content:
                             # 续写模式：把已输出内容作为上下文附上，要求模型从中断处继续（前端按序拼接，不会重复）
                             # 移除上一轮重试附加的续写上下文，避免重复堆叠
-                            if request_messages and request_messages[-1].get("content", "").startswith("[system-note]"):
+                            # content 可能是多模态 list（[{"type":"text",...}]），直接
+                            # .startswith 会抛 AttributeError，导致重试逻辑自身崩溃、
+                            # 重试从未发生（异常在 except 块内，直接冒泡到最外层）。
+                            _last = request_messages[-1] if request_messages else None
+                            _last_c = _last.get("content", "") if isinstance(_last, dict) else ""
+                            if isinstance(_last_c, list):
+                                _last_c = " ".join(
+                                    p.get("text", "") for p in _last_c
+                                    if isinstance(p, dict) and p.get("type") == "text"
+                                )
+                            if request_messages and str(_last_c).startswith("[system-note]"):
                                 del request_messages[-2:]
                             request_messages.append({"role": "assistant", "content": yielded_content})
                             request_messages.append({"role": "system", "content":

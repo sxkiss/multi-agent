@@ -717,7 +717,7 @@ class ToolRegistry:
             enabled_ids: 允许使用的工具ID列表。如果不传，则返回所有(兼容旧行为)。
         """
         if enabled_ids is None:
-            return self._schemas
+            return self._dedup_tools(self._schemas)
         filtered_schemas = []
         for schema in self._schemas:
             name = schema["function"]["name"]
@@ -725,7 +725,31 @@ class ToolRegistry:
             # 只有 ID 在启用列表中才返回
             if meta and meta["id"] in enabled_ids:
                 filtered_schemas.append(schema)
-        return filtered_schemas
+        return self._dedup_tools(filtered_schemas)
+
+    @staticmethod
+    def _dedup_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """按 function.name 去重，保留首次出现的（内置工具先注册，故优先）。
+
+        背景：_schemas 是 list.append 累积、_register_func 不去重，而 MCP 加载时
+        desktop-commander 的 kill_process 会与内置同名工具共存两条 schema。
+        上游模型不接受同名顶层工具，会返回 400 "duplicate top-level executable
+        tool name"，被中转池再包装成 503 no_healthy_account。
+        """
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for schema in schemas:
+            name = schema.get("function", {}).get("name")
+            if name in seen:
+                logger.warning("[Tools] 跳过重复工具名（上游不允许同名）: %s", name)
+                continue
+            seen.add(name)
+            out.append(schema)
+        return out
+
+    def dedup_tools(self, schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """公开入口：供 agent 在合并 MCP 工具后做最终去重。"""
+        return self._dedup_tools(schemas)
 
     def get_all_tools_info(self) -> list[dict[str, Any]]:
         """获取所有工具的详细信息列表 (用于前端展示)"""
