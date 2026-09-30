@@ -196,5 +196,87 @@ class BuildMessagesEmptyArgsTest(unittest.TestCase):
                                  "tool 结果未紧跟 assistant 声明")
 
 
+class InterleavedToolSequenceTest(unittest.TestCase):
+    """乱序工具序列必须自愈（网关 11148: tool calls and tool results do not match）
+
+    真实事故：线上会话历史出现两种旧逻辑修不了的形态——
+      A. 连续两条 assistant 都带 tool_calls，中间没有任何 tool 结果
+      B. tool 结果散落在声明之后很远处（中间隔着别的 assistant/tool）
+    旧实现只收集"紧随其后的 tool 块"，遇到「后面是 assistant」就断链，
+    实测 788 条窗口里 30 处违规只修掉 1 处，网关仍然 400。
+    """
+
+    def _assert_well_formed(self, msgs):
+        """每个 assistant 声明后必须紧跟其全部结果；不得有多余/孤儿结果"""
+        declared = {tc["id"] for m in msgs if m.get("role") == "assistant"
+                    for tc in (m.get("tool_calls") or [])}
+        replied = {m["tool_call_id"] for m in msgs
+                   if m.get("role") == "tool" and m.get("tool_call_id")}
+        self.assertEqual(declared - replied, set(), "仍有悬空声明")
+        self.assertEqual(replied - declared, set(), "仍有无归属结果")
+        i, n = 0, len(msgs)
+        while i < n:
+            m = msgs[i]
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                want = [tc["id"] for tc in m["tool_calls"]]
+                j = i + 1
+                got = []
+                while j < n and msgs[j].get("role") == "tool":
+                    got.append(msgs[j].get("tool_call_id"))
+                    j += 1
+                self.assertEqual(got, want, "结果未紧跟声明（顺序/数量不符）")
+                i = j
+                continue
+            self.assertNotEqual(m.get("role"), "tool", "出现孤儿 tool 结果")
+            i += 1
+
+    def test_consecutive_assistants_both_with_tool_calls(self):
+        """形态 A：连续两条 assistant 各声明工具，结果在两条之后"""
+        msgs = [
+            {"role": "user", "content": "查一下"},
+            {"role": "assistant", "content": "", "tool_calls": [_tc("t1")]},
+            {"role": "assistant", "content": "", "tool_calls": [_tc("t2")]},
+            {"role": "tool", "tool_call_id": "t1", "content": [{"type": "text", "text": "r1"}]},
+            {"role": "tool", "tool_call_id": "t2", "content": [{"type": "text", "text": "r2"}]},
+        ]
+        self._assert_well_formed(Agent._sanitize_messages_for_api(msgs))
+
+    def test_result_far_from_its_declaration(self):
+        """形态 B：结果与声明相隔多条消息，必须被搬回声明之后"""
+        msgs = [
+            {"role": "assistant", "content": "", "tool_calls": [_tc("t1")]},
+            {"role": "assistant", "content": "思考中"},
+            {"role": "assistant", "content": "", "tool_calls": [_tc("t2")]},
+            {"role": "tool", "tool_call_id": "t2", "content": [{"type": "text", "text": "r2"}]},
+            {"role": "tool", "tool_call_id": "t1", "content": [{"type": "text", "text": "r1"}]},
+        ]
+        out = Agent._sanitize_messages_for_api(msgs)
+        self._assert_well_formed(out)
+        # t1 的结果必须紧跟 t1 的声明之后，不能留在末尾
+        for i, m in enumerate(out):
+            if m.get("role") == "assistant" and any(
+                tc["id"] == "t1" for tc in (m.get("tool_calls") or [])
+            ):
+                self.assertEqual(out[i + 1].get("tool_call_id"), "t1",
+                                 "t1 结果未被搬回其声明之后")
+
+    def test_mixed_interleaved_sequence_from_real_history(self):
+        """真实历史片段（529-539 形态）：乱序 + 悬空混合"""
+        msgs = [
+            {"role": "user", "content": "排查 503"},
+            {"role": "assistant", "content": "", "tool_calls": [_tc("a1")]},
+            {"role": "assistant", "content": "", "tool_calls": [_tc("a2")]},
+            {"role": "tool", "tool_call_id": "a1", "content": [{"type": "text", "text": "r1"}]},
+            {"role": "tool", "tool_call_id": "a2", "content": [{"type": "text", "text": "r2"}]},
+            {"role": "assistant", "content": "", "tool_calls": [_tc("b1")]},
+            {"role": "assistant", "content": "", "tool_calls": [_tc("b2")]},
+            {"role": "tool", "tool_call_id": "b2", "content": [{"type": "text", "text": "r"}]},
+            {"role": "assistant", "content": "继续"},
+            {"role": "tool", "tool_call_id": "b1", "content": [{"type": "text", "text": "rb"}]},
+            {"role": "assistant", "content": "", "tool_calls": [_tc("c1")]},  # 悬空
+        ]
+        self._assert_well_formed(Agent._sanitize_messages_for_api(msgs))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

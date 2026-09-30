@@ -1190,71 +1190,64 @@ Here is some useful information about the environment you are running in:
 
             sanitized.append(msg)
 
-        # ---- 配对自检：为每个仍存活的 tool_call 补齐缺失的结果 ----
-        # 悬空声明会让 DeepSeek 等严格网关返回 400（tool calls and tool results
-        # do not match），且会随历史永久残留，导致后续每次请求都失败（只能新建会话）。
-        # 这里在发送前补齐合成结果，保证发给 API 的序列自洽。
-        replied_ids = {
-            m.get("tool_call_id")
-            for m in sanitized
-            if m.get("role") == "tool" and m.get("tool_call_id")
-        }
-        missing = valid_tool_call_ids - replied_ids
-        if missing:
-            pending: dict[str, dict] = {
-                tid: {
-                    "role": "tool",
-                    "tool_call_id": tid,
-                    "content": [{
-                        "type": "text",
-                        "text": _xml_response(
-                            "error",
-                            "工具未执行：该调用在上一次执行中断（进程退出或服务重启），无可用结果。",
-                        ),
-                    }],
-                }
-                for tid in missing
+        # ---- 全局配对修复：保证「assistant 声明 → 紧跟其全部结果」的不变量 ----
+        # 旧实现只收集"紧随其后的 tool 块"，一旦序列被打乱就断链：
+        #   形态 A：连续两条 assistant 都带 tool_calls（同会话并行 job 交错写历史）
+        #   形态 B：tool 结果散落在声明之后很远处（中间隔着别的 assistant/tool）
+        # 这两种形态下旧逻辑 30 处违规只修掉 1 处，网关仍返回
+        # "tool calls and tool results do not match"(11148)。
+        # 改为按 tool_call_id 全局重挂：结果无论身处何处都被搬到其声明之后，
+        # 位置不对的 tool 消息直接丢弃（而不是原样保留）。
+        result_by_id: dict[str, dict] = {}
+        for m in sanitized:
+            if m.get("role") != "tool":
+                continue
+            tid = m.get("tool_call_id", "")
+            # 只认仍然存活的声明；重复结果取第一条
+            if tid and tid in valid_tool_call_ids and tid not in result_by_id:
+                result_by_id[tid] = m
+
+        def _synthesize(tid: str) -> dict:
+            return {
+                "role": "tool",
+                "tool_call_id": tid,
+                "content": [{
+                    "type": "text",
+                    "text": _xml_response(
+                        "error",
+                        "工具未执行：该调用在上一次执行中断（进程退出或服务重启），无可用结果。",
+                    ),
+                }],
             }
-            # 逐块重建：每个 assistant 声明后必须紧跟其全部 tool 结果（按声明顺序）。
-            # 既有的结果原样保留，缺失的用合成结果补齐，保证发给 API 的序列自洽。
-            repaired: list[dict[str, Any]] = []
-            i = 0
-            n = len(sanitized)
-            while i < n:
-                msg = sanitized[i]
-                repaired.append(msg)
-                if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    # 收集紧跟其后的既有 tool 结果
-                    j = i + 1
-                    following: list[dict[str, Any]] = []
-                    while j < n and sanitized[j].get("role") == "tool":
-                        following.append(sanitized[j])
-                        j += 1
-                    by_id = {m.get("tool_call_id"): m for m in following if m.get("tool_call_id")}
-                    used: set[str] = set()
-                    for tc in msg["tool_calls"]:
-                        tid = tc.get("id")
-                        if not tid or tid in used:
-                            continue
-                        result = by_id.get(tid) or pending.pop(tid, None)
-                        if result is not None:
-                            repaired.append(result)
-                            used.add(tid)
-                    # 未被声明匹配的既有结果原样保留（正常历史下不会出现）
-                    for m in following:
-                        if m.get("tool_call_id") not in used:
-                            repaired.append(m)
-                    i = j
-                    continue
-                i += 1
-            repaired.extend(pending.values())  # 兜底：无归属的剩余结果补到末尾
+
+        # 声明有结果 vs 无结果，必须在重建（会 pop）之前统计，否则计数不准
+        missing = valid_tool_call_ids - set(result_by_id)
+        if missing:
             logger.warning(
                 "[Sanitize] 补齐 %d 个无结果的 tool_call（工具执行中断残留）: %s",
                 len(missing), sorted(missing)[:5],
             )
-            return repaired
 
-        return sanitized
+        repaired: list[dict[str, Any]] = []
+        for msg in sanitized:
+            if msg.get("role") == "tool":
+                # 结果一律由声明处挂载；此处跳过（原地保留会破坏不变量）
+                continue
+            repaired.append(msg)
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    tid = tc.get("id")
+                    if not tid:
+                        continue
+                    repaired.append(result_by_id.pop(tid, None) or _synthesize(tid))
+
+        if result_by_id:
+            # 声明已被清理（如非法 JSON）但结果还在 → 结果无归属，必须丢弃
+            logger.warning(
+                "[Sanitize] 丢弃 %d 个无法归属的 tool 结果: %s",
+                len(result_by_id), sorted(result_by_id)[:5],
+            )
+        return repaired
 
     def _filter_file_blocks(self, content: str | list[dict[str, Any]]) -> str | list[dict[str, Any]]:
         """
