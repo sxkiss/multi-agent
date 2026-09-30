@@ -370,5 +370,55 @@ class TestMiniprogramChannelGuard(unittest.TestCase):
         self.assertIn("miniprogram", W._TERMINAL_CHANNELS)
 
 
+class TestJobEventCursorMonotonic(unittest.TestCase):
+    """事件游标必须单调递增：截断缓冲区时绝不能重编号 id。
+
+    线上事故（长任务必然触发，非偶发）：id 用 len(events) 当序号，事件数一旦
+    超过 _MAX_EVENTS，截断后整体重编号 → id 回退。客户端游标停在 _MAX_EVENTS-1，
+    而新事件重编号后 id 也 ≤ 该值 → snapshot_from 恒返回空 → 表现为
+    「last_id 卡在 1999、工具计数不涨、重试耗尽后报连接失败」，
+    实为 SSE 续传死锁（任务其实跑完了，结果传不回来）。
+    """
+
+    def _mk(self):
+        return W.ChatJob(session_id="test-cursor", persist=False)
+
+    def test_ids_monotonic_across_truncation(self):
+        """截断后 id 仍须严格递增，且末位等于累计追加数-1"""
+        job = self._mk()
+        total = W.ChatJob._MAX_EVENTS + 50
+        for i in range(total):
+            job.append("message", {"i": i})
+        ids = [e["id"] for e in job.events]
+        self.assertEqual(ids, sorted(ids), "截断后 id 必须仍为递增")
+        self.assertEqual(len(set(ids)), len(ids), "id 不得重复")
+        self.assertEqual(ids[-1], total - 1, "末位 id 应等于累计追加数-1（未回退）")
+        self.assertEqual(len(job.events), W.ChatJob._MAX_EVENTS, "缓冲区应被截断到上限")
+
+    def test_cursor_never_stalls_after_truncation(self):
+        """核心回归：溢满后，旧游标仍必须能看到新事件（旧实现恒为空）"""
+        job = self._mk()
+        for i in range(W.ChatJob._MAX_EVENTS):
+            job.append("message", {"i": i})
+        cursor = job.events[-1]["id"]
+
+        pending, _ = job.snapshot_from(cursor)
+        self.assertEqual(pending, [], "无新事件时不应回放")
+
+        job.append("tool_call", {"n": 1})
+        pending, _ = job.snapshot_from(cursor)
+        self.assertEqual(len(pending), 1, "截断后新事件必须对旧游标可见（否则续传死锁）")
+        self.assertGreater(pending[0]["id"], cursor, "新事件 id 必须大于旧游标")
+
+    def test_reported_cursor_not_clamped_to_buffer_size(self):
+        """chat_status 上报的 last_id 不得被截断回上限值"""
+        job = self._mk()
+        for i in range(W.ChatJob._MAX_EVENTS + 10):
+            job.append("message", {"i": i})
+        self.assertEqual(job._seq, job.events[-1]["id"], "_seq 应与末位 id 一致")
+        self.assertGreater(job._seq, W.ChatJob._MAX_EVENTS - 1,
+                           "上报游标不得被截断回 _MAX_EVENTS-1（前端据此续传会卡死）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
