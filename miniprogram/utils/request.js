@@ -39,6 +39,16 @@ function authHeader() {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+/** 清除本地凭据：globalData 与 storage 一并清，确保 ensureLogin() 走重新登录分支 */
+function dropToken() {
+  const app = appInstance()
+  if (app) {
+    if (app.globalData) app.globalData.token = ''
+    if (app.clearToken) app.clearToken()
+  }
+  try { wx.removeStorageSync('token') } catch (e) { /* ignore */ }
+}
+
 /**
  * 单次网络请求（不重试）。
  * node 可选：指定节点时跳过故障转移逻辑，用于 failover 内部透传。
@@ -120,6 +130,11 @@ function refreshToken() {
         }
         return true
       }
+      // 续期失败：旧 token 已无法换发新 token（典型场景是服务端签名密钥
+      // 轮换，老 token 连"我是谁"都验不出来）。此时必须把废凭据清掉——
+      // 否则 ensureLogin() 只看"token 是否存在"就判定已登录，永远不去
+      // 重新走微信授权，用户就卡在每秒 401 的重试死循环里出不来。
+      dropToken()
       return false
     })
     .catch(() => false)

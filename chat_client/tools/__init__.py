@@ -32,7 +32,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 class _BgTask:
     """单条后台任务的状态数据"""
     __slots__ = ("task_id", "tool", "args", "future", "status", "result",
-                 "start_time", "session_id")
+                 "start_time", "session_id", "delivered")
 
     def __init__(self, task_id: str, tool: str, args: tuple, future,
                  session_id: str = ""):
@@ -44,6 +44,9 @@ class _BgTask:
         self.result: str = ""
         self.start_time = time.time()
         self.session_id = session_id
+        # 结果是否已注入过对话上下文。避免同一条完成通知在每轮迭代里
+        # 被重复注入，把上下文撑爆（长任务可能跨几十轮迭代）。
+        self.delivered = False
 
 
 class BackgroundTaskManager:
@@ -112,8 +115,60 @@ class BackgroundTaskManager:
         except Exception:
             logger.warning("后台任务失败通知失败 task=%s", task_id, exc_info=True)
 
+    def pending_count(self, session_id: str) -> int:
+        """本会话中仍在运行、且结果尚未注入上下文的后台任务数。
+
+        主循环用它判断"能否结束本轮"：若还有任务在跑就结束，结果就永远
+        回不到上下文（完成通知只推 SSE），等于把后台任务做成了黑盒。
+        """
+        with self._lock:
+            return sum(
+                1 for t in self._tasks.values()
+                if t.session_id == session_id and t.status == "running" and not t.delivered
+            )
+
+    def drain_finished(self, session_id: str, max_chars: int = 8000) -> list[dict]:
+        """取出本会话中"已完成但尚未注入对话"的后台任务结果。
+
+        为什么需要：完成通知走 emit_progress → job.append → SSE，只推到前端
+        界面，不会进入 Agent 的 messages，模型因此拿不到结果——表现就是
+        "转后台后结果永远回不来，只能靠 TaskStatus 主动轮询"。
+
+        主循环每轮迭代调用一次，把结果以 system 消息注入上下文，模型便能
+        在下一轮直接读到。delivered 标记保证同一条结果只注入一次。
+
+        @param max_chars 单条结果截断上限，防止超长输出撑爆上下文
+        @returns [{"task_id","tool","status","result"}, ...]
+        """
+        out = []
+        with self._lock:
+            for t in self._tasks.values():
+                # 只取本会话的：跨会话注入会造成信息泄漏与上下文污染
+                if t.session_id != session_id:
+                    continue
+                if t.status not in ("done", "failed"):
+                    continue
+                if t.delivered:
+                    continue
+                t.delivered = True
+                result = t.result or ""
+                if len(result) > max_chars:
+                    result = result[:max_chars] + f"\n[...结果过长已截断，共 {len(t.result)} 字符，完整结果可用 TaskStatus 查询...]"
+                out.append({
+                    "task_id": t.task_id,
+                    "tool": t.tool,
+                    "status": t.status,
+                    "result": result,
+                })
+        return out
+
 
 _BG = BackgroundTaskManager()
+
+
+def get_background_manager() -> BackgroundTaskManager:
+    """取全局后台任务管理器（供 Agent 主循环注入完成结果，避免直接引用私有名）"""
+    return _BG
 # - 键：session_id（来自 ChatJob.session_id）
 # - 值：是否放行高风险工具（true 表示非严格/破甲模式成员代理）
 # - 无 job/session 上下文时保守返回 False，避免跨会话泄漏
@@ -442,11 +497,13 @@ class ToolRegistry:
                      )
                  )
                  msg = (
-                     f"工具 {tool_label} 已达到 {timeout_s}s 前台等待上限，"
+                     f"工具 {tool_label} 已达到 {timeout_s} 秒前台等待上限，"
                      f"已自动转为后台执行。<task_id>{task_id}</task_id>\n"
-                     "任务在后台继续运行。完成后你将自动收到通知，届时可通过 "
-                     "TaskStatus 工具查询完整结果。如需等待请停止后续动作；"
-                     "也可立即继续其他工作，系统会在完成时推送通知。"
+                     f"【重要】该工具已在后台运行，禁止用相同参数重复调用它——"
+                     f"重复调用会并发执行第二份，造成结果错乱与资源浪费。\n"
+                     f"请先继续处理其他工作；需要结果时再用 TaskStatus 查一次"
+                     f"（不要连续轮询）。注意：完成事件只推送到前端界面，"
+                     f"结果不会自动回到你的上下文，必须主动查询才能拿到。"
                  )
                  logger.info("[ToolBackground] %s 转后台 task=%s", tool_label, task_id)
                  self._audit(tool_label, risk, audit_kwargs,
@@ -660,7 +717,7 @@ class ToolRegistry:
             enabled_ids: 允许使用的工具ID列表。如果不传，则返回所有(兼容旧行为)。
         """
         if enabled_ids is None:
-            return self._schemas
+            return self._dedup_tools(self._schemas)
         filtered_schemas = []
         for schema in self._schemas:
             name = schema["function"]["name"]
@@ -668,7 +725,31 @@ class ToolRegistry:
             # 只有 ID 在启用列表中才返回
             if meta and meta["id"] in enabled_ids:
                 filtered_schemas.append(schema)
-        return filtered_schemas
+        return self._dedup_tools(filtered_schemas)
+
+    @staticmethod
+    def _dedup_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """按 function.name 去重，保留首次出现的（内置工具先注册，故优先）。
+
+        背景：_schemas 是 list.append 累积、_register_func 不去重，而 MCP 加载时
+        desktop-commander 的 kill_process 会与内置同名工具共存两条 schema。
+        上游模型不接受同名顶层工具，会返回 400 "duplicate top-level executable
+        tool name"，被中转池再包装成 503 no_healthy_account。
+        """
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for schema in schemas:
+            name = schema.get("function", {}).get("name")
+            if name in seen:
+                logger.warning("[Tools] 跳过重复工具名（上游不允许同名）: %s", name)
+                continue
+            seen.add(name)
+            out.append(schema)
+        return out
+
+    def dedup_tools(self, schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """公开入口：供 agent 在合并 MCP 工具后做最终去重。"""
+        return self._dedup_tools(schemas)
 
     def get_all_tools_info(self) -> list[dict[str, Any]]:
         """获取所有工具的详细信息列表 (用于前端展示)"""

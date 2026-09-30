@@ -206,9 +206,11 @@ class Bash:
                     return _xml_response("error", err)
                 result = (f"<terminal_id>new</terminal_id>\n"
                           f"<terminal_cwd>{cwd}</terminal_cwd>\n"
-                          f"注意：命令已达到 {timeout} ms 前台等待时间上限，已自动切换为后台执行。\n"
+                          f"命令已达到 {timeout / 1000.0:g} 秒前台等待上限，已转入后台继续运行。\n"
                           f"<command_id>{cmd_id}</command_id>\n"
-                          f"命令在后台运行中，请稍后调用 check_command_status 工具查看执行状态。\n")
+                          f"【重要】该命令已在后台执行，禁止重复执行同一条命令。\n"
+                          f"请先继续处理其他工作，需要结果时再用 CheckCommandStatus 查一次；"
+                          f"不要连续轮询，也不要立刻紧接着查询（刚转后台时必然还没结果）。\n")
                 return _xml_response("running", result)
             except Exception as e:
                 return _xml_response("error", str(e))
@@ -217,9 +219,10 @@ class Bash:
             if err:
                 return _xml_response("error", err)
             result = (f"<terminal_id>new</terminal_id>\n<terminal_cwd>{cwd}</terminal_cwd>\n"
-                      f"Note: Command ID is provided for you to check command status later.\n"
+                      f"命令已在后台启动。\n"
                       f"<command_id>{cmd_id}</command_id>\n"
-                      f"The command is running, you need to call check_command_status tool to get more logs.\n")
+                      f"【重要】禁止重复执行同一条命令；请先继续其他工作，"
+                      f"需要结果时再用 CheckCommandStatus 查一次，不要连续轮询。\n")
             return _xml_response("running", result)
 
     @staticmethod
@@ -261,7 +264,7 @@ class Bash:
                 }
             )
         except subprocess.TimeoutExpired:
-            return _xml_response("error", f"执行超时（>{timeout} ms）")
+            return _xml_response("error", f"执行超时（>{timeout / 1000.0:g} 秒）")
         except FileNotFoundError:
             return _xml_response("error", f"未找到 {interpreter} 命令，请确认运行环境")
         except Exception as e:
