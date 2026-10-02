@@ -99,6 +99,69 @@ def bad_args_hint(func_name: str) -> str:
     )
 
 
+# ---------------- 图片（多模态）支持 ----------------
+# 上游实测支持 OpenAI 风格 image_url 内容块（模型:auto 可正确识别图片内容）。
+# 但历史上有两条链路会把图片吃掉：
+#   1) webfetch 等把图片编码成 {"type":"file","mime":"image/png","url":"data:..."}，
+#      而 _filter_file_blocks 会把 type="file" 整块删除 → 模型永远看不到图。
+#   2) 图片若以 file 块存在，形状也不符合视觉协议（应为 image_url）。
+# 这里统一做形状归一：图片 file 块 → image_url；非图片 file 块仍丢弃。
+
+
+def _file_block_to_image_url(block: Any):
+    """把 file 块里的图片转成标准 image_url 块；非图片返回 None。
+
+    只认 data:image/ 前缀或 image/* mime，避免把普通附件误当图片发给模型。
+    """
+    if not isinstance(block, dict) or block.get("type") != "file":
+        return None
+    url = block.get("url") or ""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    mime = str(block.get("mime") or block.get("mime_type") or "").lower()
+    if not (mime.startswith("image/") or url.startswith("data:image/")):
+        return None
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def _content_for_token_estimate(content: Any) -> Any:
+    """token 估算用：把图片的 base64 载荷替换为占位符。
+
+    base64 长度与真实 token 数无关（上游按图像分辨率切 patch），若按字符估算，
+    一张几十 KB 的图会被算成十几万 token，直接误触发上下文压缩。
+    """
+    if not isinstance(content, list):
+        return content
+    out = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "image_url":
+            out.append({"type": "image_url", "image_url": {"url": "[image]"}})
+        elif isinstance(item, dict) and isinstance(item.get("text"), str):
+            out.append({"type": "text", "text": item["text"]})
+        else:
+            out.append({"type": "text", "text": "[non-text]"})
+    return out
+
+
+def _drop_image_blocks(content: Any) -> Any:
+    """丢弃历史轮次里的图片，替换为占位文本。
+
+    图片以 base64 存在历史里，若每轮都重发，上下文会迅速膨胀（且重复计费）。
+    只保留最新一轮的图，旧图降级为文字提示，既省 token 又保留"此处曾有图"的语义。
+    """
+    if not isinstance(content, list):
+        return content
+    out, dropped = [], 0
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "image_url":
+            dropped += 1
+            continue
+        out.append(item)
+    if dropped:
+        out.append({"type": "text", "text": f"[历史消息中的 {dropped} 张图片已省略]"})
+    return out
+
+
 class Agent:
     # 集团协作工具：需要多 Agent 编排，单 Agent / Codex-X 模式不加载
     _GROUP_TOOLS: set[str] = {"RunCrew", "ConsultPeer", "CreateDepartment", "RecruitMember"}
@@ -1251,15 +1314,29 @@ Here is some useful information about the environment you are running in:
 
     def _filter_file_blocks(self, content: str | list[dict[str, Any]]) -> str | list[dict[str, Any]]:
         """
-        过滤掉 type="file" 的块，只保留 type="text" 的块
+        归一内容块：
+        - text / image_url 原样保留
+        - 图片 file 块 → 转成标准 image_url（否则模型收不到图，见模块顶部说明）
+        - 其余 file 块（路径引用等）丢弃：对上游无意义且可能撑爆请求
         """
         if isinstance(content, str):
             return content
-        
+
         if not isinstance(content, list):
             return content
-        
-        return [item for item in content if not (isinstance(item, dict) and item.get("type") == "file")]
+
+        out = []
+        for item in content:
+            if not isinstance(item, dict):
+                out.append(item)
+                continue
+            if item.get("type") == "file":
+                img = _file_block_to_image_url(item)
+                if img is not None:
+                    out.append(img)
+                continue
+            out.append(item)
+        return out
 
     def _build_messages(self, context_str: str) -> list[dict[str, Any]]:
         """构建包含系统指令、上下文和滑动窗口的 Prompt。"""
@@ -1330,8 +1407,15 @@ Here is some useful information about the environment you are running in:
         # 语义：1KB = 1024 tokens（256 KB → 262144 tokens）
         budget_tokens = self.context_window_kb * 1024
         if budget_tokens > 0:
-            window_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in window)
-            full_history_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in full_history)
+            def _msg_tokens(m):
+                # 图片的 base64 载荷不能按字符估算（一张图会被误算成十几万 token，
+                # 直接误触发压缩）。这里先把图片替换成占位符再计量。
+                mm = dict(m)
+                mm["content"] = _content_for_token_estimate(mm.get("content"))
+                return _estimate_tokens(json.dumps(mm, ensure_ascii=False))
+
+            window_tokens = sum(_msg_tokens(m) for m in window)
+            full_history_tokens = sum(_msg_tokens(m) for m in full_history)
             
             # 渐进式压缩：一轮 90% → 二轮 95% → 三轮 97%
             # 轮次取实例内累加计数（成功才 +1）；history 中摘要条数恒为 1，不能用作轮次。
@@ -1508,7 +1592,14 @@ Here is some useful information about the environment you are running in:
                     })
                 window = kept
 
-        for msg in window:
+        # 找出最新一条 user 消息下标：只保留它的图片，历史轮次的图降级为占位文本
+        # （图片以 base64 存在历史里，每轮重发既膨胀上下文又重复计费）。
+        _last_user_idx = -1
+        for _i, _m in enumerate(window):
+            if _m.get("role") == "user":
+                _last_user_idx = _i
+
+        for _i_idx, msg in enumerate(window):
             content = msg.get("content")
 
             # --- 需要保留 reasoning_content 以支持 thinking 模式
@@ -1530,6 +1621,11 @@ Here is some useful information about the environment you are running in:
                 reconstructed["is_summary"] = True
 
             content = self._filter_file_blocks(content)
+            # 图片只保留最新一轮 user 的；历史图片降级为占位文本。
+            # 注意：必须在 _filter_file_blocks 之后做，因为 file 块要先转成 image_url
+            # 才能被识别为图片，否则这里根本看不到图、也就无从降级。
+            if _i_idx != _last_user_idx:
+                content = _drop_image_blocks(content)
             content = _truncate_content(content)
 
             m = {"role": reconstructed["role"], "content": content}
