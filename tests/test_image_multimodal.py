@@ -210,5 +210,87 @@ class BuildMessagesKeepsImageTest(unittest.TestCase):
         self.assertEqual(total, 1, "应只保留最新一轮的图（历史图需降级）")
 
 
+class SymlinkEscapeTest(unittest.TestCase):
+    """软链不得绕过白名单
+
+    _safe_resolve / _safe_resolve_serve 曾用 os.path.abspath —— 它**不解析软链**，
+    白名单根内只要存在一个指向外部的软链（如 uploads/ 或 /tmp 下），
+    前缀校验就会通过，从而越界读取任意文件。改用 realpath 后软链先被解析，
+    真实位置落在白名单外即拒绝。
+    """
+
+    def setUp(self):
+        import web_server as W
+        self.W = W
+        self.tmp = tempfile.mkdtemp()  # 默认位于 /tmp，而 /tmp 在白名单内
+
+    def test_safe_resolve_serve_rejects_escaping_symlink(self):
+        link = os.path.join(self.tmp, "escape.txt")
+        os.symlink("/etc/passwd", link)
+        self.assertIsNone(
+            self.W._safe_resolve_serve(link),
+            "软链绕过白名单成功（应被拒绝）—— 可越界读取任意文件",
+        )
+
+    def test_safe_resolve_rejects_escaping_symlink(self):
+        link = os.path.join(self.tmp, "escape2.txt")
+        os.symlink("/etc/passwd", link)
+        self.assertIsNone(self.W._safe_resolve(link), "浏览端点软链越界未被拒")
+
+    def test_image_path_symlink_escape_rejected(self):
+        """图片入口同样不得被软链绕过（abspath → realpath）"""
+        srv = self.W.AgentMain.__new__(self.W.AgentMain)
+        link = os.path.join(self.tmp, "esc.png")
+        os.symlink("/etc/passwd", link)
+        self.assertEqual(srv._normalize_image_blocks([link]), [],
+                         "图片软链越界未被拒")
+
+    def test_normal_path_still_allowed(self):
+        """修复不能误伤正常路径（同目录内的普通文件仍可访问）"""
+        p = os.path.join(self.tmp, "ok.txt")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("hi")
+        self.assertIsNotNone(self.W._safe_resolve_serve(p))
+
+
+class TokenBudgetImageTest(unittest.TestCase):
+    """大图不得撑爆 token 估算（否则误触发压缩/硬截断）
+
+    图片以 base64 存在消息里，若按字符估算，一张 400KB 的图（base64 更长）
+    会被算成十几万 token，瞬间超过预算 → 触发压缩甚至硬截断，把图丢掉。
+    这里用"压缩一旦被调用就抛异常"的假 client 来证明它没有被触发。
+    """
+
+    def test_large_image_does_not_trigger_compression(self):
+        from types import SimpleNamespace
+        from chat_client.memory import MemoryManager
+
+        def _boom(*a, **k):
+            raise AssertionError("大图把 token 估算撑爆，误触发了压缩")
+
+        big = "data:image/png;base64," + ("A" * 400000)
+        tmp = tempfile.mkdtemp()
+        mem = MemoryManager(session_id="t_big", sessions_dir=tmp)
+        mem.add_message("user", [
+            {"type": "text", "text": "看看这张图"},
+            {"type": "image_url", "image_url": {"url": big}},
+        ])
+
+        a = Agent.__new__(Agent)
+        a.system_prompt = "你是助手"
+        a.memory = mem
+        a.context_window_kb = 32          # 32KB 预算，远小于 base64 字符数
+        a._compress_round = 0
+        a._compress_fail_streak = 0
+        a.model_name = "auto"
+        a.client = SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=_boom)))
+
+        out = a._build_messages("")
+        n = sum(1 for m in out for b in (m.get("content") or [])
+                if isinstance(b, dict) and b.get("type") == "image_url")
+        self.assertEqual(n, 1, "图片在构建过程中丢失")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
