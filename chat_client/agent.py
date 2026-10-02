@@ -1452,7 +1452,8 @@ Here is some useful information about the environment you are running in:
                                 last_summary_idx = i
                         start_idx = last_summary_idx + 1 if last_summary_idx >= 0 else 0
                         early_msgs = full_history[start_idx:cut_idx]
-                        recent_msgs = full_history[cut_idx:]
+                        # 保留区（recent）不需要在这里切出来：窗口由
+                        # memory.get_sliding_window() 统一负责，此处只需 early 段做摘要。
                         early_ids = [m.get("id") for m in early_msgs if m.get("id")]
                         if not early_msgs:
                             # 摘要紧邻 cut 点、且保留区内没有新的 user 轮次 → 无事可压。
@@ -1562,7 +1563,7 @@ Here is some useful information about the environment you are running in:
                                     # 只有成功落盘并重建窗口后，才认定这一轮压缩完成并递进阈值层
                                     self._compress_round += 1
                                     window = self.memory.get_sliding_window()
-                                    window_tokens = sum(_estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in window)
+                                    window_tokens = sum(_msg_tokens(m) for m in window)
                                     logger.info(f"第 {self._compress_round} 轮压缩成功，窗口 tokens: {window_tokens}")
                                 except Exception as e:
                                     logger.warning(f"写入压缩摘要失败: {e}")
@@ -1575,7 +1576,7 @@ Here is some useful information about the environment you are running in:
                 kept = []
                 current_tokens = 0
                 for msg in reversed(window):
-                    msg_tokens = _estimate_tokens(json.dumps(msg, ensure_ascii=False))
+                    msg_tokens = _msg_tokens(msg)
                     if current_tokens + msg_tokens > budget_tokens and kept:
                         break
                     kept.insert(0, msg)
