@@ -1527,6 +1527,62 @@ class AgentMain:
 
         return system_prompt
 
+    _IMAGE_EXT_MIME = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp",
+    }
+    _MAX_IMAGE_BYTES = 8 * 1024 * 1024  # 单图 8MB：base64 会放大 ~33%，防撑爆请求
+
+    def _normalize_image_blocks(self, raw_images):
+        """把 images 参数归一为 image_url 内容块列表（上游支持该形状）。
+
+        支持三种来源：
+          - data URI（data:image/png;base64,...）→ 直接透传
+          - http(s) URL → 直接透传，由上游拉取
+          - 服务器本地路径（仅限白名单根内，如 uploads/）→ 读盘转 data URI
+        越界/超限/不支持的条目跳过并记日志，不影响其余图片。
+        """
+        blocks = []
+        for item in raw_images:
+            if isinstance(item, dict):
+                url = str(item.get("url") or item.get("path") or "").strip()
+            else:
+                url = str(item or "").strip()
+            if not url:
+                continue
+
+            if url.startswith("data:image/"):
+                blocks.append({"type": "image_url", "image_url": {"url": url}})
+                continue
+            if url.startswith(("http://", "https://")):
+                blocks.append({"type": "image_url", "image_url": {"url": url}})
+                continue
+
+            # 本地路径：必须落在白名单根内，防目录穿越
+            try:
+                p = os.path.abspath(url if os.path.isabs(url)
+                                    else os.path.join(BASE_DIR, url))
+                roots = _SERVE_ROOTS
+                if not any(p == r or p.startswith(r + os.sep) for r in roots):
+                    logger.warning("[安全] 图片路径越界被拒: %s", url)
+                    continue
+                mime = self._IMAGE_EXT_MIME.get(os.path.splitext(p)[1].lower())
+                if not mime:
+                    logger.warning("[图片] 不支持的扩展名，已跳过: %s", url)
+                    continue
+                if os.path.getsize(p) > self._MAX_IMAGE_BYTES:
+                    logger.warning("[图片] 超过 %dMB 上限，已跳过: %s",
+                                   self._MAX_IMAGE_BYTES // (1024 * 1024), url)
+                    continue
+                import base64 as _b64
+                with open(p, "rb") as f:
+                    b64 = _b64.b64encode(f.read()).decode()
+                blocks.append({"type": "image_url",
+                               "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            except OSError:
+                logger.warning("[图片] 读取失败，已跳过: %s", url, exc_info=True)
+        return blocks
+
     def _build_chat_agent(self, get):
         """
         构建聊天 Agent（chat 与后台任务共用）。
@@ -1553,6 +1609,29 @@ class AgentMain:
                     user_input = [parsed_input]
             except json.JSONDecodeError:
                 logger.warning("user_input JSON 解析失败，已记录", exc_info=True)
+
+        # ── 图片（多模态）：images 参数归一后追加到 user_input ────────────
+        # 此前图片无处可进（message 只收文本），且历史里的图片块会被
+        # _filter_file_blocks 丢弃 → AG 永远"看不见"图。这里打通入口。
+        _raw_images = get.get('images', [])
+        if isinstance(_raw_images, str) and _raw_images.strip():
+            try:
+                _raw_images = json.loads(_raw_images)
+            except json.JSONDecodeError:
+                _raw_images = [_raw_images]
+        if isinstance(_raw_images, dict):
+            _raw_images = [_raw_images]
+        img_blocks = self._normalize_image_blocks(_raw_images) if isinstance(_raw_images, list) else []
+        if img_blocks:
+            if isinstance(user_input, str):
+                user_input = ([{"type": "text", "text": user_input}] if user_input.strip() else [])
+            elif not isinstance(user_input, list):
+                user_input = [{"type": "text", "text": str(user_input)}]
+            else:
+                user_input = list(user_input)
+            user_input = user_input + img_blocks
+            logger.info("[chat_start] 注入 %d 张图片（多模态）", len(img_blocks))
+
         session_id = get.get('session_id', 'default_session')
         model = get.get('model', '').strip()
         system_prompt = get.get('system_prompt', '')
