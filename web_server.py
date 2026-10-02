@@ -1560,9 +1560,10 @@ class AgentMain:
 
             # 本地路径：必须落在白名单根内，防目录穿越
             try:
-                p = os.path.abspath(url if os.path.isabs(url)
-                                    else os.path.join(BASE_DIR, url))
-                roots = _SERVE_ROOTS
+                # realpath 解析软链，防白名单根内的软链指向外部文件
+                p = os.path.realpath(url if os.path.isabs(url)
+                                     else os.path.join(BASE_DIR, url))
+                roots = [os.path.realpath(r) for r in _SERVE_ROOTS]
                 if not any(p == r or p.startswith(r + os.sep) for r in roots):
                     logger.warning("[安全] 图片路径越界被拒: %s", url)
                     continue
@@ -2653,7 +2654,6 @@ class AgentMain:
 
             # ── 扫描集团模式子代理会话（读 meta.json 判断来源，避免误判）────
             if os.path.exists(sessions_dir):
-                jobs_dir = os.path.join(self.plugin_path, 'jobs')
                 try:
                     dirs2 = os.listdir(sessions_dir)
                     for session_id in dirs2:
@@ -3922,10 +3922,13 @@ def _safe_resolve(requested: str):
     """将请求路径约束在白名单根目录内，返回真实绝对路径；越界返回 None"""
     if not requested:
         return _FILE_BROWSE_ROOTS[0]
-    req = os.path.abspath(os.path.expanduser(requested))
+    # 必须 realpath 而非 abspath：abspath 不解析符号链接，白名单根内若存在
+    # 指向外部的软链即可越界读取。realpath 先把软链解析到真实位置再做前缀校验。
+    req = os.path.realpath(os.path.expanduser(requested))
     for root in _FILE_BROWSE_ROOTS:
         try:
-            if req == root or req.startswith(root + os.sep):
+            r = os.path.realpath(root)
+            if req == r or req.startswith(r + os.sep):
                 return req
         except Exception:
             logger.warning("处理时跳过异常", exc_info=True)
@@ -3940,10 +3943,12 @@ _SERVE_ROOTS = _FILE_BROWSE_ROOTS + [os.path.abspath(os.path.join(BASE_DIR, "upl
 def _safe_resolve_serve(requested: str):
     if not requested:
         return None
-    req = os.path.abspath(os.path.expanduser(requested))
+    # 同 _safe_resolve：用 realpath 解析软链后再做白名单前缀校验
+    req = os.path.realpath(os.path.expanduser(requested))
     for root in _SERVE_ROOTS:
         try:
-            if req == root or req.startswith(root + os.sep):
+            r = os.path.realpath(root)
+            if req == r or req.startswith(r + os.sep):
                 return req
         except Exception:
             logger.warning("处理时跳过异常", exc_info=True)
