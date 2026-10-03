@@ -169,7 +169,7 @@ import ChatMain from './components/ChatMain.vue'
 import ChatInput from './components/ChatInput.vue'
 import SettingsDrawer from './components/SettingsDrawer.vue'
 import LoginMask from './components/LoginMask.vue'
-import { authOpts, authStatus } from './auth.js'
+import { authOpts, authStatus, onUnauthorized } from './auth.js'
 
 // ==================== 独立部署 API 封装（不依赖宝塔面板 window.ai_tools）====================
 // 将原本走 /plugin?action=a&name=ai_agent&s=xxx 的面板代理请求，统一改为标准 REST /api/* 调用。
@@ -1871,6 +1871,11 @@ function onLoginSuccess() {
   // 登录成功后重新拉取配置等初始化数据
   window.location.reload()
 }
+
+// token 过期/失效时（任意接口返回 401）自动弹登录遮罩，避免页面空白无提示
+onUnauthorized(() => {
+  needLogin.value = true
+})
 
 // ==================== Mounted ====================
 onMounted(async () => {
