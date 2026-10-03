@@ -72,6 +72,10 @@ PUBLIC_PREFIX = (
     # 不走用户 Bearer token。若在此拦截，clawbot 无法换取服务令牌。
     # 安全性由接口内部的服务密钥校验保证，不因免鉴权而降低。
     "/api/service/token",
+    # OpenAI 兼容层：/v1/* 用"管理 key"鉴权（见 v1_compat._verify）。
+    # 与 clawbot 同模式——白名单放行 + 接口内部校验，
+    # 中间件放行不等于无鉴权，安全性由 v1_compat 内部校验保证。
+    "/v1/",
     "/favicon.png",
     "/static/",
     "/assets/",
@@ -112,6 +116,7 @@ def load_auth(base_dir: str) -> dict:
         "password": None,
         "token_ttl_hours": DEFAULT_TTL_HOURS,
         "secret": None,
+        "admin_api_key": None,
     }
     if not os.path.exists(path):
         return default
@@ -156,6 +161,28 @@ def set_password(base_dir: str, password: str) -> bool:
 
 def is_initialized(base_dir: str) -> bool:
     return bool(load_auth(base_dir).get("password"))
+
+
+def get_admin_api_key(base_dir: str) -> str:
+    """获取固定的"管理 key"（供 OpenAI 兼容层 /v1/* 作为 api_key 使用）。
+
+    与登录 token 的区别：
+    - 登录 token 是 JWT，有有效期，需走 /api/auth/login 换取；
+    - 管理 key 是长期固定的随机串，一次配置即可长期使用，
+      适合直接填进 OpenAI SDK 的 api_key（无需先登录换 token）。
+
+    首次调用时生成并落盘（auth.json，权限 600），之后恒定不变。
+    """
+    data = load_auth(base_dir)
+    key = data.get("admin_api_key")
+    if key:
+        return str(key)
+    key = "sk-" + secrets.token_urlsafe(32)
+    data["admin_api_key"] = key
+    if not save_auth(base_dir, data):
+        # 落盘失败时仍返回本次生成的 key（至少当前进程可用），并告警
+        logger.error("管理 key 落盘失败，重启后将重新生成")
+    return key
 
 
 # ------------------------------------------------------------------
