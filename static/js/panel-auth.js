@@ -48,7 +48,33 @@
 
   /** 带鉴权的 fetch，用法与原生 fetch 一致 */
   function authFetch(url, opts) {
-    return global.fetch(url, authOpts(opts))
+    return global.fetch(url, authOpts(opts)).then(function (r) {
+      // token 过期/失效：清除本地令牌并跳回主界面重新登录。
+      // 主界面登录后 localStorage 共享同一 token，回到面板即恢复。
+      if (r && r.status === 401 && typeof url === 'string' && url.indexOf('/api/auth/') === -1) {
+        try { global.localStorage.removeItem(TOKEN_KEY) } catch (e) { /* ignore */ }
+        global.location.href = '/'
+      }
+      return r
+    })
+  }
+
+  // 面板页通过 PanelAuth.authOpts 自行拼装 fetch 的调用点也要兜底：
+  // 包装全局 fetch，任何 401（登录接口除外）都触发跳转登录。
+  if (global.fetch) {
+    var _nativeFetch = global.fetch.bind(global)
+    global.fetch = function (input, init) {
+      return _nativeFetch(input, init).then(function (r) {
+        if (r && r.status === 401) {
+          var u = typeof input === 'string' ? input : (input && input.url) || ''
+          if (u.indexOf('/api/auth/') === -1) {
+            try { global.localStorage.removeItem(TOKEN_KEY) } catch (e) { /* ignore */ }
+            global.location.href = '/'
+          }
+        }
+        return r
+      })
+    }
   }
 
   global.PanelAuth = { authOpts: authOpts, authFetch: authFetch, TOKEN_KEY: TOKEN_KEY }

@@ -55,6 +55,34 @@ export function authFetch(url, opts = {}) {
   return fetch(url, authOpts(opts))
 }
 
+// ==================== 401 全局拦截 ====================
+// token 过期/失效时，统一清除本地 token 并通知上层弹出登录页。
+// 覆盖所有 fetch 调用点（主界面、设置抽屉、各组件），
+// 修复"token 过期后不弹登录页、页面空白"的体验问题。
+let _onUnauthorized = null
+
+/** 注册"未授权"回调（App.vue 用它弹出登录遮罩） */
+export function onUnauthorized(cb) {
+  _onUnauthorized = cb
+}
+
+// 包装全局 fetch：任一响应 401 即触发登录兜底
+if (typeof window !== 'undefined' && window.fetch) {
+  const _nativeFetch = window.fetch.bind(window)
+  window.fetch = async function (input, init) {
+    const resp = await _nativeFetch(input, init)
+    if (resp && resp.status === 401) {
+      const url = typeof input === 'string' ? input : (input && input.url) || ''
+      // 登录/续期接口自身的 401（密码错误、续期失败）不算会话过期，不触发
+      if (!url.includes('/api/auth/')) {
+        clearToken()
+        if (_onUnauthorized) _onUnauthorized()
+      }
+    }
+    return resp
+  }
+}
+
 /**
  * 登录。首次调用会用传入密码初始化管理员凭据。
  * @returns {Promise<{ok: boolean, msg: string}>}
