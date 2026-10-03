@@ -4,9 +4,11 @@ OpenAI 兼容层（/v1/models + /v1/chat/completions）
 设计要点
 --------
 1. 模型列表 = 提示词模板
-   `GET /v1/models` 返回所有可用提示词模板，两类来源：
+   `GET /v1/models` 返回所有可用提示词模板，三类来源：
      - 内置模板：chat_client.opencode_templates.OPENCODE_TEMPLATES
        （default / gpt5.5 / unrestricted_jeli / hermes）
+     - 自定义模板：config.json 的 opencode.templates / single.templates
+       （用户在设置面板添加，如 xianyu）
      - 文件模板：prompts/*.md|txt（文件名去扩展名，如 agent_shell）
    这样外部 OpenAI SDK 里 `model="hermes"` 或 `model="agent_shell"`
    即等价于"用该提示词模板"。
@@ -61,10 +63,11 @@ def _prompts_dir(plugin_path: str) -> str:
 def list_prompt_templates(plugin_path: str) -> list[dict]:
     """列出全部提示词模板（即 /v1/models 的模型列表）。
 
-    模板来源两类（与 web_server._resolve_template_system_prompt 的解析顺序一致）：
+    模板来源三类（与 web_server._resolve_template_system_prompt 的解析顺序一致）：
       1. 内置模板：chat_client.opencode_templates.OPENCODE_TEMPLATES
          （default / gpt5.5 / unrestricted_jeli / hermes）
-      2. 文件模板：prompts/*.md|txt（文件名去扩展名即 id）
+      2. 自定义模板：config.json 的 opencode.templates / single.templates（如 xianyu）
+      3. 文件模板：prompts/*.md|txt（文件名去扩展名即 id）
 
     返回 OpenAI /v1/models 结构：
         {"object": "list", "data": [{"id": ..., "object": "model", ...}]}
@@ -90,7 +93,35 @@ def list_prompt_templates(plugin_path: str) -> list[dict]:
     except Exception:
         logger.warning("[v1] 内置模板加载失败，已记录", exc_info=True)
 
-    # 2) prompts 目录下的文件模板
+    # 2) 自定义模板：config.json 的 opencode.templates / single.templates（如 xianyu）
+    #    优先级高于内置模板，与 web_server._resolve_template_system_prompt 一致。
+    _cfgv = {}
+    try:
+        _cfg_path = os.path.join(plugin_path, "config.json")
+        if os.path.isfile(_cfg_path):
+            with open(_cfg_path, "r", encoding="utf-8") as f:
+                _cfgv = json.load(f) or {}
+    except Exception:
+        logger.warning("[v1] 读取 config.json 失败，跳过自定义模板", exc_info=True)
+    for cfg_key in ("opencode", "single"):
+        seg = (_cfgv.get(cfg_key) or {}) if isinstance(_cfgv, dict) else {}
+        if not isinstance(seg, dict):
+            continue
+        customs = seg.get("templates") or {}
+        if not isinstance(customs, dict):
+            continue
+        for name in sorted(customs.keys()):
+            if name in seen:
+                continue
+            seen.add(name)
+            data.append({
+                "id": name,
+                "object": "model",
+                "created": now,
+                "owned_by": "bt-agent",
+            })
+
+    # 3) prompts 目录下的文件模板
     prompts_dir = _prompts_dir(plugin_path)
     if not os.path.isdir(prompts_dir):
         logger.warning("[v1] prompts 目录不存在: %s", prompts_dir)
@@ -235,7 +266,20 @@ def _build_agent(main, model_id: str, messages: list, session_id: str, cwd: str)
     }
     try:
         from chat_client.opencode_templates import OPENCODE_TEMPLATES
-        if model_id in OPENCODE_TEMPLATES:
+        # 自定义模板（config.json opencode.templates / single.templates）
+        # 优先于内置模板，与 web_server._resolve_template_system_prompt 一致
+        _customs = {}
+        try:
+            _cfgv = getattr(main, "config", None) or {}
+            for _ck in ("opencode", "single"):
+                _seg = _cfgv.get(_ck) or {}
+                if isinstance(_seg, dict):
+                    _t = _seg.get("templates") or {}
+                    if isinstance(_t, dict):
+                        _customs.update(_t)
+        except Exception:
+            pass
+        if model_id in _customs or model_id in OPENCODE_TEMPLATES:
             get["template"] = model_id
         else:
             get["prompt_id"] = model_id
