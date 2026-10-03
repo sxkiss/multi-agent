@@ -3155,6 +3155,13 @@ register_mcp_routes(app)
 agent_main = AgentMain()
 
 # ============================================================
+# OpenAI 兼容层：/v1/models（=提示词模板）与 /v1/chat/completions
+# 独立模块实现，避免本文件进一步膨胀；必须放在 agent_main 之后
+# （路由闭包需持有其实例以复用 _build_chat_agent）。
+from v1_compat import register_v1_routes
+register_v1_routes(app, agent_main, BASE_DIR)
+
+# ============================================================
 # CORS：此处才实例化完成 agent_main，故把实际注册放在这之后。
 _cors_origins = (agent_main.config or {}).get("cors_origins") or []
 app.add_middleware(
