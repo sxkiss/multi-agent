@@ -4,9 +4,11 @@ OpenAI 兼容层（/v1/models + /v1/chat/completions）
 设计要点
 --------
 1. 模型列表 = 提示词模板
-   `GET /v1/models` 返回所有可用提示词模板，两类来源：
+   `GET /v1/models` 返回所有可用提示词模板，三类来源：
      - 内置模板：chat_client.opencode_templates.OPENCODE_TEMPLATES
        （default / gpt5.5 / unrestricted_jeli / hermes）
+     - 自定义模板：config.json 的 opencode.templates / single.templates
+       （用户在设置面板添加，如 xianyu）
      - 文件模板：prompts/*.md|txt（文件名去扩展名，如 agent_shell）
    这样外部 OpenAI SDK 里 `model="hermes"` 或 `model="agent_shell"`
    即等价于"用该提示词模板"。
@@ -38,6 +40,7 @@ OpenAI 兼容层（/v1/models + /v1/chat/completions）
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import uuid
@@ -61,10 +64,11 @@ def _prompts_dir(plugin_path: str) -> str:
 def list_prompt_templates(plugin_path: str) -> list[dict]:
     """列出全部提示词模板（即 /v1/models 的模型列表）。
 
-    模板来源两类（与 web_server._resolve_template_system_prompt 的解析顺序一致）：
+    模板来源三类（与 web_server._resolve_template_system_prompt 的解析顺序一致）：
       1. 内置模板：chat_client.opencode_templates.OPENCODE_TEMPLATES
          （default / gpt5.5 / unrestricted_jeli / hermes）
-      2. 文件模板：prompts/*.md|txt（文件名去扩展名即 id）
+      2. 自定义模板：config.json 的 opencode.templates / single.templates（如 xianyu）
+      3. 文件模板：prompts/*.md|txt（文件名去扩展名即 id）
 
     返回 OpenAI /v1/models 结构：
         {"object": "list", "data": [{"id": ..., "object": "model", ...}]}
@@ -90,7 +94,35 @@ def list_prompt_templates(plugin_path: str) -> list[dict]:
     except Exception:
         logger.warning("[v1] 内置模板加载失败，已记录", exc_info=True)
 
-    # 2) prompts 目录下的文件模板
+    # 2) 自定义模板：config.json 的 opencode.templates / single.templates（如 xianyu）
+    #    优先级高于内置模板，与 web_server._resolve_template_system_prompt 一致。
+    _cfgv = {}
+    try:
+        _cfg_path = os.path.join(plugin_path, "config.json")
+        if os.path.isfile(_cfg_path):
+            with open(_cfg_path, "r", encoding="utf-8") as f:
+                _cfgv = json.load(f) or {}
+    except Exception:
+        logger.warning("[v1] 读取 config.json 失败，跳过自定义模板", exc_info=True)
+    for cfg_key in ("opencode", "single"):
+        seg = (_cfgv.get(cfg_key) or {}) if isinstance(_cfgv, dict) else {}
+        if not isinstance(seg, dict):
+            continue
+        customs = seg.get("templates") or {}
+        if not isinstance(customs, dict):
+            continue
+        for name in sorted(customs.keys()):
+            if name in seen:
+                continue
+            seen.add(name)
+            data.append({
+                "id": name,
+                "object": "model",
+                "created": now,
+                "owned_by": "bt-agent",
+            })
+
+    # 3) prompts 目录下的文件模板
     prompts_dir = _prompts_dir(plugin_path)
     if not os.path.isdir(prompts_dir):
         logger.warning("[v1] prompts 目录不存在: %s", prompts_dir)
@@ -197,8 +229,18 @@ def _last_user_content(messages: list) -> str:
         if isinstance(c, list):
             parts = []
             for blk in c:
-                if isinstance(blk, dict) and blk.get("type") == "text":
+                if not isinstance(blk, dict):
+                    continue
+                btype = blk.get("type")
+                if btype == "text":
                     parts.append(str(blk.get("text", "")))
+                elif btype == "image_url":
+                    # 保留图片地址：多模态输入曾被静默丢弃，导致图片消息等于没收到。
+                    url = blk.get("image_url")
+                    if isinstance(url, dict):
+                        url = url.get("url")
+                    if url:
+                        parts.append(f"[图片] {url}")
             return "\n".join(parts).strip()
     return ""
 
@@ -235,7 +277,20 @@ def _build_agent(main, model_id: str, messages: list, session_id: str, cwd: str)
     }
     try:
         from chat_client.opencode_templates import OPENCODE_TEMPLATES
-        if model_id in OPENCODE_TEMPLATES:
+        # 自定义模板（config.json opencode.templates / single.templates）
+        # 优先于内置模板，与 web_server._resolve_template_system_prompt 一致
+        _customs = {}
+        try:
+            _cfgv = getattr(main, "config", None) or {}
+            for _ck in ("opencode", "single"):
+                _seg = _cfgv.get(_ck) or {}
+                if isinstance(_seg, dict):
+                    _t = _seg.get("templates") or {}
+                    if isinstance(_t, dict):
+                        _customs.update(_t)
+        except Exception:
+            pass
+        if model_id in _customs or model_id in OPENCODE_TEMPLATES:
             get["template"] = model_id
         else:
             get["prompt_id"] = model_id
@@ -344,7 +399,11 @@ def register_v1_routes(app, main, base_dir: str):
         stream = bool(body.get("stream", False))
         # OpenAI 协议无 session 概念。会话由服务端按 model 派生稳定会话
         # （同一模板复用上下文），不暴露给调用方。
-        session_id = f"v1_{model_id}"
+        # 调用方可通过 OpenAI 标准的 user 字段下发会话标识（如「账号_买家会话」）。
+        # 存在时按它隔离会话，避免不同买家共用同一模板时上下文互相串话；
+        # 缺省时保持原有「按模板派生」的行为，对既有调用方向后兼容。
+        _user_key = re.sub(r"[^0-9A-Za-z_\-:.@]", "_", str(body.get("user") or "").strip())[:64]
+        session_id = f"v1_{model_id}_{_user_key}" if _user_key else f"v1_{model_id}"
         # 默认工作目录由服务端固定，不从请求体取
         cwd = HERMES_DIR
         # 标准 OpenAI 采样参数透传（可选）
