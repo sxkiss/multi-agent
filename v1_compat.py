@@ -40,6 +40,7 @@ OpenAI 兼容层（/v1/models + /v1/chat/completions）
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import uuid
@@ -228,8 +229,18 @@ def _last_user_content(messages: list) -> str:
         if isinstance(c, list):
             parts = []
             for blk in c:
-                if isinstance(blk, dict) and blk.get("type") == "text":
+                if not isinstance(blk, dict):
+                    continue
+                btype = blk.get("type")
+                if btype == "text":
                     parts.append(str(blk.get("text", "")))
+                elif btype == "image_url":
+                    # 保留图片地址：多模态输入曾被静默丢弃，导致图片消息等于没收到。
+                    url = blk.get("image_url")
+                    if isinstance(url, dict):
+                        url = url.get("url")
+                    if url:
+                        parts.append(f"[图片] {url}")
             return "\n".join(parts).strip()
     return ""
 
@@ -388,7 +399,11 @@ def register_v1_routes(app, main, base_dir: str):
         stream = bool(body.get("stream", False))
         # OpenAI 协议无 session 概念。会话由服务端按 model 派生稳定会话
         # （同一模板复用上下文），不暴露给调用方。
-        session_id = f"v1_{model_id}"
+        # 调用方可通过 OpenAI 标准的 user 字段下发会话标识（如「账号_买家会话」）。
+        # 存在时按它隔离会话，避免不同买家共用同一模板时上下文互相串话；
+        # 缺省时保持原有「按模板派生」的行为，对既有调用方向后兼容。
+        _user_key = re.sub(r"[^0-9A-Za-z_\-:.@]", "_", str(body.get("user") or "").strip())[:64]
+        session_id = f"v1_{model_id}_{_user_key}" if _user_key else f"v1_{model_id}"
         # 默认工作目录由服务端固定，不从请求体取
         cwd = HERMES_DIR
         # 标准 OpenAI 采样参数透传（可选）
