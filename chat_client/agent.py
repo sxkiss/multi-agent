@@ -169,6 +169,19 @@ class Agent:
     # 工具参数连续非法的熔断阈值：达到即结束本轮，避免"截断→非法→空跑→再截断"死循环
     BAD_ARGS_MAX_STREAK = 3
 
+    # 进程级开关：上游网关（Responses 协议）无法反序列化 reasoning_content + tools 组合时，
+    # 400 报 "input: data did not match any variant of untagged enum ResponseInput"。
+    # 确认一次后全进程剥离 reasoning_content，避免每个新 Agent 实例都先吃一次 400。
+    _upstream_rejects_reasoning = False
+
+    @staticmethod
+    def _is_response_input_400(err: Exception) -> bool:
+        """识别 Responses 协议网关的确定性 400（json_parse_error / ResponseInput）。"""
+        msg = str(err)
+        return "ResponseInput" in msg or (
+            "400" in msg and "json_parse_error" in msg
+        )
+
     @staticmethod
     def next_bad_args_streak(current: int) -> int:
         """累计工具参数非法次数（解析成功时由调用方直接重置为 0）"""
@@ -832,6 +845,20 @@ Here is some useful information about the environment you are running in:
                         if _is_cancelled():
                             logger.info("[AI-Retry] 任务已停止，跳过重试")
                             return
+                        # Responses 协议网关的确定性 400（reasoning_content + tools 组合
+                        # 无法反序列化）：原样重试必然再 400，剥离后立即重试并全进程记忆
+                        if (self._is_response_input_400(api_err)
+                                and not Agent._upstream_rejects_reasoning):
+                            Agent._upstream_rejects_reasoning = True
+                            logger.warning(
+                                "[AI-Retry] 上游拒绝 reasoning_content（Responses 协议 400），"
+                                "已全进程剥离，本次剥离后立即重试"
+                            )
+                            request_messages = [
+                                {k: v for k, v in m.items() if k != "reasoning_content"}
+                                for m in request_messages
+                            ]
+                            continue
                         if not is_retryable_api_err(api_err) or attempt > api_max_retry:
                             raise
                         wait_s = min(api_retry_base_wait * (2 ** (attempt - 1)), api_retry_max_wait)
@@ -1643,7 +1670,7 @@ Here is some useful information about the environment you are running in:
                     m["tool_calls"] = tc
             if "tool_call_id" in reconstructed:
                 m["tool_call_id"] = reconstructed["tool_call_id"]
-            if "reasoning_content" in reconstructed:
+            if "reasoning_content" in reconstructed and not Agent._upstream_rejects_reasoning:
                 # thinking 模式允许时保留
                 m["reasoning_content"] = reconstructed["reasoning_content"]
             messages.append(m)
