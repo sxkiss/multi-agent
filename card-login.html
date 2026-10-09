@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>卡密登录 — AI Agent</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #0f1115;
+      color: #e8eaed;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .card-login-container { width: 100%; max-width: 420px; padding: 20px; }
+    .logo { text-align: center; margin-bottom: 32px; }
+    .logo h1 { font-size: 24px; font-weight: 600; color: #fff; }
+    .logo p { font-size: 13px; color: #8b909a; margin-top: 6px; }
+    .login-box {
+      background: #1a1d24; border-radius: 12px; padding: 28px 24px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+    }
+    .login-title { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+    .login-sub { font-size: 13px; color: #8b909a; margin-bottom: 24px; line-height: 1.5; }
+    .input-group { margin-bottom: 16px; }
+    .input-group label { display: block; font-size: 13px; color: #8b909a; margin-bottom: 6px; }
+    .card-input {
+      width: 100%; padding: 12px 14px; font-size: 16px; letter-spacing: 2px;
+      color: #e8eaed; background: #12141a; border: 1px solid #2c303a;
+      border-radius: 8px; outline: none; text-transform: uppercase;
+      font-family: monospace;
+    }
+    .card-input:focus { border-color: #4a7cf7; }
+    .card-input::placeholder { color: #3a3f4b; letter-spacing: 1px; font-size: 14px; }
+    .error-msg { font-size: 12px; color: #e5636a; margin-top: 6px; min-height: 18px; }
+    .login-btn {
+      width: 100%; padding: 12px; font-size: 15px; font-weight: 500;
+      color: #fff; background: #4a7cf7; border: none; border-radius: 8px;
+      cursor: pointer; margin-top: 8px; transition: background 0.2s;
+    }
+    .login-btn:hover { background: #3a6be6; }
+    .login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .hint { font-size: 12px; color: #5a5f6b; margin-top: 16px; line-height: 1.6; }
+    .hint code { background: #2c303a; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+    .card-link {
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      margin-top: 18px; padding: 10px; font-size: 13px; color: #4a7cf7;
+      cursor: pointer; border-radius: 8px; border: 1px dashed #2c303a;
+      transition: background 0.2s;
+    }
+    .card-link:hover { background: #1e2230; }
+    /* Bot QR section */
+    .bot-section { margin-top: 28px; padding-top: 24px; border-top: 1px solid #2c303a; display: none; }
+    .bot-section.show { display: block; }
+    .bot-title { font-size: 14px; font-weight: 500; color: #e8eaed; margin-bottom: 12px; }
+    .qr-wrap {
+      background: #fff; border-radius: 8px; padding: 12px;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 200px;
+    }
+    .qr-wrap img { max-width: 180px; max-height: 180px; }
+    .bot-status { font-size: 12px; color: #8b909a; margin-top: 10px; text-align: center; }
+    .bot-link { font-size: 12px; color: #4a7cf7; text-align: center; margin-top: 8px; cursor: pointer; }
+    .bot-link:hover { text-decoration: underline; }
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid #2c303a; border-top-color: #4a7cf7;
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+      vertical-align: middle; margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div class="card-login-container">
+  <div class="logo">
+    <h1>🤖 AI Agent</h1>
+    <p>卡密登录 · 专属会话 · 微信扫码绑定</p>
+  </div>
+
+  <div class="login-box">
+    <div class="login-title" id="loginTitle">输入卡密登录</div>
+    <div class="login-sub" id="loginSub">请输入您的卡密，前 6 位将作为您的专属会话标识</div>
+
+    <div class="input-group" id="inputGroup">
+      <label for="cardKey">卡密</label>
+      <input
+        id="cardKey"
+        class="card-input"
+        type="text"
+        placeholder="例如：ADMIN0-XXXXXXXX"
+        maxlength="128"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="error-msg" id="errorMsg"></div>
+    </div>
+
+    <button id="loginBtn" class="login-btn" onclick="handleLogin()">登录</button>
+
+    <div class="hint">
+      提示：卡密前 6 位为您的会话 ID，<code>ADMIN0</code> 格式。<br>
+      同一张卡密的前 6 位相同则共享会话历史，便于分享。
+    </div>
+
+    <!-- Bot QR Code Section (shown after login) -->
+    <div class="bot-section" id="botSection">
+      <div class="bot-title">绑定微信机器人（可选）</div>
+      <div class="qr-wrap" id="qrWrap">
+        <span class="spinner"></span>
+      </div>
+      <div class="bot-status" id="botStatus">正在加载二维码…</div>
+      <div class="bot-link" id="botLink" style="display:none">
+        在微信中搜索 <strong id="botName">clawbot</strong> 并开始对话
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ==================== 工具函数 ====================
+function showErr(msg) { document.getElementById('errorMsg').textContent = msg }
+function clearErr() { document.getElementById('errorMsg').textContent = '' }
+
+function setToken(token) {
+  try { localStorage.setItem('bt_agent_token', token) } catch(e) {}
+}
+function getToken() {
+  try { return localStorage.getItem('bt_agent_token') || '' } catch(e) { return '' }
+}
+
+// ==================== 卡密登录 ====================
+async function handleLogin() {
+  const rawKey = document.getElementById('cardKey').value.trim()
+  if (!rawKey) { showErr('请输入卡密'); return }
+
+  const btn = document.getElementById('loginBtn')
+  btn.disabled = true
+  btn.textContent = '验证中…'
+  clearErr()
+
+  try {
+    const resp = await fetch('/api/auth/cardlogin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: rawKey })
+    })
+    const res = await resp.json()
+
+    if (!res.status) {
+      showErr(res.msg || '卡密无效')
+      btn.disabled = false
+      btn.textContent = '登录'
+      return
+    }
+
+    const { token, session_id, prefix } = res.data
+    setToken(token)
+    localStorage.setItem('ai_card_prefix', prefix)
+    localStorage.setItem('ai_session_id', session_id)
+
+    // 登录成功，切换 UI
+    document.getElementById('loginTitle').textContent = '🎉 登录成功，' + prefix
+    document.getElementById('loginSub').textContent = '会话已绑定，选择下方操作继续'
+    document.getElementById('inputGroup').style.display = 'none'
+    btn.style.display = 'none'
+    document.querySelector('.hint').style.display = 'none'
+
+    // 直接进入主页按钮
+    const goBtn = document.createElement('button')
+    goBtn.className = 'login-btn'
+    goBtn.textContent = '直接进入主页 →'
+    goBtn.style.marginTop = '16px'
+    goBtn.onclick = () => { window.location.href = '/' }
+    document.querySelector('.login-box').appendChild(goBtn)
+
+    // 延迟 500ms 后展示扫码区
+    setTimeout(() => startBotPoll(), 500)
+  } catch (e) {
+    showErr('网络错误，请重试')
+    btn.disabled = false
+    btn.textContent = '登录'
+  }
+}
+
+document.getElementById('cardKey').addEventListener('keydown', e => { if (e.key === 'Enter') handleLogin() })
+document.getElementById('cardKey').addEventListener('input', e => {
+  const v = e.target.value.toUpperCase().replace(/[^A-Z0-9\-_]/g, '')
+  if (v !== e.target.value) e.target.value = v
+  clearErr()
+})
+
+// ==================== 微信机器人扫码 ====================
+let botPollTimer = null
+
+function startBotPoll() {
+  document.getElementById('botSection').classList.add('show')
+  fetchBotQrcode()
+  botPollTimer = setInterval(fetchBotStatus, 3000)
+}
+
+async function fetchBotQrcode() {
+  const token = getToken()
+  if (!token) return
+  try {
+    const resp = await fetch('/api/mp/bot/qrcode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token }
+    })
+    const res = await resp.json()
+    if (!res.status || !res.data || !res.data.qr_payload) {
+      document.getElementById('botStatus').textContent = res.msg || '获取二维码失败'
+      return
+    }
+    const qrData = res.data.qr_payload
+    const img = document.createElement('img')
+    img.src = qrData.startsWith('data:') ? qrData : 'data:image/png;base64,' + qrData
+    document.getElementById('qrWrap').innerHTML = ''
+    document.getElementById('qrWrap').appendChild(img)
+    document.getElementById('botStatus').textContent = '用微信扫描二维码，绑定专属机器人'
+  } catch (e) {
+    document.getElementById('botStatus').textContent = '获取二维码失败'
+  }
+}
+
+async function fetchBotStatus() {
+  const token = getToken()
+  if (!token) return
+  try {
+    const resp = await fetch('/api/mp/bot/status', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    })
+    const res = await resp.json()
+    if (!res.status) return
+    const status = res.data && res.data.status
+    if (status === 'active' || status === 'scaned') {
+      clearInterval(botPollTimer)
+      document.getElementById('botStatus').textContent = '✅ 机器人已连接！可以在微信中与我对话了'
+      document.getElementById('botLink').style.display = 'block'
+    } else if (status === 'expired') {
+      clearInterval(botPollTimer)
+      document.getElementById('botStatus').textContent = '二维码已过期，正在刷新…'
+      fetchBotQrcode()
+      botPollTimer = setInterval(fetchBotStatus, 3000)
+    }
+  } catch (e) {}
+}
+
+// ==================== 初始化 ====================
+window.addEventListener('DOMContentLoaded', () => {
+  const savedPrefix = localStorage.getItem('ai_card_prefix')
+  if (savedPrefix) {
+    document.getElementById('cardKey').value = savedPrefix + '-'
+    document.getElementById('cardKey').focus()
+  } else {
+    document.getElementById('cardKey').focus()
+  }
+})
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+geom {'bgNat': 552, 'bgDisp': 340, 'x': 590.0234375, 'y': 347, 'w': 64.046875} scale 0.616
+attempt 0: xnat=158 score=0.476 → drag 97.3px
+   success? 
+attempt 1: xnat=158 score=0.476 → drag 97.3px
+   success? 
+attempt 2: xnat=158 score=0.476 → drag 97.3px
+   success? 
+attempt 3: xnat=158 score=0.476 → drag 97.3px
+   success? 
+attempt 4: xnat=158 score=0.476 → drag 97.3px
+   success? 
+attempt 5: xnat=158 score=0.476 → drag 97.3px
+   success? 
+SAVED

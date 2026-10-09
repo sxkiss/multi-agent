@@ -17,6 +17,14 @@
       <button class="login-btn" :disabled="loading" @click="submit">
         {{ loading ? '处理中…' : (initialized ? '登录' : '设置并进入') }}
       </button>
+      <div class="card-link" @click="goCardLogin">
+        <span class="card-link-icon">🔑</span>
+        <span>卡密登录</span>
+      </div>
+      <div class="card-link admin-link" @click="goCardAdmin">
+        <span class="card-link-icon">🛡️</span>
+        <span>卡密管理员</span>
+      </div>
     </div>
   </div>
 </template>
@@ -57,6 +65,14 @@ async function submit() {
   } else {
     error.value = r.msg || '登录失败'
   }
+}
+
+function goCardLogin() {
+  window.location.href = '/static/card-login.html'
+}
+
+function goCardAdmin() {
+  window.location.href = '/static/card-admin.html'
 }
 </script>
 
@@ -123,5 +139,32 @@ async function submit() {
 .login-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+.card-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 18px;
+  padding: 10px;
+  font-size: 13px;
+  color: #4a7cf7;
+  cursor: pointer;
+  border-radius: 8px;
+  border: 1px dashed #2c303a;
+  transition: background 0.2s;
+}
+.card-link:hover {
+  background: #1e2230;
+}
+.admin-link {
+  color: #22c55e;
+  border-color: #166534;
+}
+.admin-link:hover {
+  background: #1a2e23;
+}
+.card-link-icon {
+  font-size: 15px;
 }
 </style>

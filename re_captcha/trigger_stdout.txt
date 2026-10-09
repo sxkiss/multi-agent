@@ -1,0 +1,43 @@
+sent 1
+sent 2
+sent 3
+saved. count= 3
+
+--- https://www.doubao.com/chat/completion?aid=497858&device_id=7678478259399869987&device_platform=web&doubao_device_platfo 200
+id: 0
+event: SSE_HEARTBEAT
+data: {}
+
+id: 0
+event: SSE_ACK
+data: {"query_list":[{"question_id":"57511872254583298","local_message_id":"88a20ad0-c000-11f1-bf3c-8905f2237b54","message_index":1}],"ack_client_meta":{"conversation_id":"38445118569624322","local_conversation_id":"local_4424714214118118","conversation_type":3,"section_id":"38445118569624578","conversation_info":{"conversation_id":"38445118569624322","conversation_type":3,"creator_id":"3903683896554441","name":"æ–°å¯¹è¯","image":{"image_thumb":{"url":"https://p6-flow-imagex-sign.byteimg.com/tos-cn-i-a9rns2rl98/b031a0d97eb5ebd17d1b4bde22308690.png~tplv-a9rns2rl98-image-qvalue.png?lk3s=8e244e95&rcl=20261004223315EABA8B9EA697E5D3C566&rrcfp=bf2e6f99&x-expires=1793716396&x-signature=3ICDxgowCINEN9qsZBeLTJnvHtg%3D"},"image_ori":{"url":"https://p6-flow-imagex-sign.byteimg.com/tos-cn-i-a9rns2rl98/b031a0d97eb5ebd17d1b4bde22308690.png~tplv-a9rns2rl98-image-qvalue.png?lk3s=8e244e95&rcl=20261004223315EABA8B9EA697E5D3C566&rrcfp=bf2e6f99&x-expires=1793716396&x-signature=3ICDxgowCINEN9qsZBeLTJnvHtg%3D"}},"participant_count":2,"human_count":1,"tenant_id":0,"biz_id":0,"status":1,"create_time":1791124396,"update_time":1791124396,"extra":"{\"inner_app_id\":\"497858\",\"inner_cluster\":\"default\",\"inner_did\":\"7678478259399869987\",\"inner_env\":\"prod\",\"inner_flow_app_variant\":\"doubao\",\"inner_is_tour\":\"false\",\"inner_log_id\":\"20261004223315EABA8B9EA697E5D3C566\",\"inner_pc_version\":\"3.39.2\",\"inner_platform\":\"web\",\"inner_real_app_id\":\"497858\",\"inner_samantha_web\":\"true\",\"inner_tea_uuid\":\"7683337151794759218\",\"inner_tt_wid\":\"7678478259399869987\",\"inner_user_ip\":\"175.153.180.156\",\"inner_version_name\":\"\",\"is_default_name\":\"true\",\"local_conversation_id\":\"local_4424714214118118\",\"log_id\":\"20261004223315EABA8B9EA697E5D3C566\",\"mode_id\":\"1\",\"model_item_key\":\"0\",\"reasoning_effort\":\"3\",\"reply_mode\":\"0\"}","msg_cursor":1,"bot_type":3,"retention_cursor":1,"last_read_index":0,"latest_index":0,"last_section_id":"38445118569624578","input_left_button_style":1,"review_status":2,"create_scene":0,"create_channel":0,"badge_count":0,"read_badge_count":0,"latest_artifact":1}},"timeout_conf":{"answer_first_pending_time":180000,"packet_interval_time":120000,"max_retry_count":10,"max_retry_duration_ms":21600000,"retry_interval_ms":1000}}
+
+id: 1
+event: FULL_MSG_NOTIFY
+data: {"message":{"conversation_id":"38445118569624322","message_id":"57511872254583298","message_body_v
+
+--- https://www.doubao.com/chat/completion?aid=497858&device_id=7678478259399869987&device_platform=web&doubao_device_platfo 200
+id: 0
+event: SSE_HEARTBEAT
+data: {}
+
+id: 0
+event: SSE_ACK
+data: {"query_list":[{"question_id":"57519345649094914","local_message_id":"8b3ed5c0-c000-11f1-bf3c-8905f2237b54","message_index":6}],"ack_client_meta":{"conversation_id":"38445118569624322","conversation_type":3,"section_id":"38445118569624578"},"timeout_conf":{"answer_first_pending_time":180000,"packet_interval_time":120000,"max_retry_count":10,"max_retry_duration_ms":21600000,"retry_interval_ms":1000}}
+
+id: 1
+event: FULL_MSG_NOTIFY
+data: {"message":{"conversation_id":"38445118569624322","message_id":"57519345649094914","message_body_version":1,"sender_id":"3903683896554441","user_type":1,"content_type":9999,"content":"[{\"block_type\":10000,\"block_id\":\"b005cc05-4cb2-4ce4-88c7-d90094dc6b2f\",\"content\":{\"text_block\":{\"text\":\"ä½ å¥½ï¼Œå›žå¤OK\"}}}]","index_in_conv":6,"create_time":1791124400,"biz_content_type":"","sec_sender":"MS4wLjABAAAA57X1KSxb8gYI7LWz4k4EF9Jd9FBN9CjQX4hPkKUKJy9LDbCwPpX_Btf5jYOjV0no","content_block":[{"block_type":10000,"block_id":"b005cc05-4cb2-4ce4-88c7-d90094dc6b2f","content":{"text_block":{"text":"ä½ å¥½ï¼Œå›žå¤OK"}},"is_finish":false}],"tts_content":"","update_time":1791124400,"ext":{"inner_ttwid":"7678478259399869987","chat_id":"57519345649094914","cot_switch":"0","read_conv_version":"1791124399992300","bot_source":"BotStudio","speaker_id":"zh_female_wenroutaozi_uranus_bigtts","ugc_voice_id":"104","input_skill":"{\"skill_id\":\"0\",\"skill_type\":0}","chat_ability":"{}","group":"1791124396","update_version_code":"0","use_content_block":"1","brief":"ä½ å¥½ï¼Œå›žå¤OK","inner_platform":"web","is_ai_playground":"false","attachment_scene":"1","model_type":"38","message_from":"InputBox","inner_app_id":"497858","chat_next":"1","pre_read_conv_version":"1791124399992300","inner_log_id":"202610042233192A7BB947D65B7F317AE8","agent_mode":"2","commerce_credit_config_enable":"0","llm_model_type":"38","inner_bot_id":"7338286299411103781","inner_region":"CN","bot_id":"7338286299411103781","reply_unique_key":"6248655c-125f-49f1-97db-d1eb9f10836e","inner_user_ip":"175.153.180.156","client_report_scene":"gui","search_engine_type":"4","section_tag_1h":"38445118569624578_2026100422","collection_id":"","inner_did":"7678478259399869987","use_deep_think":"0","is_finish":"1","general_task_param":"{\"runtime_type\":0,\"need_modify_conversation\":false,\"agent_task_param\":{},\"project_id\":\"\",\"agent_task_param_change\":{\"runtime_changed\":false,\"device_changed\":false,\"sandbox_aut
+
+--- https://www.doubao.com/chat/completion?aid=497858&device_id=7678478259399869987&device_platform=web&doubao_device_platfo 200
+id: 0
+event: SSE_HEARTBEAT
+data: {}
+
+id: 0
+event: SSE_ACK
+data: {"query_list":[{"question_id":"57523401291841538","local_message_id":"8d5ef6a0-c000-11f1-bf3c-8905f2237b54","message_index":11}],"ack_client_meta":{"conversation_id":"38445118569624322","conversation_type":3,"section_id":"38445118569624578"},"timeout_conf":{"answer_first_pending_time":180000,"packet_interval_time":120000,"max_retry_count":10,"max_retry_duration_ms":21600000,"retry_interval_ms":1000}}
+
+id: 1
+event: FULL_MSG_NOTIFY
+data: {"message":{"conversation_id":"38445118569624322","message_id":"57523401291841538","message_body_version":1,"sender_id":"3903683896554441","user_type":1,"content_type":9999,"content":"[{\"block_type\":10000,\"block_id\":\"d4590f28-71cf-46c1-b8c8-cfc1a3a2819b\",\"content\":{\"text_block\":{\"text\":\"ä½ å¥½ï¼Œå›žå¤OK\"}}}]","index_in_conv":11,"create_time":1791124403,"biz_content_type":"","sec_sender":"MS4wLjABAAAA57X1KSxb8gYI7LWz4k4EF9Jd9FBN9CjQX4hPkKUKJy9LDbCwPpX_Btf5jYOjV0no","content_block":[{"block_type":10000,"block_id":"d4590f28-71cf-46c1-b8c8-cfc1a3a2819b","content":{"text_block":{"text":"ä½ å¥½ï¼Œå›žå¤OK"}},"is_finish":false}],"tts_content":"","update_time":1791124403,"ext":{"llm_model_type":"38","search_engine_type":"4","reply_unique_key":"c167d309-4001-4712-9e01-568fa4a67ec4","commerce_credit_config_enable":"0","cot_switch":"0","chat_next":"1","inner_region":"CN","inner_ttwid":"7678478259399869987","chat_ability":"{}","client_report_scene":"gui","input_skill":"{\"skill_id\":\"0\",\"skill_type\":0}","use_content_block":"1","attachment_scene":"1","inner_user_ip":"175.153.180.156","collection_id":"","message_from":"InputBox","bot_id":"7338286299411103781","general_task_param":"{\"runtime_type\":0,\"need_modify_conversation\":false,\"agent_task_param\":{},\"project_id\":\"\",\"agent_task_param_change\":{\"runtime_changed\":false,\"device_changed\":false,\"sandbox_auth_type_changed\":false}}","ugc_voice_id":"104","bot_source":"BotStudio","group":"1791124396","is_finish":"1","section_tag_1h":"38445118569624578_2026100422","speaker_id":"zh_female_wenroutaozi_uranus_bigtts","inner_bot_id":"7338286299411103781","model_type":"38","chat_id":"57523401291841538","inner_platform":"web","inner_app_id":"497858","pre_read_conv_version":"1791124403633733","inner_log_id":"20261004223323875010D92C0A2631DE78","use_deep_think":"0","agent_mode":"2","brief":"ä½ å¥½ï¼Œå›žå¤OK","update_version_code":"0","inner_did":"7678478259399869987","read_conv_version":"1791124403633733"

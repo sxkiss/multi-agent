@@ -17,6 +17,7 @@
               type="text" 
               class="form-input" 
               v-model="formData.api_base_url"
+              :disabled="readOnly"
               placeholder="https://api.openai.com/v1"
             />
           </div>
@@ -28,6 +29,7 @@
                 type="password"
                 class="form-input"
                 v-model="formData.api_key"
+                :disabled="readOnly"
                 :placeholder="apiKeyConfigured ? '已配置（留空保持原值）' : '请输入 API Key'"
               />
               <span v-if="apiKeyConfigured" class="key-badge">已配置</span>
@@ -67,7 +69,7 @@
 
           <div class="form-section">
             <label class="form-label">默认模型</label>
-            <select class="form-input" v-model="formData.default_model">
+            <select class="form-input" v-model="formData.default_model" :disabled="readOnly">
               <option value="">（使用第一个勾选的模型）</option>
               <option v-for="m in formData.models" :key="m" :value="m">{{ m }}</option>
             </select>
@@ -209,7 +211,7 @@
               WebSearch 工具默认使用的引擎。Bing 免 Key 且实测可用（无需代理即可直连）；
               SearXNG 免 Key 但需自建实例。生产环境建议用需 Key 的引擎以获得更稳定结果。
             </p>
-            <select class="form-input" v-model="searchConfig.provider">
+            <select class="form-input" v-model="searchConfig.provider" :disabled="readOnly">
               <option v-for="(p, name) in searchConfig.providers" :key="name" :value="name">
                 {{ p.label }}{{ p.need_key ? '（需 Key）' : '（免 Key）' }}
               </option>
@@ -317,7 +319,7 @@
           <div class="form-section">
             <label class="form-label">RAG 记忆检索模式</label>
             <p class="form-hint">控制对话前是否从知识库检索相关记忆注入上下文</p>
-            <select class="form-input" v-model="formData.rag_mode">
+            <select class="form-input" v-model="formData.rag_mode" :disabled="readOnly">
               <option value="disabled">关闭 - 不使用记忆检索</option>
               <option value="global_only">启用全局记忆检索（仅本机 mem0）</option>
               <option value="external_only">启用外部知识库检索（ai-assistant.cn）</option>
@@ -510,12 +512,95 @@
 
         <!-- Save Button -->
         <div style="display:flex;gap:10px">
-          <button class="btn-primary btn-save" style="flex:1" @click="handleSave">
-            保存设置
-          </button>
+          <button class="btn-primary btn-save" style="flex:1" @click="handleSave" :disabled="readOnly">
+        <span v-if="readOnly">🔒 卡密用户不可编辑配置</span>
+        <span v-else>保存配置</span>
+      </button>
           <button class="btn-secondary btn-save" style="flex:0 0 auto" :disabled="reloading" @click="doHotReload" title="不重启服务，立即生效外部修改（工具/配置/团队/MCP）">
             {{ reloading ? '重载中...' : '⟳ 热重载' }}
           </button>
+        </div>
+
+        <!-- Card Key Management -->
+        <div class="form-section-group" style="margin-top:24px; padding-top:20px; border-top:2px dashed #e5e7eb">
+          <h4 class="section-title">🔑 卡密管理</h4>
+          <p class="form-hint">管理用户卡密：生成、删除、设置有效期。卡密用户通过扫码绑定微信机器人后在微信中对话。</p>
+
+          <!-- Generate Form -->
+          <div class="crew-form" style="margin-top:12px">
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end">
+              <div style="flex:1; min-width:100px">
+                <label class="form-label">有效期(天, 0=长期)</label>
+                <input class="form-input" type="number" v-model.number="cardDays" min="0" placeholder="30" style="width:100%" />
+              </div>
+              <div style="flex:2; min-width:120px">
+                <label class="form-label">持有人</label>
+                <input class="form-input" v-model="cardOwner" placeholder="用户名/备注" />
+              </div>
+              <div style="flex:2; min-width:120px">
+                <label class="form-label">备注</label>
+                <input class="form-input" v-model="cardNote" placeholder="可选说明" />
+              </div>
+              <button class="btn-primary" @click="createCard" :disabled="cardCreating" style="flex:0 0 auto; white-space:nowrap">
+                {{ cardCreating ? '生成中...' : '＋ 生成卡密' }}
+              </button>
+            </div>
+            <div v-if="cardMsg" :style="{ color: cardErr ? '#ef4444' : '#22c55e', fontSize: '12px', marginTop: '8px' }">{{ cardMsg }}</div>
+          </div>
+
+          <!-- Batch Generate -->
+          <div style="margin-top:16px; padding-top:16px; border-top:1px dashed #e5e7eb">
+            <div style="font-size:13px; font-weight:500; margin-bottom:10px; color:#374151">批量生成</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end">
+              <div style="flex:0 0 80px">
+                <label class="form-label">数量</label>
+                <input class="form-input" type="number" v-model.number="batchCount" min="1" max="100" placeholder="10" style="width:100%" />
+              </div>
+              <div style="flex:2; min-width:120px">
+                <label class="form-label">持有人前缀（可选）</label>
+                <input class="form-input" v-model="batchOwnerPrefix" placeholder="如 USER01，留空用上方持有人" />
+              </div>
+              <button class="btn-primary" @click="batchCreate" :disabled="batchCreating" style="flex:0 0 auto; white-space:nowrap">
+                {{ batchCreating ? '生成中...' : '批量生成' }}
+              </button>
+            </div>
+            <div v-if="batchResult" style="margin-top:10px">
+              <div style="font-size:12px; color:#6b7280; margin-bottom:6px">已生成 {{ batchCreated.length }} 张：</div>
+              <div style="max-height:200px; overflow-y:auto; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:8px; font-family:monospace; font-size:11px; line-height:1.6">
+                <div v-for="(k, i) in batchCreated" :key="i" style="color:#16a34a">✅ {{ k }}</div>
+              </div>
+              <button class="btn-secondary" style="margin-top:8px; padding:4px 10px; font-size:12px" @click="copyBatchKeys">📋 复制全部</button>
+            </div>
+            <div v-if="batchMsg" :style="{ color: batchErr ? '#ef4444' : '#22c55e', fontSize: '12px', marginTop: '8px' }">{{ batchMsg }}</div>
+          </div>
+
+          <!-- Card List -->
+          <div style="margin-top:16px">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
+              <span style="font-size:13px; color:#6b7280">已有卡密 ({{ cards.length }})</span>
+              <button class="btn-secondary" style="padding:4px 10px; font-size:12px" @click="loadCards" :disabled="cardLoading">⟳ 刷新</button>
+            </div>
+            <div v-if="cardLoading" style="padding:12px; text-align:center; color:#6b7280; font-size:13px">加载中...</div>
+            <div v-else-if="cards.length === 0" style="padding:12px; text-align:center; color:#9ca3af; font-size:13px">暂无卡密</div>
+            <div v-else class="card-list">
+              <div v-for="c in cards" :key="c.prefix" class="card-item">
+                <div class="card-info">
+                  <span class="card-prefix">{{ c.prefix }}</span>
+                  <span class="card-key">{{ c.key_masked }}</span>
+                </div>
+                <div class="card-meta">
+                  <span>{{ c.owner || '—' }}</span>
+                  <span :class="['card-expiry', c.expires ? (isExpired(c.expires) ? 'expired' : 'valid') : 'long']">
+                    {{ c.expires || '长期' }}
+                  </span>
+                </div>
+                <div class="card-actions">
+                  <button class="btn-secondary" style="padding:2px 8px; font-size:11px" @click="editCard(c)">改期</button>
+                  <button class="btn-danger" style="padding:2px 8px; font-size:11px" @click="deleteCard(c.prefix)">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -535,6 +620,10 @@ export default {
     config: {
       type: Object,
       default: () => ({})
+    },
+    readOnly: {
+      type: Boolean,
+      default: false
     }
   },
   emits: ['close', 'save'],
@@ -1217,6 +1306,179 @@ export default {
       pendingTimers.clear()
     })
 
+    // ==================== 卡密管理 ====================
+    const cards = ref([])
+    const cardLoading = ref(false)
+    const cardDays = ref(30)
+    const cardOwner = ref('')
+    const cardNote = ref('')
+    const cardMsg = ref('')
+    const cardErr = ref(false)
+    const cardCreating = ref(false)
+
+    const loadCards = async () => {
+      cardLoading.value = true
+      cardMsg.value = ''
+      cardErr.value = false
+      try {
+        const r = await authFetch('/api/card/admin/list', { method: 'GET' })
+        const res = await r.json()
+        if (res.status) {
+          cards.value = res.data.cards || []
+        } else {
+          cardMsg.value = res.msg || '加载失败'
+          cardErr.value = true
+        }
+      } catch(e) {
+        cardMsg.value = '网络错误'
+        cardErr.value = true
+      } finally {
+        cardLoading.value = false
+      }
+    }
+
+    const createCard = async () => {
+      cardCreating.value = true
+      cardMsg.value = ''
+      cardErr.value = false
+      try {
+        const r = await authFetch('/api/card/admin/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ days: cardDays.value, owner: cardOwner.value, note: cardNote.value })
+        })
+        const res = await r.json()
+        if (res.status) {
+          cardMsg.value = `✅ 生成成功！卡密: ${res.data.key}`
+          cardErr.value = false
+          cardOwner.value = ''
+          cardNote.value = ''
+          loadCards()
+        } else {
+          cardMsg.value = res.msg || '生成失败'
+          cardErr.value = true
+        }
+      } catch(e) {
+        cardMsg.value = '网络错误'
+        cardErr.value = true
+      } finally {
+        cardCreating.value = false
+      }
+    }
+
+    const deleteCard = (prefix) => {
+      if (!confirm(`确定删除卡密「${prefix}」？删除后该用户无法再登录。`)) return
+      authFetch('/api/card/admin/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefix })
+      }).then(r => r.json()).then(res => {
+        if (res.status) {
+          if (window.layer) window.layer.msg('已删除', { icon: 1 })
+          loadCards()
+        } else {
+          if (window.layer) window.layer.msg(res.msg || '删除失败', { icon: 2 })
+        }
+      }).catch(() => {
+        if (window.layer) window.layer.msg('网络错误', { icon: 2 })
+      })
+    }
+
+    const editCard = (c) => {
+      const newDays = prompt(`设置「${c.prefix}」的有效期天数（0=长期）`, c.days || 30)
+      if (newDays === null) return
+      const n = parseInt(newDays)
+      if (isNaN(n)) {
+        if (window.layer) window.layer.msg('请输入数字', { icon: 2 })
+        return
+      }
+      authFetch('/api/card/admin/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefix: c.prefix, days: n })
+      }).then(r => r.json()).then(res => {
+        if (res.status) {
+          if (window.layer) window.layer.msg(`已更新，有效期至 ${res.data.expires || '长期'}`, { icon: 1 })
+          loadCards()
+        } else {
+          if (window.layer) window.layer.msg(res.msg || '更新失败', { icon: 2 })
+        }
+      }).catch(() => {
+        if (window.layer) window.layer.msg('网络错误', { icon: 2 })
+      })
+    }
+
+    const isExpired = (expires) => {
+      if (!expires) return false
+      return expires < new Date().toISOString().slice(0, 10)
+    }
+
+    // ==================== 批量生成 ====================
+    const batchCount = ref(10)
+    const batchOwnerPrefix = ref('')
+    const batchCreating = ref(false)
+    const batchCreated = ref([])
+    const batchMsg = ref('')
+    const batchErr = ref(false)
+
+    const batchCreate = async () => {
+      const count = batchCount.value || 10
+      const prefix = batchOwnerPrefix.value.trim()
+      const baseOwner = cardOwner.value.trim()
+      const days = cardDays.value
+      const note = cardNote.value
+
+      if (count < 1 || count > 100) {
+        batchMsg.value = '数量必须在 1-100 之间'
+        batchErr.value = true
+        return
+      }
+
+      batchCreating.value = true
+      batchMsg.value = ''
+      batchErr.value = false
+      batchCreated.value = []
+
+      for (let i = 1; i <= count; i++) {
+        const owner = prefix ? `${prefix}${i}` : baseOwner
+        try {
+          const r = await authFetch('/api/card/admin/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ days, owner, note })
+          })
+          const res = await r.json()
+          if (res.status && res.data) {
+            batchCreated.value.push(res.data.key)
+          } else {
+            batchMsg.value = res.msg || '生成失败'
+            batchErr.value = true
+          }
+        } catch(e) {
+          batchMsg.value = '网络错误'
+          batchErr.value = true
+        }
+      }
+
+      batchMsg.value = `✅ 批量生成完成，成功 ${batchCreated.value.length} 张`
+      batchErr.value = false
+      batchCreating.value = false
+      loadCards()
+    }
+
+    const copyBatchKeys = () => {
+      if (batchCreated.value.length === 0) return
+      const text = batchCreated.value.join('\n')
+      navigator.clipboard.writeText(text).then(() => {
+        if (window.layer) window.layer.msg(`已复制 ${batchCreated.value.length} 张卡密`, { icon: 1 })
+      }).catch(() => {
+        if (window.layer) window.layer.msg('复制失败', { icon: 2 })
+      })
+    }
+
+    // 加载卡密列表
+    loadCards()
+
     onMounted(() => {
       loadSearchConfig()
     })
@@ -1283,6 +1545,11 @@ export default {
     mcpMarket, loadingMarket, installingMcpName,
     fetchMcpServers, addMcpServer, removeMcpServer,
     fetchMcpMarket, installMarketMcp,
+    // ── 卡密管理 ──
+    cards, cardLoading, cardDays, cardOwner, cardNote, cardMsg, cardErr, cardCreating,
+    loadCards, createCard, deleteCard, editCard, isExpired,
+    batchCount, batchOwnerPrefix, batchCreating, batchCreated, batchMsg, batchErr,
+    batchCreate, copyBatchKeys,
   }
 }
 }
@@ -1740,4 +2007,28 @@ export default {
   font-size: 12px;
   color: #6b7280;
 }
+/* Card Key Management */
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.card-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: #f9fafb;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+}
+.card-info { display: flex; flex-direction: column; gap: 2px; }
+.card-prefix { font-weight: 600; font-size: 14px; color: #111827; font-family: monospace; }
+.card-key { font-size: 11px; color: #6b7280; font-family: monospace; }
+.card-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 12px; color: #374151; }
+.card-expiry { padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+.card-expiry.valid { background: #dcfce7; color: #16a34a; }
+.card-expiry.expired { background: #fee2e2; color: #dc2626; }
+.card-expiry.long { background: #dbeafe; color: #2563eb; }
+.card-actions { display: flex; gap: 6px; }
 </style>

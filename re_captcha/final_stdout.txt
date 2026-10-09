@@ -1,0 +1,7 @@
+challenge_code: 99999 id: b94a2a3dd7287c1e5560cbff78cb2db973078373
+url1: https://p9-catpcha.byteimg.com/tos-cn-i-188rlo5p4y/53daa8558ce64df98c2909672b20fd67~tplv-188rlo5p4y-2.jpeg
+url2: https://p9-catpcha.byteimg.com/tos-cn-i-188rlo5p4y/8c61616d3927475a97d44a27106e7e0f~tplv-188rlo5p4y-1.png
+detected x(nat)= 40 score= 0.558 bg= (552, 344) piece= (110, 110)
+geom: {"bgDisp": 340, "bgNat": 552, "pcDisp": 67.75, "btn": {"x": 558, "y": 327, "w": 64.046875, "h": 40}}
+drag distance(px) = 24.6 scale 0.616
+SAVED final_out.json

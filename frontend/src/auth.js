@@ -66,15 +66,22 @@ export function onUnauthorized(cb) {
   _onUnauthorized = cb
 }
 
+let _onForbidden = null
+
+/** 注册"禁止访问"回调：卡密用户访问主系统时触发（HTTP 403） */
+export function onForbidden(cb) {
+  _onForbidden = cb
+}
+
 // 包装全局 fetch：任一响应 401 即触发登录兜底
 if (typeof window !== 'undefined' && window.fetch) {
   const _nativeFetch = window.fetch.bind(window)
   window.fetch = async function (input, init) {
     const resp = await _nativeFetch(input, init)
-    if (resp && resp.status === 401) {
+    if (resp && (resp.status === 401 || resp.status === 403)) {
       const url = typeof input === 'string' ? input : (input && input.url) || ''
-      // 登录/续期接口自身的 401（密码错误、续期失败）不算会话过期，不触发
-      if (!url.includes('/api/auth/')) {
+      // 登录/续期接口自身的 401/403 不算会话过期，不触发
+      if (!url.includes('/api/auth/') && !url.includes('/static/')) {
         clearToken()
         if (_onUnauthorized) _onUnauthorized()
       }
@@ -122,4 +129,21 @@ export async function authStatus() {
 
 export function logout() {
   clearToken()
+}
+
+/**
+ * 判断当前 token 是否为卡密用户
+ * 卡密 token 的 sub 以 "card:" 开头
+ */
+export function isCardToken(token) {
+  if (!token) return false
+  try {
+    // JWT 格式: header.payload.signature
+    const payload = token.split('.')[1]
+    if (!payload) return false
+    const decoded = JSON.parse(atob(payload))
+    return String(decoded.sub || '').startsWith('card:')
+  } catch {
+    return false
+  }
 }

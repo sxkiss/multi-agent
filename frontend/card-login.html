@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>卡密登录 — AI Agent</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1115; color: #e8eaed;
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    }
+    .container { width: 100%; max-width: 460px; padding: 20px; }
+    .logo { text-align: center; margin-bottom: 32px; }
+    .logo h1 { font-size: 24px; font-weight: 600; color: #fff; }
+    .logo p { font-size: 13px; color: #8b909a; margin-top: 6px; }
+    .box { background: #1a1d24; border-radius: 12px; padding: 28px 24px; }
+    .title { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+    .sub { font-size: 13px; color: #8b909a; margin-bottom: 24px; line-height: 1.5; }
+    .field { margin-bottom: 16px; }
+    .field label { display: block; font-size: 13px; color: #8b909a; margin-bottom: 6px; }
+    .field input {
+      width: 100%; padding: 12px 14px; font-size: 16px; letter-spacing: 2px;
+      color: #e8eaed; background: #12141a; border: 1px solid #2c303a;
+      border-radius: 8px; outline: none; text-transform: uppercase; font-family: monospace;
+    }
+    .field input:focus { border-color: #4a7cf7; }
+    .field input::placeholder { color: #3a3f4b; letter-spacing: 1px; font-size: 14px; }
+    .err { font-size: 12px; color: #e5636a; margin-top: 6px; min-height: 18px; }
+    .btn {
+      width: 100%; padding: 12px; font-size: 15px; font-weight: 500;
+      color: #fff; background: #4a7cf7; border: none; border-radius: 8px;
+      cursor: pointer; margin-top: 8px; transition: background .2s;
+    }
+    .btn:hover { background: #3a6be6; }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .hint { font-size: 12px; color: #5a5f6b; margin-top: 16px; line-height: 1.6; }
+    .hint code { background: #2c303a; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+    /* Bot QR section */
+    .bot { margin-top: 28px; padding-top: 24px; border-top: 1px solid #2c303a; display: none; }
+    .bot.show { display: block; }
+    .bot-title { font-size: 14px; font-weight: 500; margin-bottom: 12px; color: #4a7cf7; }
+    .qr-wrap { background: #fff; border-radius: 8px; padding: 12px; display: flex; justify-content: center; min-height: 200px; }
+    .qr-wrap img { max-width: 180px; max-height: 180px; }
+    .bot-status { font-size: 12px; color: #8b909a; margin-top: 10px; text-align: center; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #2c303a; border-top-color: #4a7cf7; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Card info panel */
+    .card-info { margin-top: 24px; padding-top: 20px; border-top: 1px solid #2c303a; display: none; }
+    .card-info.show { display: block; }
+    .card-info-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #e8eaed; }
+    .info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(44,48,58,.5); font-size: 13px; }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: #8b909a; }
+    .info-value { color: #e8eaed; font-weight: 500; }
+    .info-value.mono { font-family: monospace; color: #4a7cf7; }
+    .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+    .badge-ok { background: rgba(40,167,69,.2); color: #5fd17c; }
+    .badge-exp { background: rgba(229,99,106,.2); color: #f48b91; }
+    .badge-long { background: rgba(74,124,247,.2); color: #7ea3f8; }
+
+    .link {
+      display: block; text-align: center; margin-top: 16px;
+      font-size: 13px; color: #4a7cf7; cursor: pointer; text-decoration: underline;
+    }
+    .link:hover { color: #7ea3f8; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="logo">
+    <h1>🤖 AI Agent</h1>
+    <p>卡密用户入口 · 专属会话 · 微信扫码绑定机器人</p>
+  </div>
+
+  <div class="box">
+    <!-- Login Form -->
+    <div id="loginForm">
+      <div class="title">输入卡密登录</div>
+      <div class="sub">前 6 位作为您的专属会话 ID，登录后扫码绑定微信机器人</div>
+
+      <div class="field">
+        <label for="cardKey">卡密</label>
+        <input id="cardKey" type="text" placeholder="例如：ABC123-XXXXXXXX" maxlength="128"
+          autocomplete="off" spellcheck="false" />
+        <div class="err" id="err"></div>
+      </div>
+
+      <button id="loginBtn" class="btn" onclick="login()">登录</button>
+
+      <div class="hint">
+        提示：卡密前 6 位为您的会话 ID，<code>ABC123</code> 格式。<br>
+        同一卡密前缀相同则共享会话历史。聊天在微信中完成。
+      </div>
+    </div>
+
+    <!-- Success + Bot QR + Card Info -->
+    <div id="successView" style="display:none">
+      <div class="title" id="welcomeTitle">🎉 登录成功</div>
+      <div class="sub" id="welcomeSub">会话已绑定，请扫码连接微信机器人</div>
+
+      <!-- Bot QR -->
+      <div class="bot show" id="botSection">
+        <div class="bot-title">📱 绑定微信机器人</div>
+        <div class="qr-wrap" id="qrWrap"><span class="spinner"></span></div>
+        <div class="bot-status" id="botStatus">正在加载二维码…</div>
+      </div>
+
+      <!-- Card Info -->
+      <div class="card-info show" id="cardInfo">
+        <div class="card-info-title">📋 卡密信息</div>
+        <div class="info-row">
+          <span class="info-label">会话 ID（前缀）</span>
+          <span class="info-value mono" id="infoPrefix">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">持有人</span>
+          <span class="info-value" id="infoOwner">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">有效期</span>
+          <span class="info-value" id="infoExpiry">—</span>
+        </div>
+      </div>
+
+      <div class="link" onclick="location.href='/static/card-admin.html'" style="color:#5a5f6b;text-decoration:none;font-size:12px">管理员入口</div>
+      <div class="link" onclick="doLogout()" style="margin-top:4px">退出登录</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const TOKEN_KEY = 'bt_agent_token'
+let currentPrefix = ''
+let currentOwner = ''
+let botTimer = null
+
+function getToken() { try { return localStorage.getItem(TOKEN_KEY) || '' } catch(e) { return '' } }
+function setToken(t) { try { localStorage.setItem(TOKEN_KEY, t) } catch(e) {} }
+
+async function login() {
+  const raw = document.getElementById('cardKey').value.trim()
+  if (!raw) { showErr('请输入卡密'); return }
+  const btn = document.getElementById('loginBtn')
+  btn.disabled = true; btn.textContent = '验证中…'; showErr('')
+  try {
+    const r = await fetch('/api/auth/cardlogin', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: raw })
+    })
+    const res = await r.json()
+    if (!res.status) { showErr(res.msg || '卡密无效'); btn.disabled = false; btn.textContent = '登录'; return }
+    const { token, session_id, prefix } = res.data
+    setToken(token)
+    localStorage.setItem('ai_card_prefix', prefix)
+    localStorage.setItem('ai_session_id', session_id)
+    currentPrefix = prefix
+    // Load card info
+    try {
+      const vr = await fetch('/api/auth/card/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: raw })
+      })
+      const vres = await vr.json()
+      if (vres.status && vres.data) {
+        currentOwner = vres.data.owner || ''
+      }
+    } catch(e) {}
+    // Show success view
+    document.getElementById('loginForm').style.display = 'none'
+    document.getElementById('welcomeTitle').textContent = '🎉 登录成功，' + prefix
+    document.getElementById('infoPrefix').textContent = prefix
+    document.getElementById('infoOwner').textContent = currentOwner || '未设置'
+    document.getElementById('successView').style.display = 'block'
+    // Start bot QR polling
+    setTimeout(() => startBotPoll(), 500)
+  } catch(e) {
+    showErr('网络错误')
+    btn.disabled = false; btn.textContent = '登录'
+  }
+}
+
+function showErr(msg) { document.getElementById('err').textContent = msg }
+document.getElementById('cardKey').addEventListener('keydown', e => { if (e.key === 'Enter') login() })
+document.getElementById('cardKey').addEventListener('input', e => {
+  const v = e.target.value.toUpperCase().replace(/[^A-Z0-9\-_]/g, '')
+  if (v !== e.target.value) e.target.value = v
+  showErr('')
+})
+
+function doLogout() {
+  if (!confirm('确定退出？')) return
+  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem('ai_card_prefix')
+  localStorage.removeItem('ai_session_id')
+  if (botTimer) clearInterval(botTimer)
+  location.href = '/static/card-login.html'
+}
+
+function startBotPoll() {
+  fetchQr()
+  botTimer = setInterval(fetchStatus, 3000)
+}
+
+async function fetchQr() {
+  const wrap = document.getElementById('qrWrap')
+  wrap.innerHTML = '<span class="spinner"></span>'
+  try {
+    const r = await fetch('/api/mp/bot/qrcode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() }
+    })
+    const res = await r.json()
+    if (!res.status || !res.data?.qr_payload) {
+      document.getElementById('botStatus').textContent = res.msg || '获取二维码失败'
+      return
+    }
+    const qr = res.data.qr_payload
+    wrap.innerHTML = `<img src="${qr.startsWith('data:') ? qr : 'data:image/png;base64,' + qr}" alt="QR Code">`
+    document.getElementById('botStatus').textContent = '用微信扫描二维码，绑定专属机器人'
+  } catch(e) {
+    document.getElementById('botStatus').textContent = '获取二维码失败'
+  }
+}
+
+async function fetchStatus() {
+  try {
+    const r = await fetch('/api/mp/bot/status', {
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    })
+    const res = await r.json()
+    if (!res.status) return
+    const st = res.data?.status
+    if (st === 'active' || st === 'scaned') {
+      clearInterval(botTimer)
+      document.getElementById('botStatus').textContent = '✅ 机器人已连接！在微信中搜索 clawbot 即可对话'
+    } else if (st === 'expired') {
+      clearInterval(botTimer)
+      fetchQr()
+      botTimer = setInterval(fetchStatus, 3000)
+    }
+  } catch(e) {}
+}
+
+// 初始化
+window.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem('ai_card_prefix')
+  if (saved) document.getElementById('cardKey').value = saved + '-'
+  document.getElementById('cardKey').focus()
+  // Check if already logged in
+  const token = getToken()
+  if (token) {
+    currentPrefix = localStorage.getItem('ai_card_prefix') || ''
+    document.getElementById('loginForm').style.display = 'none'
+    document.getElementById('welcomeTitle').textContent = '🎉 登录成功，' + currentPrefix
+    document.getElementById('infoPrefix').textContent = currentPrefix
+    document.getElementById('infoOwner').textContent = localStorage.getItem('ai_card_owner') || '未设置'
+    document.getElementById('successView').style.display = 'block'
+    setTimeout(() => startBotPoll(), 500)
+  }
+})
+</script>
+</body>
+</html>

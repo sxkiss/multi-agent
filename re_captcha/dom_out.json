@@ -1,0 +1,269 @@
+{
+ "html": "<div id=\"vc_captcha_box\" style=\"font-size: 100px;\"><div class=\"vc-captcha-verify slide\"><div class=\"vc-captcha-verify-visibility\" style=\"visibility: visible;\"><div role=\"button\" class=\"vc-captcha-close-btn captcha_verify_bar--close\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M12.44 2.50738C12.5702 2.3772 12.7812 2.3772 12.9114 2.50738L13.3828 2.97878C13.513 3.10895 13.513 3.32001 13.3828 3.45018L8.90446 7.92853L13.3828 12.4069C13.513 12.537 13.513 12.7481 13.3828 12.8783L12.9114 13.3497C12.7812 13.4799 12.5702 13.4799 12.44 13.3497L7.96165 8.87134L3.48331 13.3497C3.35314 13.4799 3.14208 13.4799 3.01191 13.3497L2.5405 12.8783C2.41033 12.7481 2.41033 12.537 2.5405 12.4069L7.01885 7.92853L2.5405 3.45018C2.41033 3.32001 2.41033 3.10895 2.5405 2.97878L3.01191 2.50738C3.14208 2.3772 3.35314 2.3772 3.48331 2.50738L7.96165 6.98572L12.44 2.50738Z\" fill=\"#999999\"></path></svg></div> <div class=\"captcha-bar captcha_verify_bar\"><div class=\"tit captcha_verify_bar--title svelte-acemma\" tabindex=\"1\">请完成下列验证后继续&nbsp;</div>  </div> <div class=\"verify-image captcha_verify_img--wrapper\"><img class=\"captcha-verify-image\" alt=\"basicImg\" id=\"captcha_verify_image\" crossorigin=\"anonymous\"> <canvas id=\"\" class=\"captcha-verify-image\" draggable=\"false\"></canvas> <div class=\"dragger-box\" style=\"position: absolute; top: 0em;\"> <div class=\"dragger-item vc-animation\" style=\"transform: translateX(0px)\"><img id=\"captcha-verify_img_slide\" class=\"captcha-verify-image-slide\" alt=\"actionImg\" crossorigin=\"anonymous\" slot=\"dragger\"></div></div> <div class=\"verify-message\" style=\"background:rgb(244, 245, 246);\"><div class=\"verify-message-tit\"><svg class=\"verify-message-icon\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><g fill=\"none\" fill-rule=\"evenodd\"><path d=\"M0 0h24v24H0z\"></path><circle stroke=\"#cacaca\" stroke-width=\"1.286\" cx=\"12\" cy=\"12\" r=\"11.357\"></circle><path stroke=\"#cacaca\" stroke-width=\"1.286\" stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"M12 6.429v6.428\"></path><circle fill=\"#cacaca\" cx=\"12\" cy=\"17.143\" r=\"1\"></circle></g></svg> <span>检测到您的网络环境较差，请更换网络或者稍后再试[5110]</span> <div class=\"verify-log-id\">202610042234322A721E65E2519386E997</div></div></div></div> <div class=\"captcha-slider captcha_verify_slide--button\"><div class=\"captcha-slider-box\"><div class=\"captcha-slider-tips\">按住左边按钮拖动完成上方拼图</div> <div class=\"dragger-box\" style=\"height:0.4em;\"><div class=\"captcha-slider-dragged-area vc-animation\" style=\"width: 30px\" slot=\"slided-area\"></div> <div class=\"dragger-item vc-animation\" style=\"transform: translateX(0px)\"><div class=\"captcha-slider-btn\" slot=\"dragger\"><svg class=\"captcha-slider-icon\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 22 20\"><path fill=\"#B3B5B7\" d=\"M21.7 10.2l-11.6 9c-.2.2-.5.1-.7-.1-.1-.1-.1-.2-.1-.3v-4.5c0-.3-.2-.5-.5-.5H.7c-.3 0-.5-.2-.5-.5V6.4c0-.3.2-.5.5-.5h8.1c.3 0 .5-.2.5-.5V.8c0-.3.2-.5.5-.5.1 0 .2 0 .3.1l11",
+ "imgs": [
+  {
+   "src": "",
+   "cls": "captcha-verify-image",
+   "w": 340,
+   "h": 212
+  },
+  {
+   "src": "",
+   "cls": "captcha-verify-image-slide",
+   "w": 68,
+   "h": 68
+  }
+ ],
+ "els": [
+  {
+   "t": "DIV",
+   "c": "",
+   "id": "vc_captcha_box"
+  },
+  {
+   "t": "DIV",
+   "c": "vc-captcha-verify slide",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "vc-captcha-verify-visibility",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "vc-captcha-close-btn captcha_verify_bar--close",
+   "id": ""
+  },
+  {
+   "t": "svg",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "path",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "captcha-bar captcha_verify_bar",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "tit captcha_verify_bar--title svelte-acemma",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "verify-image captcha_verify_img--wrapper",
+   "id": ""
+  },
+  {
+   "t": "IMG",
+   "c": "captcha-verify-image",
+   "id": "captcha_verify_image"
+  },
+  {
+   "t": "CANVAS",
+   "c": "captcha-verify-image",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "dragger-box",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "dragger-item vc-animation",
+   "id": ""
+  },
+  {
+   "t": "IMG",
+   "c": "captcha-verify-image-slide",
+   "id": "captcha-verify_img_slide"
+  },
+  {
+   "t": "DIV",
+   "c": "verify-message",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "verify-message-tit",
+   "id": ""
+  },
+  {
+   "t": "svg",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "g",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "path",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "circle",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "path",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "circle",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "SPAN",
+   "c": "",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "verify-log-id",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "captcha-slider captcha_verify_slide--button",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "captcha-slider-box",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "captcha-slider-tips",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "dragger-box",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "captcha-slider-dragged-area vc-animation",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "dragger-item vc-animation",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "captcha-slider-btn",
+   "id": ""
+  },
+  {
+   "t": "svg",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "path",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "svelte-zniw7",
+   "id": "footer-wrap-row"
+  },
+  {
+   "t": "DIV",
+   "c": "vc-captcha-verify-action captcha_verify_action",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "vc-captcha-refresh",
+   "id": ""
+  },
+  {
+   "t": "SPAN",
+   "c": "vc-captcha-refresh--icon",
+   "id": ""
+  },
+  {
+   "t": "svg",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "path",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "SPAN",
+   "c": "vc-captcha-refresh--text",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "vc-captcha-feedback",
+   "id": ""
+  },
+  {
+   "t": "SPAN",
+   "c": "vc-captcha-feedback--icon",
+   "id": ""
+  },
+  {
+   "t": "svg",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "g",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "path",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "path",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "path",
+   "c": "[object SVGAnimatedString]",
+   "id": ""
+  },
+  {
+   "t": "SPAN",
+   "c": "vc-captcha-feedback--text",
+   "id": ""
+  },
+  {
+   "t": "SPAN",
+   "c": "outlet-id",
+   "id": ""
+  },
+  {
+   "t": "DIV",
+   "c": "text",
+   "id": ""
+  }
+ ]
+}

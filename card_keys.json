@@ -1,0 +1,100 @@
+{
+  "cards": {
+    "DEMO01": {
+      "key": "DEMO01-YYYYYYYY",
+      "owner": "演示用户",
+      "note": "演示用",
+      "created_at": "2026-10-09",
+      "expires": "",
+      "days": 0
+    },
+    "ADMIN0": {
+      "key": "ADMIN0-XXXXXXXX",
+      "owner": "管理员",
+      "note": "管理员卡密",
+      "created_at": "2026-10-09",
+      "expires": "",
+      "days": 0
+    },
+    "77Z4RY": {
+      "key": "77Z4RY-MH5FGHXE",
+      "owner": "",
+      "note": "",
+      "created_at": "2026-10-09 09:10:01",
+      "expires": "2026-10-10",
+      "days": 1
+    },
+    "95NKZQ": {
+      "key": "95NKZQ-MD5MY29V",
+      "owner": "",
+      "note": "",
+      "created_at": "2026-10-09 09:10:02",
+      "expires": "2026-10-10",
+      "days": 1
+    },
+    "A9NHZD": {
+      "key": "A9NHZD-TMWRBRD7",
+      "owner": "",
+      "note": "",
+      "created_at": "2026-10-09 09:10:02",
+      "expires": "2026-10-10",
+      "days": 1
+    },
+    "BPAK42": {
+      "key": "BPAK42-LYF3CH5A",
+      "owner": "",
+      "note": "",
+      "created_at": "2026-10-09 09:10:03",
+      "expires": "2026-10-10",
+      "days": 1
+    },
+    "P5RTS4": {
+      "key": "P5RTS4-UPLEZ8MI",
+      "owner": "",
+      "note": "",
+      "created_at": "2026-10-09 09:10:04",
+      "expires": "2026-10-10",
+      "days": 1
+    },
+    "8DPLD6": {
+      "key": "8DPLD6-KAIS2OMT",
+      "owner": "",
+      "note": "",
+      "created_at": "2026-10-09 09:10:04",
+      "expires": "2026-10-10",
+      "days": 1
+    },
+    "RYSZY8": {
+      "key": "RYSZY8-XEHCZTZF",
+      "owner": "",
+      "note": "",
+      "created_at": "2026-10-09 09:10:05",
+      "expires": "2026-10-10",
+      "days": 1
+    },
+    "P2LWUX": {
+      "key": "P2LWUX-BVPADIT9",
+      "owner": "",
+      "note": "",
+      "created_at": "2026-10-09 09:10:06",
+      "expires": "2026-10-10",
+      "days": 1
+    },
+    "TCA44M": {
+      "key": "TCA44M-KEL1AA3C",
+      "owner": "",
+      "note": "",
+      "created_at": "2026-10-09 09:10:06",
+      "expires": "2026-10-10",
+      "days": 1
+    },
+    "6DGVR6": {
+      "key": "6DGVR6-QRPCCZCD",
+      "owner": "",
+      "note": "",
+      "created_at": "2026-10-09 09:10:07",
+      "expires": "2026-10-10",
+      "days": 1
+    }
+  }
+}
