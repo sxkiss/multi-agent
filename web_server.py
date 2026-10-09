@@ -1780,6 +1780,7 @@ class AgentMain:
             "strict_tools": strict_mode,
             "cwd": workspace,
             "workspace": workspace,
+            "base_dir": BASE_DIR,
             "system_prompt": final_system_prompt,
             "temperature": float(self._get_priority_value('temperature', get, prompt_config, self.config['agent'].get('temperature', 1.0))),
             "top_p": float(self._get_priority_value('top_p', get, prompt_config, self.config['agent'].get('top_p', 1.0))),

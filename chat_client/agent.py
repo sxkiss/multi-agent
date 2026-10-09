@@ -5,6 +5,7 @@
 @auto-doc: Update header and folder INDEX.md when this file changes
 """
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -228,6 +229,17 @@ class Agent:
         # 严格工具模式：完全以 config["tools"] 为准（集团模式下主对话=经理仅编排工具；
         # 成员代理各自定义工具），不追加任何默认/MCP 工具
         self.strict_tools = self.config.get("strict_tools", False)
+        
+        # 卡密用户隔离：检测是否为卡密会话，限制文件系统访问范围
+        self._is_card_user = str(session_id).startswith("card_")
+        if self._is_card_user:
+            # 卡密用户 workspace: workspace/users/card_<PREFIX>/
+            prefix = session_id[5:]  # 去掉 "card_" 前缀
+            _base = self.config.get("base_dir", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            self._user_workspace = os.path.realpath(os.path.join(_base, "workspace", "users", f"card_{prefix}"))
+            logger.info(f"卡密用户 {session_id}，工作目录限制为: {self._user_workspace}")
+        else:
+            self._user_workspace = None
 
         if self.code_mode:
             # Append environment info to system prompt
@@ -1097,7 +1109,28 @@ Here is some useful information about the environment you are running in:
                             cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else None
                             if cwd and "cwd" not in args:
                                 args["cwd"] = cwd
+                        
+                        # 【安全】卡密用户：限制 Bash 命令，禁止危险操作
+                        if self._is_card_user and func_name == "Bash":
+                            cmd = args.get("command", "")
+                            dangerous_patterns = ["cat /etc/", "passwd", "/proc/", "chmod 777", "rm -rf /", "sudo", "su "]
+                            if any(p in cmd for p in dangerous_patterns) or cmd.startswith("cat /"):
+                                result_str = inject_tool_name(
+                                    _xml_response("error", f"安全限制：卡密用户禁止执行此命令（包含敏感路径或高危操作）。"),
+                                    func_name)
+                                yield {"type": "tool_result", "tool": func_name, "result": result_str, "id": call_id}
+                                continue
 
+                        # 【安全】卡密用户：限制 Write 工具路径
+                        if self._is_card_user and func_name == "Write":
+                            fp = args.get("file_path", "")
+                            if fp and not fp.startswith(self._user_workspace):
+                                result_str = inject_tool_name(
+                                    _xml_response("error", f"安全限制：卡密用户只能在隔离工作目录内操作文件（{_user_workspace}）"),
+                                    func_name)
+                                yield {"type": "tool_result", "tool": func_name, "result": result_str, "id": call_id}
+                                continue
+                        
                         func = registry.get_tool_func(func_name)
                         if func:
                             result_str = func(**args)
