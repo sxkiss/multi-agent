@@ -1701,8 +1701,35 @@ class AgentMain:
             if not final_system_prompt and _is_terminal_channel(get):
                 final_system_prompt = _MINIPROGRAM_SINGLE_PERSONA
             # 工具：优先前端传入，否则留空由 agent（strict_tools=False）补全全套默认工具
-            # 工具：优先前端传入，否则留空由 agent（strict_tools=False）补全全套默认工具
             tools = raw_tools if raw_tools else []
+            
+            # 【安全】卡密用户：限制工具 + 强制注入工作目录限制提示词
+            if str(session_id).startswith("card_"):
+                strict_mode = True  # 防止自动加载全部工具
+                tools = ["Task", "Read", "Write", "Glob", "Grep", "WebFetch", "WebSearch"]
+                _ws = self._resolve_user_workspace(session_id)
+                _card_sp_lines = [
+                    "## 安全限制（卡密用户）",
+                    f"你只能在工作目录 {_ws} 内读写文件和执行命令。",
+                    "禁止操作：",
+                    "1. 任何绝对路径超出 {_ws}/ 的文件读写",
+                    "2. 任何命令执行（echo/cd/cat/ls等）",
+                    "3. 网络请求（curl/wget/web_fetch）",
+                    "4. 读取 /etc/passwd、/proc、系统配置文件等敏感信息",
+                    "5. 创建符号链接、修改权限、环境变量",
+                    "",
+                    "正确做法：",
+                    f"- 创建文件：在 {_ws}/ 下创建",
+                    f"- 读取文件：使用 Read 工具，路径必须相对于 {_ws}/",
+                    "- 需要外部数据：请向用户请求，由用户粘贴内容",
+                    "",
+                    "违反以上限制将导致服务终止。",
+                ]
+                _card_sp = "\n".join(_card_sp_lines)
+                if final_system_prompt:
+                    final_system_prompt = final_system_prompt + "\n\n" + _card_sp
+                else:
+                    final_system_prompt = _card_sp
         else:
             # 集团模式（group，默认）：经理视角，只保留编排类工具；
             # 忽略前端传入的工具列表（防止旧页面全量选择覆盖经理角色），
