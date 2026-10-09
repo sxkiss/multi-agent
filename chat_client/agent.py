@@ -1124,6 +1124,7 @@ Here is some useful information about the environment you are running in:
                         # 【安全】卡密用户：限制 Write 工具路径
                         if self._is_card_user and func_name == "Write":
                             fp = args.get("file_path", "")
+                            logger.info(f"[安全] Card user Write: fp={fp}, workspace={self._user_workspace}, starts={fp.startswith(self._user_workspace) if fp else False}")
                             if fp and not fp.startswith(self._user_workspace):
                                 result_str = inject_tool_name(
                                     _xml_response("error", f"安全限制：卡密用户只能在隔离工作目录内操作文件（{_user_workspace}）"),
