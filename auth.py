@@ -55,12 +55,17 @@ PBKDF2_ITERATIONS = 200_000
 # 免鉴权路径。登录接口本身 + 静态资源 + 首页 HTML。
 # 首页必须放行：否则用户连登录页都加载不出来，形成"没 token → 打不开页面 →
 # 无法登录"的死锁。静态资源同理。
-PUBLIC_EXACT = {"/", "/index.html"}
+PUBLIC_EXACT = {"/", "/index.html", "/static/card-login.html"}
 PUBLIC_PREFIX = (
     "/api/auth/login",
     # 微信登录必须放行：用户此刻还没有 token，若要求先鉴权就形成
     # "没 token → 不能登录 → 拿不到 token" 的死锁，多用户将完全无法进入。
     "/api/auth/wxlogin",
+    # 卡密登录同样必须放行：用户还未持有 token，必须能无鉴权访问
+    # 以换取首次登录令牌（与 wxlogin 同模式，防止死锁）。
+    "/api/auth/cardlogin",
+    # 卡密实时校验：同样需要在登录前调用，无 token 状态下的前置校验
+    "/api/auth/card/verify",
     "/api/auth/status",
     "/api/auth/logout",
     # 续期必须放行：它的入参本身就是"刚过期"的 token，中间件若按严格
@@ -367,6 +372,265 @@ def wx_session_id(openid: str) -> str:
 
 
 # ------------------------------------------------------------------
+# 卡密登录（网页端）
+# ------------------------------------------------------------------
+# 与微信登录对称：微信用户由 openid 锚定，卡密用户由卡密前 6 位锚定。
+# 两条路径派生出各自的 wx_xxx / card_xxx 会话 ID，共享同一套
+# /api/mp/* 用户存储与 clawbot 扫码绑定 —— 前端（卡密）与小程序（微信）
+# 因此能拿到完全一致的能力，只是身份来源不同。
+
+CARD_KEYS_FILE = "card_keys.json"
+# 卡密前 6 位即用户标识：只允许大写字母与数字，既便于口头传播，
+# 也避免大小写混淆导致的"同一张卡两个人各登一次拿到两个会话"。
+_CARD_PREFIX_RE = re.compile(r"^[0-9A-Z]{6}$")
+# 完整卡密：前缀 + 校验段（允许连字符分隔，存储时归一化去掉）
+_CARD_FULL_RE = re.compile(r"^[0-9A-Za-z\-_]{6,128}$")
+
+
+def _card_file(base_dir: str) -> str:
+    return os.path.join(base_dir, CARD_KEYS_FILE)
+
+
+def load_card_keys(base_dir: str) -> dict:
+    """读取卡密库。返回 {prefix: {...}}；文件缺失返回空字典。
+
+    结构：{"ABC123": {"key": "ABC123-XXXX", "owner": "...", "expires": "..."}}
+    以"前 6 位"为键 —— 它是用户标识，也是会话 ID 的来源。
+    """
+    path = _card_file(base_dir)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        logger.warning("card_keys.json 读取失败", exc_info=True)
+        return {}
+    cards = data.get("cards") if isinstance(data, dict) else None
+    if not isinstance(cards, dict):
+        return {}
+    out = {}
+    for prefix, rec in cards.items():
+        if isinstance(rec, dict):
+            out[str(prefix)] = rec
+    return out
+
+
+def normalize_card_key(raw: str) -> str:
+    """归一化卡密输入：去空白与分隔符，转大写，便于用户粘贴/手输。"""
+    return re.sub(r"[\s\-_]", "", str(raw or "")).upper()
+
+
+def verify_card_key(base_dir: str, raw_key: str) -> tuple:
+    """校验卡密。通过返回 (True, prefix)；失败返回 (False, 错误信息)。
+
+    只认"前 6 位"作为身份 —— 完整卡密仅在此处比对一次，之后所有
+    请求都靠 token 中的 sub=card:<prefix> 识别用户。
+    """
+    key = normalize_card_key(raw_key)
+    if not key or not _CARD_FULL_RE.match(str(raw_key or "").strip()):
+        return False, "卡密格式不合法"
+    prefix = key[:6]
+    if not _CARD_PREFIX_RE.match(prefix):
+        return False, "卡密前 6 位必须为大写字母或数字"
+
+    cards = load_card_keys(base_dir)
+    rec = cards.get(prefix)
+    if not rec:
+        return False, "卡密无效"
+
+    # 完整卡密比对：仅当前 6 位命中时才比，避免为不存在的卡泄露信息
+    stored = normalize_card_key(rec.get("key", ""))
+    if not stored or not hmac.compare_digest(stored, key):
+        return False, "卡密无效"
+
+    # 有效期：ISO 日期串，过期即拒绝（留空表示长期有效）
+    expires = str(rec.get("expires") or "").strip()
+    if expires:
+        try:
+            from datetime import datetime, timezone
+            exp_day = datetime.strptime(expires, "%Y-%m-%d").date()
+            today = datetime.now(timezone.utc).astimezone().date()
+            if today > exp_day:
+                return False, "卡密已过期"
+        except ValueError:
+            logger.warning("卡密 %s 的 expires 格式非法: %s", prefix, expires)
+    return True, prefix
+
+
+def card_session_id(prefix: str) -> str:
+    """由卡密前 6 位派生会话 ID，与 wx_session_id 对称。
+
+    直接用前缀而非哈希：前缀本身已规范化（6 位大写字母数字），
+    可读且天然唯一，便于在 sessions/ 与 workspace/users/ 中定位。
+    """
+    return f"card_{prefix}"
+
+
+# ------------------------------------------------------------------
+# 卡密管理（管理员专用，仅由 web_server 的 /api/card/admin/* 调用）
+# ------------------------------------------------------------------
+
+def _card_file_write(base_dir: str, cards: dict) -> bool:
+    """写回卡密库（原子写，权限 600 —— 卡密等同凭据）。"""
+    path = _card_file(base_dir)
+    try:
+        import tempfile
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"cards": cards}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+        return True
+    except Exception:
+        logger.error("card_keys.json 写入失败", exc_info=True)
+        return False
+
+
+def _gen_unique_prefix(cards: dict) -> str:
+    """生成未被占用的 6 位前缀（大写字母数字，排除易混字符 0/O/1/I）。
+
+    排除易混字符：卡密多半靠口头/手抄传递，0 与 O、1 与 I 肉眼难分，
+    一旦抄错就是"登录到别人的会话"（前缀即会话 ID），必须规避。
+    """
+    import random
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # 无 0/O/1/I
+    for _ in range(200):
+        prefix = "".join(random.choice(alphabet) for _ in range(6))
+        if prefix not in cards:
+            return prefix
+    raise RuntimeError("无法生成唯一卡密前缀（空间耗尽）")
+
+
+def create_card(base_dir: str, days: int = 30, owner: str = "", note: str = "") -> dict:
+    """生成一张新卡密。返回卡密记录（含明文 key，仅此一次可见）。
+
+    结构：{prefix, key, owner, note, created_at, expires, days}
+    days<=0 表示长期有效（expires 为空串）。
+    """
+    cards = load_card_keys(base_dir)
+    prefix = _gen_unique_prefix(cards)
+    import secrets as _secrets
+    # 校验段：8 位 URL 安全随机串，与前缀拼成完整卡密
+    suffix = _secrets.token_urlsafe(12).replace("-", "").replace("_", "")[:8].upper()
+    full_key = f"{prefix}-{suffix}"
+
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc).astimezone()
+    expires = ""
+    if days and days > 0:
+        expires = (now + timedelta(days=int(days))).strftime("%Y-%m-%d")
+
+    rec = {
+        "key": full_key,
+        "owner": str(owner or "")[:64],
+        "note": str(note or "")[:200],
+        "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "expires": expires,
+        "days": int(days or 0),
+    }
+    cards[prefix] = rec
+    _card_file_write(base_dir, cards)
+    return {"prefix": prefix, **rec}
+
+
+def delete_card(base_dir: str, prefix: str) -> bool:
+    """删除卡密；不存在返回 False。"""
+    cards = load_card_keys(base_dir)
+    if prefix not in cards:
+        return False
+    del cards[prefix]
+    return _card_file_write(base_dir, cards)
+
+
+def update_card(base_dir: str, prefix: str, patch: dict) -> dict:
+    """更新卡密的可编辑字段（owner / note / 有效期）。
+
+    有效期用 days 重算：传 days 则按"今天+N天"顺延，
+    传 days=0 视为长期有效。返回更新后的记录。
+    """
+    cards = load_card_keys(base_dir)
+    rec = cards.get(prefix)
+    if not rec:
+        return {}
+    if "owner" in patch:
+        rec["owner"] = str(patch.get("owner") or "")[:64]
+    if "note" in patch:
+        rec["note"] = str(patch.get("note") or "")[:200]
+    if "days" in patch:
+        from datetime import datetime, timedelta, timezone
+        days = int(patch.get("days") or 0)
+        rec["days"] = days
+        if days > 0:
+            now = datetime.now(timezone.utc).astimezone()
+            rec["expires"] = (now + timedelta(days=days)).strftime("%Y-%m-%d")
+        else:
+            rec["expires"] = ""
+    _card_file_write(base_dir, cards)
+    return {"prefix": prefix, **rec}
+
+
+def list_cards(base_dir: str) -> list:
+    """列出全部卡密（脱敏：完整 key 只回前缀 + 尾 4 位，防批量泄露）。"""
+    cards = load_card_keys(base_dir)
+    out = []
+    for prefix, rec in cards.items():
+        full = str(rec.get("key") or "")
+        tail = full[-4:] if len(full) >= 4 else ""
+        out.append({
+            "prefix": prefix,
+            "key_masked": f"{prefix}-****{tail}",
+            "owner": rec.get("owner", ""),
+            "note": rec.get("note", ""),
+            "created_at": rec.get("created_at", ""),
+            "expires": rec.get("expires", ""),
+            "days": rec.get("days", 0),
+        })
+    return out
+
+
+def is_admin_token(base_dir: str, token: str) -> bool:
+    """判断是否为管理员 token（sub == "admin"）。
+
+    卡密用户的 sub 是 "card:<prefix>"，必须与之区分——
+    否则卡密用户拿到自己的 token 就能改别人的卡。
+    """
+    payload = verify_token(base_dir, token)
+    if not payload:
+        return False
+    return str(payload.get("sub") or "") == "admin"
+
+
+def is_card_token(base_dir: str, token: str) -> bool:
+    """判断是否为卡密用户 token（sub 以 "card:" 开头）。"""
+    payload = verify_token(base_dir, token)
+    if not payload:
+        return False
+    return str(payload.get("sub") or "").startswith("card:")
+
+
+def user_session_id(base_dir: str, token: str) -> str:
+    """从 token 解析出该用户有权操作的 session_id 前缀。
+
+    返回值：
+    - 小程序 token (sub=wx:<openid>) → "wx_" 前缀
+    - 卡密 token (sub=card:<prefix>) → "card_" 前缀
+    - 管理员 token / 非法 token → "" （无用户会话归属）
+
+    调用方据此校验：请求中的 session_id 是否以该前缀开头。
+    """
+    payload = verify_token(base_dir, token)
+    if not payload:
+        return ""
+    sub = str(payload.get("sub") or "")
+    if sub.startswith("wx:"):
+        return "wx_"
+    if sub.startswith("card:"):
+        return "card_"
+    return ""
+
+
+# ------------------------------------------------------------------
 # 注册：路由 + 中间件
 # ------------------------------------------------------------------
 
@@ -435,6 +699,54 @@ def register_auth(app: FastAPI, base_dir: str) -> None:
             "msg": "登录成功",
         })
 
+    # ---- 卡密登录：卡密验证 → 签发 token，与 wxlogin 完全对称 ----
+    @app.post("/api/auth/cardlogin")
+    async def api_auth_cardlogin(request: Request):
+        """卡密登录：验证完整卡密，签发 JWT（sub=card:<前6位>）。
+
+        与微信登录对称设计：
+        - 微信用 code 换 openid → sub=wx:<openid>；
+        - 卡密用 raw_key 验前缀 → sub=card:<prefix>。
+        两者共享同一套 /api/mp/* 用户存储与 clawbot 扫码绑定接口。
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        raw_key = str(body.get("key", "")).strip()
+        if not raw_key:
+            return JSONResponse({"status": False, "msg": "缺少参数 key"}, status_code=400)
+
+        ok, result = verify_card_key(base_dir, raw_key)
+        if not ok:
+            return JSONResponse(
+                {"status": False, "msg": result}, status_code=401)
+
+        prefix = result          # 通过验证后 result 就是前 6 位
+        cfg = load_auth(base_dir)
+        ttl = int(cfg.get("token_ttl_hours") or DEFAULT_TTL_HOURS)
+        token = create_token(base_dir, ttl, sub=f"card:{prefix}")
+        cards = load_card_keys(base_dir)
+        rec = cards.get(prefix, {})
+        expires = str(rec.get("expires") or "").strip()
+        days = int(rec.get("days") or 0)
+        created_at = str(rec.get("created_at") or "").strip()
+        owner = str(rec.get("owner") or "").strip()
+        return JSONResponse({
+            "status": True,
+            "data": {
+                "token": token,
+                "expires_in": ttl * 3600,
+                "session_id": card_session_id(prefix),
+                "prefix": prefix,
+                "owner": owner,
+                "expires": expires if expires else "长期有效",
+                "days": days,
+                "created_at": created_at,
+            },
+            "msg": "登录成功",
+        })
+
     # ---- 续期：用旧 token 换新 token（滑动续期）----
     @app.post("/api/auth/refresh")
     async def api_auth_refresh(request: Request):
@@ -476,6 +788,9 @@ def register_auth(app: FastAPI, base_dir: str) -> None:
         # 微信用户沿用同一会话：续期不该把用户踢到新会话，否则聊天记录"丢失"
         if sub.startswith("wx:"):
             data["session_id"] = wx_session_id(sub[3:])
+        # 卡密用户同样沿用同一会话（key 不变则前缀不变 → 会话 ID 不变）
+        elif sub.startswith("card:"):
+            data["session_id"] = card_session_id(sub[5:])
         return JSONResponse({
             "status": True, "data": data, "msg": "已续期",
         })

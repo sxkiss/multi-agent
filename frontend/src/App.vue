@@ -155,6 +155,7 @@
     <SettingsDrawer
       :visible="settingsDrawerVisible"
       :config="globalConfig"
+      :read-only="isCardUser"
       @close="closeSettingsDrawer"
       @save="handleSaveConfig"
     />
@@ -169,7 +170,7 @@ import ChatMain from './components/ChatMain.vue'
 import ChatInput from './components/ChatInput.vue'
 import SettingsDrawer from './components/SettingsDrawer.vue'
 import LoginMask from './components/LoginMask.vue'
-import { authOpts, authStatus, onUnauthorized } from './auth.js'
+import { authOpts, authStatus, onUnauthorized, onForbidden, isCardToken, getToken } from './auth.js'
 
 // ==================== 独立部署 API 封装（不依赖宝塔面板 window.ai_tools）====================
 // 将原本走 /plugin?action=a&name=ai_agent&s=xxx 的面板代理请求，统一改为标准 REST /api/* 调用。
@@ -1855,6 +1856,7 @@ function scrollToBottom() {
 // ==================== 鉴权 ====================
 // needLogin 为 true 时全屏遮罩登录页，阻断所有交互。
 const needLogin = ref(false)
+const isCardUser = ref(false)
 
 async function checkAuth() {
   const st = await authStatus()
@@ -1863,6 +1865,13 @@ async function checkAuth() {
     needLogin.value = false
     return
   }
+  // 卡密用户直接重定向到卡密登录页
+  if (st.hasToken && isCardToken(getToken())) {
+    window.location.href = '/static/card-login.html'
+    return
+  }
+  // 检测当前 token 是否为卡密类型（用于前端禁用配置编辑）
+  isCardUser.value = st.hasToken && isCardToken(getToken())
   needLogin.value = !st.hasToken
 }
 
@@ -1875,6 +1884,10 @@ function onLoginSuccess() {
 // token 过期/失效时（任意接口返回 401）自动弹登录遮罩，避免页面空白无提示
 onUnauthorized(() => {
   needLogin.value = true
+})
+onForbidden(() => {
+  // 卡密用户访问主系统 → 强制跳转卡密页面
+  window.location.href = '/static/card-login.html'
 })
 
 // ==================== Mounted ====================
@@ -1957,14 +1970,27 @@ onMounted(async () => {
   restoreQueue()
   fetchOrgData()
 
-  // 恢复上次会话：若该会话后台任务仍在运行，会自动续播（刷新/重进不丢消息）
-  const lastId = localStorage.getItem('ai_last_conversation_id')
-  if (!lastId) {
-    markInitialRestoreDone()
+  // 处理卡密登录带来的 session_id（URL ?session_id=card_PREFIX）
+  // 来自 card-login.html 的重定向，直接设置当前会话 ID，
+  // 让后续所有请求都使用统一的 card_xxx 会话，与小程序行为一致。
+  const urlParams = new URLSearchParams(window.location.search)
+  const urlSessionId = urlParams.get('session_id')
+  if (urlSessionId) {
+    currentConversationId.value = urlSessionId
+    localStorage.setItem('ai_last_conversation_id', urlSessionId)
+    // 清掉 URL 参数（避免刷新重复处理）
+    const cleanUrl = window.location.pathname
+    history.replaceState(null, '', cleanUrl)
   } else {
-    loadConversation(lastId)
+    // 恢复上次会话：若该会话后台任务仍在运行，会自动续播（刷新/重进不丢消息）
+    const lastId = localStorage.getItem('ai_last_conversation_id')
+    if (!lastId) {
+      markInitialRestoreDone()
+    } else {
+      loadConversation(lastId)
+    }
+    setTimeout(markInitialRestoreDone, 6000)
   }
-  setTimeout(markInitialRestoreDone, 6000)
   setTimeout(processQueue, 1500)
 
   // 标签页恢复时续播未完成的后台任务事件流
