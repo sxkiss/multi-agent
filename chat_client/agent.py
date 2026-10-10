@@ -214,6 +214,10 @@ class Agent:
         # 注意：配置节在 self.config["agent"] 下，而非顶层，需从这里取
         _agent_cfg = self.config.get("agent", {}) if isinstance(self.config.get("agent"), dict) else {}
         self.reasoning_effort = self.config.get("reasoning_effort") or _agent_cfg.get("reasoning_effort", "high")
+        # 协议开关：chat（默认，走 /v1/chat/completions）| responses（走 /v1/responses）
+        self.api_protocol = str(
+            self.config.get("api_protocol") or _agent_cfg.get("api_protocol") or "chat"
+        ).strip().lower()
         self.thinking = self.config.get("thinking", _agent_cfg.get("thinking", False))
         self.web_search = self.config.get("web_search", _agent_cfg.get("web_search", False))
         
@@ -574,6 +578,20 @@ Here is some useful information about the environment you are running in:
                 "type": enable_type
             }
             
+        # 协议分流：responses 走 /v1/responses（小巧适配层把事件翻成 chat.delta 形状）
+        if getattr(self, "api_protocol", "chat") == "responses":
+            from chat_client.responses_client import build_request, iter_chat_chunks
+
+            payload = build_request(
+                messages,
+                tools,
+                self.model_name,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                reasoning_effort=self.reasoning_effort,
+            )
+            return iter_chat_chunks(self.client, payload)
+
         return self.client.chat.completions.create(**params)
 
     def chat(self, user_input: str | list[dict[str, Any]]) -> Generator[dict[str, Any], None, None]:
