@@ -505,8 +505,12 @@ def _gen_unique_prefix(cards: dict) -> str:
 def create_card(base_dir: str, days: int = 30, owner: str = "", note: str = "") -> dict:
     """生成一张新卡密。返回卡密记录（含明文 key，仅此一次可见）。
 
-    结构：{prefix, key, owner, note, created_at, expires, days}
+    结构：{prefix, key, owner, note, created_at, expires, days, activated_at}
     days<=0 表示长期有效（expires 为空串）。
+
+    有效期起点：首次登录时（activate_card）才落 activated_at 并算出 expires，
+    创建时刻不计时 —— 卡密可提前批量生成、按需分发，买家首次使用才开表。
+    旧卡（expires 已由旧逻辑按 created_at 算好）继续沿用原 expires，不受影响。
     """
     cards = load_card_keys(base_dir)
     prefix = _gen_unique_prefix(cards)
@@ -515,21 +519,49 @@ def create_card(base_dir: str, days: int = 30, owner: str = "", note: str = "") 
     suffix = _secrets.token_urlsafe(12).replace("-", "").replace("_", "")[:8].upper()
     full_key = f"{prefix}-{suffix}"
 
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
     now = datetime.now(timezone.utc).astimezone()
-    expires = ""
-    if days and days > 0:
-        expires = (now + timedelta(days=int(days))).strftime("%Y-%m-%d")
-
     rec = {
         "key": full_key,
         "owner": str(owner or "")[:64],
         "note": str(note or "")[:200],
         "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "expires": expires,
+        "expires": "",   # 创建时不计时，首次激活再算
         "days": int(days or 0),
+        "activated_at": "",  # 空串=尚未首次登录
     }
     cards[prefix] = rec
+    _card_file_write(base_dir, cards)
+    return {"prefix": prefix, **rec}
+
+
+def activate_card(base_dir: str, prefix: str) -> dict:
+    """卡密首次登录时调用：落 activated_at，并按 days 算出 expires。
+
+    - days<=0：长期有效，expires 保持空串；
+    - days>0 且此前未激活：激活时刻 + days 天为到期日（"今天"起算不算第一天被
+      显式排除：从激活日 0 点起算，给足完整 N 天，避免"当天激活当天过期"）。
+    - 已经激活（activated_at 非空）：幂等返回当前记录，不改 expires。
+    返回更新后的完整记录；prefix 不存在返回 {}。
+    """
+    cards = load_card_keys(base_dir)
+    rec = cards.get(prefix)
+    if not rec:
+        return {}
+    if rec.get("activated_at"):
+        return {"prefix": prefix, **rec}  # 已激活，幂等
+
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc).astimezone()
+    rec["activated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
+    days = int(rec.get("days") or 0)
+    if days > 0:
+        # 从激活日当天 0 点起算，给足完整 N 天：N 天后 0 点才过期
+        today = now.date()
+        expires_day = today + timedelta(days=days)
+        rec["expires"] = expires_day.strftime("%Y-%m-%d")
+    else:
+        rec["expires"] = ""  # 长期有效
     _card_file_write(base_dir, cards)
     return {"prefix": prefix, **rec}
 
@@ -562,8 +594,14 @@ def update_card(base_dir: str, prefix: str, patch: dict) -> dict:
         days = int(patch.get("days") or 0)
         rec["days"] = days
         if days > 0:
-            now = datetime.now(timezone.utc).astimezone()
-            rec["expires"] = (now + timedelta(days=days)).strftime("%Y-%m-%d")
+            # 已激活：从激活日 0 点起算 N 天（与 activate_card 口径一致）；
+            # 未激活：仍留空，等首次登录时按新 days 现算，避免"改期等于提前开表"。
+            activated = str(rec.get("activated_at") or "").strip()
+            if activated:
+                act_day = datetime.strptime(activated[:10], "%Y-%m-%d").date()
+                rec["expires"] = (act_day + timedelta(days=days)).strftime("%Y-%m-%d")
+            else:
+                rec["expires"] = ""
         else:
             rec["expires"] = ""
     _card_file_write(base_dir, cards)
@@ -585,6 +623,8 @@ def list_cards(base_dir: str) -> list:
             "created_at": rec.get("created_at", ""),
             "expires": rec.get("expires", ""),
             "days": rec.get("days", 0),
+            "activated_at": rec.get("activated_at", ""),
+            "is_activated": bool(rec.get("activated_at")),
         })
     return out
 
@@ -728,9 +768,12 @@ def register_auth(app: FastAPI, base_dir: str) -> None:
         token = create_token(base_dir, ttl, sub=f"card:{prefix}")
         cards = load_card_keys(base_dir)
         rec = cards.get(prefix, {})
+        # 首次登录激活：落 activated_at 并算出 expires（幂等，已激活则不变）
+        rec = activate_card(base_dir, prefix)
         expires = str(rec.get("expires") or "").strip()
         days = int(rec.get("days") or 0)
         created_at = str(rec.get("created_at") or "").strip()
+        activated_at = str(rec.get("activated_at") or "").strip()
         owner = str(rec.get("owner") or "").strip()
         return JSONResponse({
             "status": True,
@@ -743,6 +786,8 @@ def register_auth(app: FastAPI, base_dir: str) -> None:
                 "expires": expires if expires else "长期有效",
                 "days": days,
                 "created_at": created_at,
+                "activated_at": activated_at,
+                "is_activated": bool(activated_at),
             },
             "msg": "登录成功",
         })

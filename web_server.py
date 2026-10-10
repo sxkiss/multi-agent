@@ -3850,12 +3850,15 @@ async def api_card_verify(request: Request):
     expires = str(rec.get("expires") or "").strip()
     days = int(rec.get("days") or 0)
     created_at = str(rec.get("created_at") or "").strip()
+    activated_at = str(rec.get("activated_at") or "").strip()
     return JSONResponse(public.return_data(True, data={
         "prefix": prefix,
         "owner": str(rec.get("owner") or ""),
         "expires": expires if expires else "长期有效",
         "days": days,
         "created_at": created_at,
+        "activated_at": activated_at,
+        "is_activated": bool(activated_at),
     }))
 
 
