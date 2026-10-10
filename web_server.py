@@ -1785,6 +1785,7 @@ class AgentMain:
             "temperature": float(self._get_priority_value('temperature', get, prompt_config, self.config['agent'].get('temperature', 1.0))),
             "top_p": float(self._get_priority_value('top_p', get, prompt_config, self.config['agent'].get('top_p', 1.0))),
             "reasoning_effort": str(get.get('reasoning_effort', self.config['agent'].get('reasoning_effort', 'high'))).strip().lower() or 'high',
+            "api_protocol": str(self._get_priority_value('api_protocol', get, prompt_config, self.config.get('api_protocol') or self.config['agent'].get('api_protocol', 'chat'))).strip().lower() or 'chat',
             "thinking": thinking,
             "web_search": web_search,
             "sessions_dir": os.path.join(self.plugin_path, sessions_dir),
