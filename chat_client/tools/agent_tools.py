@@ -738,15 +738,21 @@ def get_docker_inspect(container_id_or_name: str) -> str:
 
 
 @register_tool(category="系统", name_cn="获取Docker容器日志", risk_level="medium")
-def get_docker_logs(container_id_or_name: str) -> str:
+def get_docker_logs(container_id_or_name: str, tail: int = 500) -> str:
     """
     获取 Docker 容器日志。
 
+    只返回最近的日志（默认 500 行，最大 2000 行），避免一次性拉取全量日志
+    导致输出过大、撑爆下游 SSE 事件流（>512KB 会被微信插件丢弃）。
+
     Args:
         container_id_or_name: Docker 容器 ID 或名称。
+        tail: 返回最近日志的行数（1~2000，默认 500）。
     """
-    cmd = ["docker", "logs", container_id_or_name]
-    
+    # 限制行数，防止 docker logs 全量输出体积过大
+    n = min(max(1, int(tail)), 2000)
+    cmd = ["docker", "logs", "--tail", str(n), container_id_or_name]
+
     success, output = _run_shell_cmd(cmd)
     if success:
         return _xml_response("done", output)
