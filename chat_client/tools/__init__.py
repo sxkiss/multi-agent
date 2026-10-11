@@ -330,11 +330,13 @@ class ToolRegistry:
         # 设置 AI_AGENT_RISK_GUARD=on 可开启严格确认模式
         self.risk_guard_enabled = _env in ("1", "true", "on", "yes")
         # 统一执行超时（秒）：防止单个工具卡死整条任务；可被注册时 timeout 参数覆盖
+        # 前台等待上限钳制在 [10, 120]：超过即转后台，绝不卡死前台上下文。
+        # 优先级：AI_AGENT_TOOL_TIMEOUT 环境变量 → 内置默认 120。
         _t = os.environ.get("AI_AGENT_TOOL_TIMEOUT", "").strip()
         try:
-            self.default_tool_timeout = max(10, int(_t)) if _t else 600
+            self.default_tool_timeout = self._clamp_timeout(int(_t)) if _t else 120
         except ValueError:
-            self.default_tool_timeout = 600
+            self.default_tool_timeout = 120
         self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="tool-exec")
         self.audit_log_path = os.environ.get(
             "AI_AGENT_TOOL_AUDIT",
@@ -342,6 +344,28 @@ class ToolRegistry:
         )
         self._audit_lock = threading.Lock()
         self._meta_lock = threading.Lock()
+
+    # 前台等待上限：无论配置多长都不超过 120s，超过即转后台；下限 10s
+    MIN_TOOL_TIMEOUT = 10
+    MAX_TOOL_TIMEOUT = 120
+
+    @classmethod
+    def _clamp_timeout(cls, seconds) -> int:
+        """把前台超时钳制到 [MIN_TOOL_TIMEOUT, MAX_TOOL_TIMEOUT]"""
+        try:
+            v = int(seconds)
+        except (TypeError, ValueError):
+            v = cls.MAX_TOOL_TIMEOUT
+        return min(max(cls.MIN_TOOL_TIMEOUT, v), cls.MAX_TOOL_TIMEOUT)
+
+    def set_tool_timeout(self, seconds) -> int:
+        """设置工具前台等待上限（秒）。入参自动钳制到 [10, 120]。
+
+        由 Agent 初始化时从配置注入（config.json 的 agent.tool_timeout）。
+        超过该上限的工具调用不会被终止，而是转入后台继续执行。
+        """
+        self.default_tool_timeout = self._clamp_timeout(seconds)
+        return self.default_tool_timeout
 
     def set_risk_guard(self, enabled: bool):
         """开/关高风险工具执行时拦截（危险命令黑名单不受此开关影响）"""
@@ -469,46 +493,49 @@ class ToolRegistry:
             return _risk_denied_response(f"参数校验未通过：{verr}", tool_name=tool_label)
 
         # 5. 带超时执行：防止单个工具卡死整条任务
-        timeout_s = meta.get("timeout") or self.default_tool_timeout
+        # 无论全局默认还是注册时指定的 timeout，前台等待上限都钳制到 [10, 120]；
+        # 超过即转后台，不被终止。
+        _raw_to = meta.get("timeout") or self.default_tool_timeout
+        timeout_s = self._clamp_timeout(_raw_to)
         started = time.time()
         # 捕获当前线程的 job，确保 worker 线程持有正确上下文（避免多会话并发时全局覆盖）
         ctx_job = getattr(_current_job_local, "job", None)
         try:
-             def _wrapped():
-                 _restore_job_ctx(ctx_job)
-                 return func(*args, **kwargs)
-             fut = self._executor.submit(_wrapped)
-             try:
-                 result = fut.result(timeout=timeout_s)
-             except _FutureTimeout:
-                 # 超时后不取消任务：Python 线程池的 cancel() 对已运行的 task
-                 # 无效（文档明确返回 False），取消只是丢弃 future 引用，
-                 # 线程仍在跑且无法回收。不如直接纳入后台管理——用户能通过
-                 # TaskStatus 查结果，且不会被白嫖算力而得不到反馈。
-                 task_id = str(uuid.uuid4())
-                 _sid = getattr(ctx_job, "session_id", "") if ctx_job else ""
-                 _BG.register(task_id, tool_label, args, fut, _sid)
-                 # 注册完成回调：无论 done/failed 都通知 job
-                 fut.add_done_callback(
-                     lambda f, tid=task_id, t=tool_label: (
-                         _BG.notify_done(tid, f.result())
-                         if not f.cancelled() and f.exception() is None
-                         else _BG.notify_failed(tid, str(f.exception()))
-                     )
-                 )
-                 msg = (
-                     f"工具 {tool_label} 已达到 {timeout_s} 秒前台等待上限，"
-                     f"已自动转为后台执行。<task_id>{task_id}</task_id>\n"
-                     f"【重要】该工具已在后台运行，禁止用相同参数重复调用它——"
-                     f"重复调用会并发执行第二份，造成结果错乱与资源浪费。\n"
-                     f"请先继续处理其他工作；需要结果时再用 TaskStatus 查一次"
-                     f"（不要连续轮询）。注意：完成事件只推送到前端界面，"
-                     f"结果不会自动回到你的上下文，必须主动查询才能拿到。"
-                 )
-                 logger.info("[ToolBackground] %s 转后台 task=%s", tool_label, task_id)
-                 self._audit(tool_label, risk, audit_kwargs,
-                             int((time.time() - started) * 1000), "background", task_id)
-                 return inject_tool_name(_xml_response("running", msg), tool_label)
+            def _wrapped():
+                _restore_job_ctx(ctx_job)
+                return func(*args, **kwargs)
+
+            fut = self._executor.submit(_wrapped)
+            try:
+                result = fut.result(timeout=timeout_s)
+            except _FutureTimeout:
+                # 超时后不取消任务：Python 线程池的 cancel() 对已运行的 task
+                # 无效（文档明确返回 False），取消只是丢弃 future 引用，
+                # 线程仍在跑且无法回收。不如直接纳入后台管理——用户能通过
+                # TaskStatus 查结果，且不会被白嫖算力而得不到反馈。
+                task_id = str(uuid.uuid4())
+                _sid = getattr(ctx_job, "session_id", "") if ctx_job else ""
+                _BG.register(task_id, tool_label, args, fut, _sid)
+                # 注册完成回调：无论 done/failed 都通知 job
+                fut.add_done_callback(
+                    lambda f, tid=task_id, t=tool_label: (
+                        _BG.notify_done(tid, f.result())
+                        if not f.cancelled() and f.exception() is None
+                        else _BG.notify_failed(tid, str(f.exception()))
+                    )
+                )
+                msg = (
+                    f"工具 {tool_label} 已达到 {timeout_s} 秒前台等待上限，"
+                    f"已自动转为后台执行。<task_id>{task_id}</task_id>\n"
+                    f"【重要】该工具已在后台运行，禁止用相同参数重复调用它——"
+                    f"重复调用会并发执行第二份，造成结果错乱与资源浪费。\n"
+                    f"请先继续处理其他工作。后台任务完成后，结果会自动回灌到对话上下文"
+                    f"（无需主动轮询）；如需提前查看，也可用 TaskStatus 查询。"
+                )
+                logger.info("[ToolBackground] %s 转后台 task=%s", tool_label, task_id)
+                self._audit(tool_label, risk, audit_kwargs,
+                            int((time.time() - started) * 1000), "background", task_id)
+                return inject_tool_name(_xml_response("running", msg), tool_label)
         except Exception as e:
             dur = int((time.time() - t0) * 1000)
             self._audit(tool_label, risk, audit_kwargs, dur, "error", str(e))

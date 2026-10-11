@@ -213,6 +213,12 @@ class Agent:
         # reasoning_effort / thinking：优先用 web_server 传入值；缺省回退到配置文件，再回退到安全默认值
         # 注意：配置节在 self.config["agent"] 下，而非顶层，需从这里取
         _agent_cfg = self.config.get("agent", {}) if isinstance(self.config.get("agent"), dict) else {}
+        # 工具前台等待上限（秒）：从配置注入到全局注册表，自动钳制到 [10, 120]。
+        # 超过该上限的工具调用不终止，转后台执行，结果由主循环回灌。
+        try:
+            registry.set_tool_timeout(_agent_cfg.get("tool_timeout", 120))
+        except Exception:
+            logger.warning("[ToolTimeout] 注入 tool_timeout 失败，沿用当前值", exc_info=True)
         self.reasoning_effort = self.config.get("reasoning_effort") or _agent_cfg.get("reasoning_effort", "high")
         # 协议开关：chat（默认，走 /v1/chat/completions）| responses（走 /v1/responses）
         self.api_protocol = str(
@@ -1123,7 +1129,10 @@ Here is some useful information about the environment you are running in:
                             args["sessions_dir"] = self.config.get("sessions_dir", "sessions")
 
                         # Inject cwd for Bash/Terminal tools
-                        if func_name in ("Bash", "CheckCommandStatus", "StopCommand"):
+                        # 注意：CheckCommandStatus/StopCommand 不接收 cwd 参数（它们的
+                        # execute 签名只有 command_id/output_priority），传了会报
+                        # "unexpected keyword argument 'cwd'"。仅 Bash 需要 cwd。
+                        if func_name == "Bash":
                             cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else None
                             if cwd and "cwd" not in args:
                                 args["cwd"] = cwd

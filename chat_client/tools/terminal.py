@@ -289,7 +289,9 @@ class CheckCommandStatus:
         command_id: ID of the command to get status for.
         output_priority: Priority for displaying command output. 'bottom' (show newest lines) or 'top'.
     """
-    def execute(self, command_id: str, output_priority: str = "bottom") -> str:
+    def execute(self, command_id: str, output_priority: str = "bottom", **kwargs) -> str:
+        # 兼容历史调用：部分桥接层会给命令工具统一注入 cwd 等上下文参数，
+        # 本工具不需要它们，用 **kwargs 吸收，避免 "unexpected keyword argument"。
         status_info = _CMD_MANAGER.get_status(command_id, output_priority)
         if not status_info:
             return _xml_response("error", "Command ID not found")
@@ -316,7 +318,9 @@ class StopCommand:
     Args:
         command_id: The command id of the running command that you need to terminate.
     """
-    def execute(self, command_id: str) -> str:
+    def execute(self, command_id: str, **kwargs) -> str:
+        # 兼容历史调用：部分桥接层会给命令工具统一注入 cwd 等上下文参数，
+        # 本工具不需要它们，用 **kwargs 吸收，避免 "unexpected keyword argument"。
         if _CMD_MANAGER.stop_command(command_id):
             return _xml_response("done", f"Command {command_id} stopped.")
         else:
