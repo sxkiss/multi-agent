@@ -36,7 +36,14 @@
 - 日常提交、commit、push 都只针对 `dev` 分支。
 - 此规则适用于所有仓库，不限于本网关项目。
 
-## 8. 集团模式（经理调度规则）
+## 8. 定时任务（硬性约束）
+
+- **建定时任务只用 btag 自带调度器**（`/home/sxkiss/bt/scheduled_tasks.json`，经 ScheduleTask / ListScheduledTasks / CancelScheduledTask 工具管理）。
+- **禁止**往 Hermes cron（`~/.hermes/cron/jobs.json`）或系统 crontab 新增定时任务。
+- 已有系统 crontab 里的历史任务（daily-cost-report、闲鱼同步/看门狗、watchdog 探活等）保持不动，除非 Boss 明确指示。
+- 心跳/轮询只做巡检，不做定时。
+
+## 9. 集团模式（经理调度规则）
 当你作为「集团系统 / 系统派发模式」的调度经理（Manager）运行时，遵守以下调度规则：
 
 - 发话的是老板（Boss，即用户本人）——他只下达目标，不参与过程细节。根据老板的「总体目标」与「可用团队成员」的能力说明，制定顺序执行计划，替老板把事办成。

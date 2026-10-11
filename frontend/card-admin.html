@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>卡密管理后台</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0f1115; --surface: #1a1d24; --border: #2c303a;
+      --text: #e8eaed; --muted: #8b909a; --accent: #4a7cf7;
+      --danger: #e5636a; --ok: #28a745;
+    }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; min-height: 100vh; padding: 20px; }
+
+    .admin-box { max-width: 1100px; margin: 0 auto; }
+    .admin-header { margin-bottom: 24px; }
+    .admin-title { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
+    .admin-sub { font-size: 13px; color: var(--muted); }
+
+    /* 登录区 */
+    .login-panel { background: var(--surface); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+    .login-panel h3 { font-size: 16px; margin-bottom: 12px; }
+    .login-input {
+      width: 100%; padding: 10px 12px; background: #12141a; border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 14px; margin-bottom: 12px; outline: none;
+    }
+    .login-input:focus { border-color: var(--accent); }
+
+    .btn {
+      padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border);
+      background: transparent; color: var(--muted); cursor: pointer; font-size: 13px;
+    }
+    .btn:hover { color: var(--text); background: var(--border); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn-primary:hover { background: #3a6be6; color: #fff; }
+    .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+    .btn-danger:hover { background: #d14b53; color: #fff; }
+
+    /* 表单区 */
+    .form-panel { background: var(--surface); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+    .form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; }
+    .form-group { flex: 1; min-width: 140px; }
+    .form-group label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .form-group input {
+      width: 100%; padding: 8px 10px; background: #12141a; border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 13px; outline: none;
+    }
+    .form-group input:focus { border-color: var(--accent); }
+
+    /* 表格 */
+    .table-panel { background: var(--surface); border-radius: 12px; padding: 20px; }
+    .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .table-header h3 { font-size: 16px; }
+    .card-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .card-table th {
+      text-align: left; padding: 10px 8px; color: var(--muted);
+      font-weight: 500; border-bottom: 1px solid var(--border);
+    }
+    .card-table td { padding: 10px 8px; border-bottom: 1px solid rgba(44,48,58,.5); }
+    .card-table tr:hover { background: rgba(74,124,247,.05); }
+    .prefix-cell { font-weight: 600; color: var(--accent); font-family: monospace; }
+    .key-cell { font-family: monospace; font-size: 12px; color: var(--muted); }
+    .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+    .badge-ok { background: rgba(40,167,69,.2); color: #5fd17c; }
+    .badge-exp { background: rgba(229,99,106,.2); color: #f48b91; }
+    .badge-long { background: rgba(74,124,247,.2); color: #7ea3f8; }
+
+    .empty { text-align: center; padding: 32px; color: var(--muted); font-size: 13px; }
+
+    /* Toast */
+    .toast {
+      position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px;
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      font-size: 13px; z-index: 9999; display: none;
+    }
+    .toast.show { display: block; }
+    .toast.ok { border-color: var(--ok); }
+    .toast.err { border-color: var(--danger); }
+  </style>
+</head>
+<body>
+
+<div class="admin-box">
+  <div class="admin-header">
+    <div class="admin-title">🔑 卡密管理后台</div>
+    <div class="admin-sub">生成、查看、管理用户卡密（仅管理员可见）</div>
+  </div>
+
+  <!-- 登录表单 -->
+  <div class="login-panel" id="loginPanel">
+    <h3>管理员登录</h3>
+    <input type="password" class="login-input" id="adminPwd" placeholder="管理员密码" />
+    <button class="btn btn-primary" onclick="adminLogin()">登录</button>
+    <span id="loginErr" style="color: var(--danger); font-size: 12px; margin-left: 12px;"></span>
+  </div>
+
+  <!-- 生成卡密 -->
+  <div class="form-panel" id="formPanel" style="display:none">
+    <h3 style="font-size:16px; margin-bottom:16px;">生成新卡密</h3>
+    <div class="form-row">
+      <div class="form-group">
+        <label>有效期（天，0=长期）</label>
+        <input type="number" id="cardDays" value="30" min="0" />
+      </div>
+      <div class="form-group">
+        <label>持有人</label>
+        <input type="text" id="cardOwner" placeholder="用户昵称/备注" />
+      </div>
+      <div class="form-group">
+        <label>备注</label>
+        <input type="text" id="cardNote" placeholder="可选说明" />
+      </div>
+      <div class="form-group" style="flex:0; min-width:100px">
+        <button class="btn btn-primary" onclick="createCard()">生成</button>
+      </div>
+    </div>
+
+    <!-- 批量生成 -->
+    <div style="margin-top:16px; padding-top:16px; border-top:1px dashed var(--border)">
+      <h4 style="font-size:14px; margin-bottom:12px; color:var(--muted)">批量生成</h4>
+      <div class="form-row">
+        <div class="form-group" style="flex:0; min-width:80px">
+          <label>数量</label>
+          <input type="number" id="batchCount" value="10" min="1" max="100" />
+        </div>
+        <div class="form-group">
+          <label>持有人前缀（可选，如 USER01 则生成 USER01-XXXXXX, USER02-XXXXXX...）</label>
+          <input type="text" id="batchOwner" placeholder="留空则使用上方持有人" />
+        </div>
+        <div class="form-group" style="flex:0; min-width:100px">
+          <label>&nbsp;</label>
+          <button class="btn btn-primary" onclick="batchCreate()">批量生成</button>
+        </div>
+      </div>
+      <div id="batchResult" style="margin-top:12px; display:none">
+        <div style="font-size:13px; color:var(--muted); margin-bottom:8px">
+          已生成 <span id="batchCountShow">0</span> 张卡密：
+        </div>
+        <div id="batchList" style="max-height:300px; overflow-y:auto; font-family:monospace; font-size:12px; line-height:1.8"></div>
+        <button class="btn" style="margin-top:8px" onclick="copyBatchKeys()">📋 复制全部卡密</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 卡密列表 -->
+  <div class="table-panel" id="tablePanel" style="display:none">
+    <div class="table-header">
+      <h3>卡密列表</h3>
+      <button class="btn" onclick="loadCards()">刷新</button>
+    </div>
+    <table class="card-table">
+      <thead>
+        <tr>
+          <th>前缀（会话ID）</th>
+          <th>卡密</th>
+          <th>持有人</th>
+          <th>有效期</th>
+          <th>状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="cardsBody">
+        <tr><td colspan="6" class="empty">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let adminToken = localStorage.getItem('bt_admin_token') || ''
+
+// ==================== 登录 ====================
+async function adminLogin() {
+  const pwd = document.getElementById('adminPwd').value
+  if (!pwd) { showLoginErr('请输入密码'); return }
+  try {
+    const resp = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pwd })
+    })
+    const res = await resp.json()
+    if (!res.status || !res.data?.token) {
+      showLoginErr(res.msg || '登录失败')
+      return
+    }
+    adminToken = res.data.token
+    localStorage.setItem('bt_admin_token', adminToken)
+    afterLogin()
+  } catch(e) {
+    showLoginErr('网络错误')
+  }
+}
+
+function showLoginErr(msg) {
+  document.getElementById('loginErr').textContent = msg
+}
+
+function afterLogin() {
+  document.getElementById('loginPanel').style.display = 'none'
+  document.getElementById('formPanel').style.display = 'block'
+  document.getElementById('tablePanel').style.display = 'block'
+  loadCards()
+}
+
+// ==================== 卡密列表 ====================
+async function loadCards() {
+  try {
+    const resp = await fetch('/api/card/admin/list', {
+      headers: { 'Authorization': 'Bearer ' + adminToken }
+    })
+    const res = await resp.json()
+    if (!res.status) {
+      if (resp.status === 403) {
+        toast('管理员登录已过期，请重新登录', 'err')
+        localStorage.removeItem('bt_admin_token')
+        location.reload()
+      }
+      return
+    }
+    renderCards(res.data.cards)
+  } catch(e) {
+    toast('加载失败', 'err')
+  }
+}
+
+function renderCards(cards) {
+  const body = document.getElementById('cardsBody')
+  if (!cards || cards.length === 0) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">暂无卡密，点击上方「生成」创建</td></tr>'
+    return
+  }
+  const today = new Date().toISOString().slice(0, 10)
+  body.innerHTML = cards.map(c => {
+    const exp = c.expires || ''
+    let badge = '<span class="badge badge-long">长期</span>'
+    let expired = false
+    if (exp) {
+      expired = exp < today
+      badge = expired
+        ? `<span class="badge badge-exp">已过期 ${exp}</span>`
+        : `<span class="badge badge-ok">有效至 ${exp}</span>`
+    }
+    return `<tr>
+      <td class="prefix-cell">${esc(c.prefix)}</td>
+      <td class="key-cell">${esc(c.key_masked || '')}</td>
+      <td>${esc(c.owner || '-')}</td>
+      <td>${exp || '长期'}</td>
+      <td>${badge}</td>
+      <td>
+        <button class="btn" onclick="editCard('${c.prefix}', ${c.days || 0})">改期</button>
+        <button class="btn btn-danger" onclick="delCard('${c.prefix}')">删除</button>
+      </td>
+    </tr>`
+  }).join('')
+}
+
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+}
+
+// ==================== 批量生成 ====================
+let batchKeys = []
+
+async function batchCreate() {
+  const count = parseInt(document.getElementById('batchCount').value) || 10
+  const ownerPrefix = document.getElementById('batchOwner').value.trim()
+  const baseOwner = document.getElementById('cardOwner').value.trim()
+  const days = parseInt(document.getElementById('cardDays').value) || 30
+  const note = document.getElementById('cardNote').value.trim()
+
+  if (count < 1 || count > 100) { toast('数量必须在 1-100 之间', 'err'); return }
+
+  batchKeys = []
+  const listEl = document.getElementById('batchList')
+  const resultEl = document.getElementById('batchResult')
+  const countShow = document.getElementById('batchCountShow')
+  listEl.innerHTML = '<span style="color:var(--muted)">生成中...</span>'
+  resultEl.style.display = 'block'
+
+  for (let i = 1; i <= count; i++) {
+    const owner = ownerPrefix ? `${ownerPrefix}${i}` : (baseOwner || '')
+    try {
+      const resp = await fetch('/api/card/admin/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+        body: JSON.stringify({ days, owner, note })
+      })
+      const res = await resp.json()
+      if (res.status && res.data) {
+        batchKeys.push(res.data.key)
+        listEl.innerHTML += `<div style="color:var(--ok)">✅ ${res.data.prefix} - ${res.data.key}</div>`
+      } else {
+        listEl.innerHTML += `<div style="color:var(--danger)">❌ 第${i}张失败: ${res.msg}</div>`
+      }
+    } catch(e) {
+      listEl.innerHTML += `<div style="color:var(--danger)">❌ 第${i}张网络错误</div>`
+    }
+  }
+
+  countShow.textContent = batchKeys.length
+  toast(`✅ 批量生成完成，成功 ${batchKeys.length} 张`, 'ok')
+  loadCards()
+}
+
+function copyBatchKeys() {
+  if (batchKeys.length === 0) { toast('没有可复制的卡密', 'err'); return }
+  const text = batchKeys.join('\n')
+  navigator.clipboard.writeText(text).then(() => {
+    toast(`✅ 已复制 ${batchKeys.length} 张卡密`, 'ok')
+  }).catch(() => {
+    // fallback
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    toast(`✅ 已复制 ${batchKeys.length} 张卡密`, 'ok')
+  })
+}
+
+// ==================== 生成卡密 ====================
+async function createCard() {
+  const days = parseInt(document.getElementById('cardDays').value) || 30
+  const owner = document.getElementById('cardOwner').value.trim()
+  const note = document.getElementById('cardNote').value.trim()
+  try {
+    const resp = await fetch('/api/card/admin/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+      body: JSON.stringify({ days, owner, note })
+    })
+    const res = await resp.json()
+    if (!res.status) { toast(res.msg || '生成失败', 'err'); return }
+    const d = res.data
+    toast(`✅ 生成成功！卡密：${d.key}（${d.prefix}）有效期至 ${d.expires || '长期'}`, 'ok')
+    document.getElementById('cardOwner').value = ''
+    document.getElementById('cardNote').value = ''
+    loadCards()
+  } catch(e) {
+    toast('生成失败', 'err')
+  }
+}
+
+// ==================== 改期 ====================
+async function editCard(prefix, curDays) {
+  const days = prompt(`设置「${prefix}」的有效期天数（0=长期）`, curDays)
+  if (days === null) return
+  const n = parseInt(days)
+  if (isNaN(n)) { toast('请输入数字', 'err'); return }
+  try {
+    const resp = await fetch('/api/card/admin/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+      body: JSON.stringify({ prefix, days: n })
+    })
+    const res = await resp.json()
+    if (!res.status) { toast(res.msg || '更新失败', 'err'); return }
+    toast(`✅ 已更新，有效期至 ${res.data.expires || '长期'}`, 'ok')
+    loadCards()
+  } catch(e) {
+    toast('更新失败', 'err')
+  }
+}
+
+// ==================== 删除 ====================
+async function delCard(prefix) {
+  if (!confirm(`确定删除卡密「${prefix}」？该用户的会话数据不受影响`)) return
+  try {
+    const resp = await fetch('/api/card/admin/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+      body: JSON.stringify({ prefix })
+    })
+    const res = await resp.json()
+    if (!res.status) { toast(res.msg || '删除失败', 'err'); return }
+    toast('✅ 已删除', 'ok')
+    loadCards()
+  } catch(e) {
+    toast('删除失败', 'err')
+  }
+}
+
+// ==================== Toast ====================
+function toast(msg, type) {
+  let el = document.getElementById('toast')
+  if (!el) {
+    el = document.createElement('div')
+    el.id = 'toast'
+    el.className = 'toast'
+    document.body.appendChild(el)
+  }
+  el.className = 'toast show ' + (type === 'ok' ? 'ok' : 'err')
+  el.textContent = msg
+  setTimeout(() => el.classList.remove('show'), 6000)
+}
+
+// ==================== 初始化 ====================
+window.addEventListener('DOMContentLoaded', () => {
+  if (adminToken) afterLogin()
+})
+</script>
+</body>
+</html>

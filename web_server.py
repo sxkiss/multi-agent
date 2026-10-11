@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(BASE_DIR, "class"))
 import logging
 
 import uvicorn
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Request, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -281,7 +281,10 @@ _TERMINAL_SINGLE_PERSONA = """你是一个专业、可靠的 AI 助手，通过�
 2. 涉及实际操作（读写文件、执行命令、查询系统、抓取网页等）时，先调用工具拿到
    真实结果再作答；严禁在没有工具结果的情况下编造过程或结论。
 3. 高风险操作会被安全策略拦截确认：此时向用户说明将要执行的操作与风险，等待同意。
-4. 不确定的事情直说不确定，不要编造。"""
+4. 抓取网页/发 HTTP 请求时，必须使用专门的网络工具（curl_url 或 WebFetch），
+   禁止在 Bash 里直接敲 curl/wget/axios 等命令 —— 这些命令被安全策略拦截，
+   改用工具能拿到同样的结果且更安全。
+5. 不确定的事情直说不确定，不要编造。"""
 
 # 兼容旧名
 _MINIPROGRAM_SINGLE_PERSONA = _TERMINAL_SINGLE_PERSONA
@@ -819,6 +822,9 @@ class AgentMain:
         # wx_<hash> 取整个（hash 已由 openid 派生，不含其它用户信息）。
         # 其它会话 ID 直接取其哈希，避免把用户可控字符串当路径。
         if sid.startswith("wx_"):
+            user_key = sid[:64]
+        elif sid.startswith("card_"):
+            # 卡密会话：直接用前缀，不哈希（便于调试和目录管理）
             user_key = sid[:64]
         else:
             user_key = "s_" + hashlib.sha256(sid.encode("utf-8")).hexdigest()[:24]
@@ -1699,6 +1705,34 @@ class AgentMain:
                 final_system_prompt = _MINIPROGRAM_SINGLE_PERSONA
             # 工具：优先前端传入，否则留空由 agent（strict_tools=False）补全全套默认工具
             tools = raw_tools if raw_tools else []
+            
+            # 【安全】卡密用户：限制工具 + 强制注入工作目录限制提示词
+            if str(session_id).startswith("card_"):
+                strict_mode = True  # 防止自动加载全部工具
+                tools = ["Task", "Read", "Write", "Glob", "Grep", "WebFetch", "WebSearch"]
+                _ws = self._resolve_user_workspace(session_id)
+                _card_sp_lines = [
+                    "## 安全限制（卡密用户）",
+                    f"你只能在工作目录 {_ws} 内读写文件和执行命令。",
+                    "禁止操作：",
+                    "1. 任何绝对路径超出 {_ws}/ 的文件读写",
+                    "2. 任何命令执行（echo/cd/cat/ls等）",
+                    "3. 网络请求（curl/wget/web_fetch）",
+                    "4. 读取 /etc/passwd、/proc、系统配置文件等敏感信息",
+                    "5. 创建符号链接、修改权限、环境变量",
+                    "",
+                    "正确做法：",
+                    f"- 创建文件：在 {_ws}/ 下创建",
+                    f"- 读取文件：使用 Read 工具，路径必须相对于 {_ws}/",
+                    "- 需要外部数据：请向用户请求，由用户粘贴内容",
+                    "",
+                    "违反以上限制将导致服务终止。",
+                ]
+                _card_sp = "\n".join(_card_sp_lines)
+                if final_system_prompt:
+                    final_system_prompt = final_system_prompt + "\n\n" + _card_sp
+                else:
+                    final_system_prompt = _card_sp
         else:
             # 集团模式（group，默认）：经理视角，只保留编排类工具；
             # 忽略前端传入的工具列表（防止旧页面全量选择覆盖经理角色），
@@ -1717,7 +1751,8 @@ class AgentMain:
         if _client_channel(get) == "clawbot" and workspace_override:
             workspace = self._clamp_workspace(
                 os.path.abspath(os.path.expanduser(workspace_override)))
-        elif _is_terminal_channel(get):
+        elif _is_terminal_channel(get) or str(session_id).startswith("card_"):
+            # 终端渠道 + 卡密用户：强制使用用户隔离目录
             workspace = self._resolve_user_workspace(session_id)
         elif workspace_override:
             workspace = os.path.abspath(os.path.expanduser(workspace_override))
@@ -1748,10 +1783,12 @@ class AgentMain:
             "strict_tools": strict_mode,
             "cwd": workspace,
             "workspace": workspace,
+            "base_dir": BASE_DIR,
             "system_prompt": final_system_prompt,
             "temperature": float(self._get_priority_value('temperature', get, prompt_config, self.config['agent'].get('temperature', 1.0))),
             "top_p": float(self._get_priority_value('top_p', get, prompt_config, self.config['agent'].get('top_p', 1.0))),
             "reasoning_effort": str(get.get('reasoning_effort', self.config['agent'].get('reasoning_effort', 'high'))).strip().lower() or 'high',
+            "api_protocol": str(self._get_priority_value('api_protocol', get, prompt_config, self.config.get('api_protocol') or self.config['agent'].get('api_protocol', 'chat'))).strip().lower() or 'chat',
             "thinking": thinking,
             "web_search": web_search,
             "sessions_dir": os.path.join(self.plugin_path, sessions_dir),
@@ -3258,8 +3295,15 @@ async def _params(request: Request) -> dict:
 
 
 @app.get("/")
-async def index():
-    """Serve the main HTML page."""
+async def index(request: Request):
+    """Serve the main HTML page. 卡密用户重定向到卡密登录页。"""
+    from auth import extract_token, is_card_token
+    from fastapi.responses import RedirectResponse
+    token = extract_token(request)
+    if token and is_card_token(BASE_DIR, token):
+        # 真正的 HTTP 302 重定向，浏览器跳转卡密页面
+        return RedirectResponse(url="/static/card-login.html", status_code=302)
+
     index_path = os.path.join(BASE_DIR, "index.html")
     response = FileResponse(index_path, media_type="text/html")
     response.headers["Cache-Control"] = "no-store"
@@ -3267,12 +3311,23 @@ async def index():
 
 
 @app.get("/api/config")
-async def api_config():
+async def api_config(request: Request):
+    from auth import extract_token, is_admin_token
+    token = extract_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="未登录")
+    if not is_admin_token(BASE_DIR, token):
+        raise HTTPException(status_code=403, detail="只有管理员可以访问此接口")
     return JSONResponse(agent_main.get_config())
 
 
 @app.post("/api/config")
 async def api_set_config(request: Request):
+    from auth import extract_token, is_admin_token
+    token = extract_token(request)
+    if not token or not is_admin_token(BASE_DIR, token):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="只有管理员可以修改配置")
     params = await _params(request)
     config_str = params.get('config', '')
     return JSONResponse(agent_main.set_config(config_str))
@@ -3562,12 +3617,14 @@ async def api_chat_history(request: Request):
 @app.post("/api/chat/start")
 async def api_chat_start(request: Request):
     params = await _params(request)
+    _assert_session_owner(request, params)
     return JSONResponse(agent_main.chat_start(params))
 
 
 @app.get("/api/chat/events")
 async def api_chat_events(request: Request):
     params = dict(request.query_params)
+    _assert_session_owner(request, params)
     return StreamingResponse(
         agent_main.chat_events(params),
         media_type="text/event-stream",
@@ -3582,12 +3639,14 @@ async def api_chat_events(request: Request):
 @app.get("/api/chat/status")
 async def api_chat_status(request: Request):
     params = dict(request.query_params)
+    _assert_session_owner(request, params)
     return JSONResponse(agent_main.chat_status(params))
 
 
 @app.post("/api/chat/stop")
 async def api_chat_stop(request: Request):
     params = await _params(request)
+    _assert_session_owner(request, params)
     return JSONResponse(agent_main.chat_stop(params))
 
 
@@ -3600,7 +3659,44 @@ async def api_opencode_status(request: Request):
 @app.get("/api/chat/messages")
 async def api_chat_messages(request: Request):
     params = dict(request.query_params)
+    _assert_session_owner(request, params)
     return JSONResponse(agent_main.get_chat(params))
+
+
+# ── session 归属校验：防止卡密/小程序用户伪造 session_id 读写他人会话 ──────
+def _assert_session_owner(request: Request, params: dict):
+    """在非管理员请求中，验证 session_id 是否属于当前 token 对应的主人。
+
+    逻辑：
+    - 无 token / admin token：不限制（admin 可操作任意 session）。
+    - 卡密 token (sub=card:XXX)：session_id 必须以 "card_XXX" 开头。
+    - 小程序 token (sub=wx:openid)：session_id 必须以 "wx_" 开头。
+    - 其他未知 sub：视为无归属，拒绝访问。
+
+    校验失败时直接返回 403 JSONResponse，调用方无需再处理。
+    """
+    from auth import extract_token, verify_token, is_admin_token
+    token = extract_token(request)
+    if not token or is_admin_token(BASE_DIR, token):
+        return  # admin 或公开接口不限
+    payload = verify_token(BASE_DIR, token)
+    if not payload:
+        raise HTTPException(status_code=403, detail="未授权")
+    sub = str(payload.get("sub") or "")
+    session_id = str(params.get("session_id") or "")
+    expected_prefix = ""
+    if sub.startswith("card:"):
+        expected_prefix = sub[5:]          # "6DGVR6"
+        allowed = f"card_{expected_prefix}"
+        if not session_id.startswith(allowed):
+            raise HTTPException(status_code=403, detail="无权访问该会话")
+    elif sub.startswith("wx:"):
+        allowed = "wx_"
+        if not session_id.startswith(allowed):
+            raise HTTPException(status_code=403, detail="无权访问该会话")
+    else:
+        # 未知 sub：拒绝
+        raise HTTPException(status_code=403, detail="未授权")
 
 
 # ============================================================
@@ -3623,12 +3719,17 @@ def _mp_store():
 
 
 def _mp_user_key(request: Request) -> str:
-    """从 Bearer token 解析用户键；非微信登录态返回空串。
+    """从 Bearer token 解析用户键；非终端登录态返回空串。
 
     不接受客户端传入的 user_key —— 身份只能来自服务端签发的 token，
     否则任何调用方都能读写他人数据。
+
+    支持两类终端用户：
+    - 小程序（wx:<openid>）：通过 openid 派生 wx_<hash>。
+    - 网页卡密登录（card:<prefix>）：直接用前 6 位作为 user_key，
+      与会话 ID 一致（card_<prefix>），便于 clawbot 扫码共享会话。
     """
-    from auth import extract_token, verify_token, wx_session_id
+    from auth import extract_token, verify_token, wx_session_id, card_session_id
     token = extract_token(request)
     if not token:
         return ""
@@ -3636,12 +3737,16 @@ def _mp_user_key(request: Request) -> str:
     if not payload:
         return ""
     sub = str(payload.get("sub") or "")
-    if not sub.startswith("wx:"):
-        return ""
-    openid = sub[3:]
-    if not openid:
-        return ""
-    return wx_session_id(openid)
+    if sub.startswith("wx:"):
+        openid = sub[3:]
+        if not openid:
+            return ""
+        return wx_session_id(openid)
+    if sub.startswith("card:"):
+        prefix = sub[5:]
+        if prefix and re.fullmatch(r"[0-9A-Z]{6}", prefix):
+            return card_session_id(prefix)
+    return ""
 
 
 def _mp_guard(request: Request):
@@ -3720,6 +3825,229 @@ async def api_mp_profile_post(request: Request):
     except Exception:
         logger.warning("[mp_profile] 写入失败", exc_info=True)
         return JSONResponse(public.returnMsg(False, "保存失败"), status_code=500)
+
+
+# ============================================================
+# 卡密验证（前端实时校验用，无需 Bearer token）
+# ============================================================
+@app.post("/api/auth/card/verify")
+async def api_card_verify(request: Request):
+    """验证卡密并返回前缀与持有人信息（供前端校验显示）。
+
+    无需 token：此接口本身在白名单中，调用方还拿着有效令牌。
+    返回前缀用于前端展示"欢迎 XXX"等信息，同时作为会话锚定键。
+    """
+    from auth import normalize_card_key, verify_card_key, load_card_keys
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    raw_key = str(body.get("key", "")).strip()
+    if not raw_key:
+        return JSONResponse(public.returnMsg(False, "缺少参数 key"), status_code=400)
+    ok, result = verify_card_key(BASE_DIR, raw_key)
+    if not ok:
+        return JSONResponse(public.returnMsg(False, result), status_code=401)
+    prefix = result
+    cards = load_card_keys(BASE_DIR)
+    rec = cards.get(prefix, {})
+    expires = str(rec.get("expires") or "").strip()
+    days = int(rec.get("days") or 0)
+    created_at = str(rec.get("created_at") or "").strip()
+    activated_at = str(rec.get("activated_at") or "").strip()
+    return JSONResponse(public.return_data(True, data={
+        "prefix": prefix,
+        "owner": str(rec.get("owner") or ""),
+        "expires": expires if expires else "长期有效",
+        "days": days,
+        "created_at": created_at,
+        "activated_at": activated_at,
+        "is_activated": bool(activated_at),
+    }))
+
+
+# ============================================================
+# 卡密管理后台（仅管理员，需 admin token）
+# ============================================================
+# 与普通卡密登录严格分离：卡密用户 token 的 sub 是 "card:<prefix>"，
+# 这里只认 sub == "admin"（密码登录签发的），杜绝卡密用户自己改卡密。
+
+def _admin_guard(request: Request):
+    """管理员校验：返回 (None, None) 通过，否则返回 error_response。"""
+    from auth import extract_token, is_admin_token
+    token = extract_token(request)
+    if not token or not is_admin_token(BASE_DIR, token):
+        return JSONResponse(
+            {"status": False, "msg": "需要管理员登录", "code": 403}, status_code=403)
+    return None
+
+
+@app.get("/api/card/admin/list")
+async def api_card_admin_list(request: Request):
+    """列出全部卡密（脱敏展示）。"""
+    err = _admin_guard(request)
+    if err:
+        return err
+    from auth import list_cards
+    return JSONResponse(public.return_data(True, data={"cards": list_cards(BASE_DIR)}))
+
+
+@app.post("/api/card/admin/create")
+async def api_card_admin_create(request: Request):
+    """生成新卡密。参数：days(有效期天数,0=长期) / owner / note。
+
+    完整卡密只在创建时返回一次 —— 列表接口是脱敏的，
+    管理员若当时没复制走，只能删了重建。
+    """
+    err = _admin_guard(request)
+    if err:
+        return err
+    from auth import create_card
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        days = int(body.get("days") or 30)
+    except (TypeError, ValueError):
+        days = 30
+    try:
+        rec = create_card(BASE_DIR, days=days,
+                          owner=str(body.get("owner") or ""),
+                          note=str(body.get("note") or ""))
+    except Exception as e:
+        logger.warning("[card_admin] 创建失败: %s", e, exc_info=True)
+        return JSONResponse(public.returnMsg(False, "卡密生成失败"), status_code=500)
+    return JSONResponse(public.return_data(True, data=rec))
+
+
+@app.post("/api/card/admin/update")
+async def api_card_admin_update(request: Request):
+    """更新卡密：owner / note / days（days 重算有效期，0=长期）。"""
+    err = _admin_guard(request)
+    if err:
+        return err
+    from auth import update_card
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    prefix = str(body.get("prefix") or "").strip()
+    if not prefix:
+        return JSONResponse(public.returnMsg(False, "缺少参数 prefix"), status_code=400)
+    rec = update_card(BASE_DIR, prefix, body)
+    if not rec:
+        return JSONResponse(public.returnMsg(False, "卡密不存在"), status_code=404)
+    return JSONResponse(public.return_data(True, data=rec))
+
+
+@app.post("/api/card/admin/delete")
+async def api_card_admin_delete(request: Request):
+    """删除卡密。"""
+    err = _admin_guard(request)
+    if err:
+        return err
+    from auth import delete_card
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    prefix = str(body.get("prefix") or "").strip()
+    if not prefix:
+        return JSONResponse(public.returnMsg(False, "缺少参数 prefix"), status_code=400)
+    if not delete_card(BASE_DIR, prefix):
+        return JSONResponse(public.returnMsg(False, "卡密不存在"), status_code=404)
+    return JSONResponse(public.return_data(True, data={"prefix": prefix}))
+
+
+# ============================================================
+# 卡密用户个人配置（用户级 API/提示词模板）
+# ============================================================
+_USER_CONFIG_FILE = "card_user_configs.json"
+
+
+def _load_user_config() -> dict:
+    """加载用户配置文件。"""
+    path = os.path.join(BASE_DIR, _USER_CONFIG_FILE)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_user_config(data: dict) -> bool:
+    """保存用户配置文件（原子写入）。"""
+    path = os.path.join(BASE_DIR, _USER_CONFIG_FILE)
+    try:
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        logger.warning("用户配置保存失败: %s", e)
+        return False
+
+
+@app.get("/api/card/user/config")
+async def api_card_user_config(request: Request):
+    """获取当前卡密用户的个人配置。"""
+    from auth import extract_token, verify_token, is_card_token
+    token = extract_token(request)
+    if not token or not is_card_token(BASE_DIR, token):
+        return JSONResponse({"status": False, "msg": "未授权", "code": 403}, status_code=403)
+    payload = verify_token(BASE_DIR, token)
+    sub = str(payload.get("sub") or "")
+    prefix = sub[5:]  # "card:XXXXXX" -> "XXXXXX"
+    configs = _load_user_config()
+    user_cfg = configs.get(prefix, {})
+    # 返回默认模型列表
+    default_config = agent_main.get_config()
+    models = default_config.get("data", {}).get("config", {}).get("models", [])
+    # 返回内置提示词模板列表
+    try:
+        from chat_client.opencode_templates import OPENCODE_TEMPLATES
+        builtin_templates = list(OPENCODE_TEMPLATES.keys())
+    except Exception:
+        builtin_templates = []
+    
+    return JSONResponse({
+        "status": True,
+        "data": {
+            **user_cfg,
+            "models": models,
+            "builtin_templates": builtin_templates,
+        }
+    })
+
+
+@app.post("/api/card/user/config")
+async def api_card_user_config_save(request: Request):
+    """保存当前卡密用户的个人配置。"""
+    from auth import extract_token, verify_token, is_card_token
+    token = extract_token(request)
+    if not token or not is_card_token(BASE_DIR, token):
+        return JSONResponse({"status": False, "msg": "未授权", "code": 403}, status_code=403)
+    payload = verify_token(BASE_DIR, token)
+    sub = str(payload.get("sub") or "")
+    prefix = sub[5:]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"status": False, "msg": "请求体解析失败"}, status_code=400)
+    configs = _load_user_config()
+    if prefix not in configs:
+        configs[prefix] = {}
+    # 允许保存的字段
+    allowed_keys = ['model', 'api_base_url', 'api_key', 'system_prompt']
+    for key in allowed_keys:
+        if key in body:
+            configs[prefix][key] = str(body[key]).strip() or None
+    _save_user_config(configs)
+    return JSONResponse({"status": True, "msg": "保存成功"})
 
 
 # ============================================================
@@ -3838,8 +4166,6 @@ async def api_mp_bot_disconnect(request: Request):
     if err:
         return err
     return _clawbot_forward("POST", "/internal/bots/disconnect", {"user_key": user_key})
-
-
 @app.post("/api/service/token")
 async def api_service_token(request: Request):
     """clawbot 换取长期令牌（需服务密钥），用于调用聊天接口。

@@ -1,0 +1,33 @@
+{
+ "geom": {
+  "bgNat": 552,
+  "bgDisp": 340,
+  "x": 590.0234375,
+  "y": 347,
+  "w": 64.046875
+ },
+ "verify_reqs": [
+  {
+   "url": "https://verify.zijieapi.com/captcha/verify?aid=582478&app_name=doubao&lang=zh&pageId=27032&bd_version=1.0.0.739&subtype=slide&detail=UHITsg1yPXXIepX9d5IDeh45I--pNglbaUVvrAnYMjH60-MkSpkQDn9Wo*IGEp4sPiE545st-3kbQqvGKQxGJuPsCfNcPKYhzbLvsaTwdMQ3kjAATiXKw9Sk399kdc2MQSqq8aYmZjEMVYPMMBggNJ7ojNWaCYtpOTL1rpj0f78EWH4aqwpZqRZfRjC48fCGMdAaXpsCw0506VS85sM-C3w*FEDhe-9BGPmyS1ghPfrppT1e6sXWSJT4Y2Nl-I2wo0WPA2P6xQxXtIoopwGYsOezk20wemhBPdo77ZosFdcUHbKza1utVSnX7TYr2i*txiEajEtOGCxPBRJ9AUEV-Vnrg-UtPhzvIbTuPO*E3wdJwWw.&server_sdk_env={%22idc%22:%22lq%22,%22region%22:%22CN%22,%22server_type%22:%22business%22}&mode=slide&did=7678478259399869987&fp=verify_mutp6owl_DtgPaQSy_jqzx_4y4M_8xYU_GC3QkBj54wI5&h5_check_version=4.0.16&os_name=other&platform=pc&os_type=2&h5_sdk_version=3.5.76&webdriver=false&tmp=1791125041867&xx-tt-dd=qJI7ttpVdGKKbSBvYqmaf0aPo",
+   "body": "{\"captchaBody\":\"dGMHEAAAMDAwMDAwMDA2YWMyNjYzMS7c8rUjKwVCWfZ8OMdhXXeLKJnffgbFvuFVMqoIP1ML4/r1HH8Wz7cTXPkhOwCLdiUE6TfyuUR03Ms8sSxeIavn/0GlNvpIoVYboRiXdOF2Vw30tX7PuE5UIpotgjUfAjNdvNLQK4k7PMcQqI1VlzJ8CPd6",
+   "len": 7494
+  }
+ ],
+ "verify_resps": [
+  [
+   "VERIFY_RESP",
+   200,
+   "{\"code\":502,\"data\":null,\"message\":\"检测到您的网络环境较差，请更换网络或者稍后再试[5014]\"}"
+  ]
+ ],
+ "succ": null,
+ "log": [
+  "render"
+ ],
+ "gets": [
+  {
+   "code": 200,
+   "message": "验证通过"
+  }
+ ]
+}

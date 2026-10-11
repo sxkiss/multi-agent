@@ -5,6 +5,7 @@
 @auto-doc: Update header and folder INDEX.md when this file changes
 """
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -212,7 +213,17 @@ class Agent:
         # reasoning_effort / thinking：优先用 web_server 传入值；缺省回退到配置文件，再回退到安全默认值
         # 注意：配置节在 self.config["agent"] 下，而非顶层，需从这里取
         _agent_cfg = self.config.get("agent", {}) if isinstance(self.config.get("agent"), dict) else {}
+        # 工具前台等待上限（秒）：从配置注入到全局注册表，自动钳制到 [10, 120]。
+        # 超过该上限的工具调用不终止，转后台执行，结果由主循环回灌。
+        try:
+            registry.set_tool_timeout(_agent_cfg.get("tool_timeout", 120))
+        except Exception:
+            logger.warning("[ToolTimeout] 注入 tool_timeout 失败，沿用当前值", exc_info=True)
         self.reasoning_effort = self.config.get("reasoning_effort") or _agent_cfg.get("reasoning_effort", "high")
+        # 协议开关：chat（默认，走 /v1/chat/completions）| responses（走 /v1/responses）
+        self.api_protocol = str(
+            self.config.get("api_protocol") or _agent_cfg.get("api_protocol") or "chat"
+        ).strip().lower()
         self.thinking = self.config.get("thinking", _agent_cfg.get("thinking", False))
         self.web_search = self.config.get("web_search", _agent_cfg.get("web_search", False))
         
@@ -228,6 +239,17 @@ class Agent:
         # 严格工具模式：完全以 config["tools"] 为准（集团模式下主对话=经理仅编排工具；
         # 成员代理各自定义工具），不追加任何默认/MCP 工具
         self.strict_tools = self.config.get("strict_tools", False)
+        
+        # 卡密用户隔离：检测是否为卡密会话，限制文件系统访问范围
+        self._is_card_user = str(session_id).startswith("card_")
+        if self._is_card_user:
+            # 卡密用户 workspace: workspace/users/card_<PREFIX>/
+            prefix = session_id[5:]  # 去掉 "card_" 前缀
+            _base = self.config.get("base_dir", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            self._user_workspace = os.path.realpath(os.path.join(_base, "workspace", "users", f"card_{prefix}"))
+            logger.info(f"卡密用户 {session_id}，工作目录限制为: {self._user_workspace}")
+        else:
+            self._user_workspace = None
 
         if self.code_mode:
             # Append environment info to system prompt
@@ -562,6 +584,20 @@ Here is some useful information about the environment you are running in:
                 "type": enable_type
             }
             
+        # 协议分流：responses 走 /v1/responses（小巧适配层把事件翻成 chat.delta 形状）
+        if getattr(self, "api_protocol", "chat") == "responses":
+            from chat_client.responses_client import build_request, iter_chat_chunks
+
+            payload = build_request(
+                messages,
+                tools,
+                self.model_name,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                reasoning_effort=self.reasoning_effort,
+            )
+            return iter_chat_chunks(self.client, payload)
+
         return self.client.chat.completions.create(**params)
 
     def chat(self, user_input: str | list[dict[str, Any]]) -> Generator[dict[str, Any], None, None]:
@@ -1093,11 +1129,36 @@ Here is some useful information about the environment you are running in:
                             args["sessions_dir"] = self.config.get("sessions_dir", "sessions")
 
                         # Inject cwd for Bash/Terminal tools
-                        if func_name in ("Bash", "CheckCommandStatus", "StopCommand"):
+                        # 注意：CheckCommandStatus/StopCommand 不接收 cwd 参数（它们的
+                        # execute 签名只有 command_id/output_priority），传了会报
+                        # "unexpected keyword argument 'cwd'"。仅 Bash 需要 cwd。
+                        if func_name == "Bash":
                             cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else None
                             if cwd and "cwd" not in args:
                                 args["cwd"] = cwd
+                        
+                        # 【安全】卡密用户：限制 Bash 命令，禁止危险操作
+                        if self._is_card_user and func_name == "Bash":
+                            cmd = args.get("command", "")
+                            dangerous_patterns = ["cat /etc/", "passwd", "/proc/", "chmod 777", "rm -rf /", "sudo", "su "]
+                            if any(p in cmd for p in dangerous_patterns) or cmd.startswith("cat /"):
+                                result_str = inject_tool_name(
+                                    _xml_response("error", f"安全限制：卡密用户禁止执行此命令（包含敏感路径或高危操作）。"),
+                                    func_name)
+                                yield {"type": "tool_result", "tool": func_name, "result": result_str, "id": call_id}
+                                continue
 
+                        # 【安全】卡密用户：限制 Write 工具路径
+                        if self._is_card_user and func_name == "Write":
+                            fp = args.get("file_path", "")
+                            logger.info(f"[安全] Card user Write: fp={fp}, workspace={self._user_workspace}, starts={fp.startswith(self._user_workspace) if fp else False}")
+                            if fp and not fp.startswith(self._user_workspace):
+                                result_str = inject_tool_name(
+                                    _xml_response("error", f"安全限制：卡密用户只能在隔离工作目录内操作文件（{_user_workspace}）"),
+                                    func_name)
+                                yield {"type": "tool_result", "tool": func_name, "result": result_str, "id": call_id}
+                                continue
+                        
                         func = registry.get_tool_func(func_name)
                         if func:
                             result_str = func(**args)
