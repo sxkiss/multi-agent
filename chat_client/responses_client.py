@@ -22,6 +22,8 @@ import json
 from types import SimpleNamespace
 from typing import Any, Iterator
 
+from chat_client.api_retry import ResponsesAPIError, extract_responses_status, extract_responses_code
+
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -253,5 +255,9 @@ def iter_chat_chunks(client: Any, payload: dict[str, Any]) -> Iterator[SimpleNam
             yield _usage_chunk(usage, getattr(resp, "id", None))
 
         elif et in ("response.failed", "error"):
+            status = extract_responses_status(ev)
+            code = extract_responses_code(ev)
             err = getattr(ev, "response", None) or getattr(ev, "error", None) or ev
-            raise RuntimeError(f"Responses API 失败: {err}")
+            # 用带 status_code/code 的专用异常，使主循环 is_retryable_api_err 能按
+            # 状态码或错误码（server_error / rate_limit_exceeded）判定是否重试
+            raise ResponsesAPIError(f"Responses API 失败: {err}", status_code=status, code=code)
