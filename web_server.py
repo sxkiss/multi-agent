@@ -636,6 +636,74 @@ class ChatJobManager:
         for k in stale:
             self._jobs.pop(k, None)
 
+    # 磁盘上 sessions/ 会话目录的保留时长（秒）。默认 3 天。
+    # sessions/ 只增不删（每个会话一个目录，含 sessions.json / journal / meta），
+    # 历史会话大量堆积占用磁盘，按目录 mtime 回收。0 或负 = 不清理。
+    SESSION_TTL = int(os.environ.get("AI_AGENT_SESSION_TTL", str(3 * 24 * 3600)))
+    # 单次清理最多删除的会话目录数，避免首次运行时一次性删除上千目录卡住事件循环
+    SESSION_PRUNE_BATCH = int(os.environ.get("AI_AGENT_SESSION_PRUNE_BATCH", "500"))
+
+    def prune_sessions(self):
+        """按「会话内文件最新 mtime」清理 sessions/ 下超过 TTL 的会话目录。
+
+        关键：目录 mtime 只在创建/删除/重命名子项时更新，追加写入 journal
+        不会刷新目录 mtime。因此不能用目录 mtime 判断活跃时间（活跃会话
+        也会被误判为过期）。这里改为取会话目录内所有文件（sessions.json /
+        sessions.journal.jsonl / meta.json）的最新 mtime 作为最近活动时间。
+
+        单批次上限 SESSION_PRUNE_BATCH，剩余留到下一轮。
+        """
+        ttl = self.SESSION_TTL
+        if ttl <= 0:
+            return 0
+        sessions_dir = os.path.join(BASE_DIR, "sessions")
+        if not os.path.isdir(sessions_dir):
+            return 0
+        now = time.time()
+        removed = 0
+        skipped = 0
+        try:
+            dirs = [d for d in os.listdir(sessions_dir)
+                     if os.path.isdir(os.path.join(sessions_dir, d))]
+        except Exception:
+            logger.warning("[ChatJob] 枚举 sessions/ 失败", exc_info=True)
+            return 0
+        # 按「会话内文件最新 mtime」升序：旧会话优先清理
+        def _latest_mtime(d):
+            spath = os.path.join(sessions_dir, d)
+            latest = 0.0
+            try:
+                for name in os.listdir(spath):
+                    fp = os.path.join(spath, name)
+                    if os.path.isfile(fp):
+                        latest = max(latest, os.path.getmtime(fp))
+            except OSError:
+                pass
+            return latest
+        try:
+            dirs.sort(key=_latest_mtime)
+        except Exception:
+            logger.warning("[ChatJob] 统计会话 mtime 失败", exc_info=True)
+            return 0
+        for d in dirs:
+            try:
+                if now - _latest_mtime(d) < ttl:
+                    continue
+                import shutil as _shutil
+                _shutil.rmtree(os.path.join(sessions_dir, d))
+                removed += 1
+                if removed >= self.SESSION_PRUNE_BATCH:
+                    skipped = len(dirs) - removed
+                    break
+            except FileNotFoundError:
+                continue
+            except Exception:
+                logger.warning("[ChatJob] 清理会话目录失败: %s", d, exc_info=True)
+        if removed:
+            logging.info(f"[ChatJob] 清理过期会话目录 {removed} 个"
+                         + (f"，剩余 {skipped} 个待下一轮" if skipped else ""))
+        return removed
+
 
 chat_jobs = ChatJobManager()
 
@@ -3133,6 +3201,27 @@ async def _periodic_job_cleanup():
             logger.warning("[ChatJob] 周期性清理失败", exc_info=True)
 
 
+async def _periodic_session_cleanup():
+    """周期性回收 sessions/ 下超过 3 天的会话目录。
+
+    prune_sessions 是同步阻塞 I/O（listdir + stat + rmtree），用 to_thread
+    丢到线程池，避免卡住事件循环。清理间隔取 TTL 的 1/4（约 18 小时），
+    但不少于 1 小时、不超过 24 小时。
+    """
+    ttl = ChatJobManager.SESSION_TTL
+    if ttl <= 0:
+        return
+    interval = max(3600, min(24 * 3600, ttl // 4))
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await asyncio.to_thread(chat_jobs.prune_sessions)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.warning("[ChatJob] 周期性会话清理失败", exc_info=True)
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
     """启动/退出钩子。
@@ -3150,10 +3239,13 @@ async def _lifespan(_app):
         logger.warning("[startup] job 恢复失败", exc_info=True)
     # 长期运行的服务只靠启动清理不够：jobs/ 持续写入，需要周期性回收
     _cleanup_task = asyncio.create_task(_periodic_job_cleanup())
+    # 会话目录同样只增不删，周期清理超过 3 天的旧会话
+    _session_cleanup_task = asyncio.create_task(_periodic_session_cleanup())
     try:
         yield
     finally:
         _cleanup_task.cancel()
+        _session_cleanup_task.cancel()
         # 进程退出时优雅停止仍在运行的任务，避免 agent 数据丢失
         # （原先只在 __main__ 路径注册 atexit，uvicorn 启动时不会生效）
         running = [j for j in chat_jobs._jobs.values() if j.is_running]
