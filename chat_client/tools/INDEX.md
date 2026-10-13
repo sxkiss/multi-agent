@@ -18,6 +18,7 @@
 | `edit.py` | Tools | 文件写入/编辑（含 LargeFileEdit 大文件分段编辑） |
 | `mcp_tool.py` | Tools | MCP 工具封装 |
 | `mem0.py` | Tools | Mem0 记忆工具 |
+| `knowledge.py` | Tools | 知识库工具（KnowledgeAdd/Search/List/Delete） |
 | `skill.py` | Tools | 技能安装/卸载工具 |
 | `summary.py` | Tools | 摘要生成工具 |
 | `todo.py` | Tools | TODO 管理工具 |

@@ -12,6 +12,8 @@ AI Agent 核心运行时：主循环、会话记忆、检索增强、MCP 接入�
 | `agent.py` | Core | 主 Agent 循环（流式/重试/续写/工具执行） |
 | `memory.py` | Memory | 会话历史持久化（原子写，损坏自动备份） |
 | `retrieval.py` | RAG | SimpleVectorDB + RAG + Mem0 记忆 |
+| `document_parser.py` | Knowledge | 文档解析(pdf/docx/pptx/xlsx/html/md/txt)+切块(800/120)+OCR |
+| `knowledge_base.py` | Knowledge | 文档知识库（入库/语义检索/引用/JSON持久化） |
 | `mcp_client.py` | MCP | MCP stdio 客户端（单例+锁） |
 | `mcp_manager.py` | MCP | MCP 管理器（多实例路由） |
 | `mcp_server.py` | MCP | MCP HTTP Server（FastAPI 托管） |
