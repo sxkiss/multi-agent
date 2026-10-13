@@ -4493,6 +4493,134 @@ async def api_files_upload(file: UploadFile = File(...)):
         return JSONResponse(public.returnMsg(False, "上传失败"))
 
 
+# ==================== 知识库 API（文档管线） ====================
+def _kb_instance():
+    """构造知识库实例（复用 config.json 的 embedding 段）。"""
+    import json as _json
+    from chat_client.knowledge_base import KnowledgeBase, build_embed_fn
+    cfg = {}
+    cfg_path = os.path.join(BASE_DIR, "config.json")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = _json.load(f)
+        except Exception:
+            logger.warning("读取 config.json 失败", exc_info=True)
+    emb = (cfg.get("embedding") or {}) if isinstance(cfg, dict) else {}
+    embed = build_embed_fn(
+        emb.get("embedding_api_key") or "",
+        emb.get("embedding_base_url") or "",
+        emb.get("embedding_model_name") or "text-embedding-3-small",
+        default_headers=cfg.get("default_headers"),
+    )
+    kb_dir = os.path.join(BASE_DIR, "knowledge")
+    os.makedirs(kb_dir, exist_ok=True)
+    return KnowledgeBase(kb_dir, embed)
+
+
+@app.get("/api/knowledge/list")
+async def api_knowledge_list():
+    """列出知识库全部文档 + 统计。"""
+    try:
+        kb = _kb_instance()
+        return JSONResponse(public.return_data(True, data={
+            "stats": kb.stats(),
+            "documents": kb.list_documents(),
+        }))
+    except Exception:
+        logger.warning("知识库列表失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "知识库列表失败"))
+
+
+@app.post("/api/knowledge/upload")
+async def api_knowledge_upload(file: UploadFile = File(...), ocr: bool = True, name: str = ""):
+    """上传文档并入库（pdf/docx/pptx/xlsx/html/md/txt/图片，图片走 OCR）。"""
+    MAX_KB_SIZE = int(os.environ.get("BT_MAX_KB_SIZE_MB", "100")) * 1024 * 1024
+    tmp_dir = os.path.join(BASE_DIR, "uploads")
+    try:
+        os.makedirs(tmp_dir, exist_ok=True)
+    except Exception:
+        return JSONResponse(public.returnMsg(False, "无法创建上传目录"))
+    fname = os.path.basename(file.filename or "upload.bin")
+    dest = os.path.join(tmp_dir, f"kb_{int(time.time())}_{fname}")
+    try:
+        size = 0
+        with open(dest, "wb") as out:
+            while True:
+                chunk = await file.read(8192)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_KB_SIZE:
+                    os.remove(dest)
+                    return JSONResponse(public.returnMsg(False, f"文件超过限制（{MAX_KB_SIZE // 1024 // 1024}MB）"))
+                out.write(chunk)
+        kb = _kb_instance()
+        result = kb.add_document(path=dest, name=name or fname, ocr=bool(ocr))
+        if not result.get("status"):
+            return JSONResponse(public.returnMsg(False, result.get("msg", "入库失败")))
+        return JSONResponse(public.return_data(True, data=result))
+    except Exception:
+        logger.warning("知识库上传入库失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "知识库入库失败"))
+
+
+@app.post("/api/knowledge/add_text")
+async def api_knowledge_add_text(request: Request):
+    """直接入库一段文本。body: {text, name?}"""
+    try:
+        params = await _params(request)
+        text = (params.get("text") or "").strip()
+        if not text:
+            return JSONResponse(public.returnMsg(False, "text 不能为空"))
+        kb = _kb_instance()
+        result = kb.add_document(text=text, name=params.get("name") or "")
+        if not result.get("status"):
+            return JSONResponse(public.returnMsg(False, result.get("msg", "入库失败")))
+        return JSONResponse(public.return_data(True, data=result))
+    except Exception:
+        logger.warning("知识库文本入库失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "文本入库失败"))
+
+
+@app.post("/api/knowledge/search")
+async def api_knowledge_search(request: Request):
+    """语义检索知识库。body: {query, top_k?, score?}"""
+    try:
+        params = await _params(request)
+        query = (params.get("query") or "").strip()
+        if not query:
+            return JSONResponse(public.returnMsg(False, "query 不能为空"))
+        kb = _kb_instance()
+        res = kb.search(query, top_k=int(params.get("top_k") or 5),
+                        score=float(params.get("score") or 0.2))
+        if not res.get("status"):
+            return JSONResponse(public.returnMsg(False, res.get("msg", "检索失败")))
+        return JSONResponse(public.return_data(True, data={"query": query,
+                                                           "results": res.get("results", [])}))
+    except Exception:
+        logger.warning("知识库检索失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "知识库检索失败"))
+
+
+@app.post("/api/knowledge/delete")
+async def api_knowledge_delete(request: Request):
+    """删除知识库文档。body: {doc_id}"""
+    try:
+        params = await _params(request)
+        doc_id = (params.get("doc_id") or "").strip()
+        if not doc_id:
+            return JSONResponse(public.returnMsg(False, "doc_id 不能为空"))
+        kb = _kb_instance()
+        result = kb.delete_document(doc_id)
+        if not result.get("status"):
+            return JSONResponse(public.returnMsg(False, result.get("msg", "删除失败")))
+        return JSONResponse(public.return_data(True, data=result))
+    except Exception:
+        logger.warning("知识库删除失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "知识库删除失败"))
+
+
 @app.get("/api/agent/run")
 async def api_agent_run_get(request: Request):
     params = dict(request.query_params)

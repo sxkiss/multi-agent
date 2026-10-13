@@ -964,6 +964,7 @@ def TaskStop(task_id: str) -> str:
 from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注册副作用)
     agent_tools,
     edit,
+    knowledge,
     mcp_tool,
     mem0,
     scheduler,
