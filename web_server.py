@@ -3817,6 +3817,11 @@ def _assert_session_owner(request: Request, params: dict):
         allowed = "wx_"
         if not session_id.startswith(allowed):
             raise HTTPException(status_code=403, detail="无权访问该会话")
+    elif sub.startswith("service:"):
+        # 服务间令牌（clawbot）：须持服务密钥经 /api/service/token 换取（hmac 校验），
+        # 属可信组件。session_id 为网关侧鉴权过的用户 key（card_* / wx_*），
+        # 放行 —— clawbot 与小程序共用同一 user_key 会话。
+        return
     else:
         # 未知 sub：拒绝
         raise HTTPException(status_code=403, detail="未授权")
