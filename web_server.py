@@ -1596,6 +1596,30 @@ class AgentMain:
                 else:
                     system_prompt = context_block
                 logger.info("[RAG] Global context injected for %s mode, docs count: %d", "opencode/claude/codex", len(docs))
+
+            # 文档知识库注入（CLI 模式同样生效）
+            if self.config.get('use_document_kb', True):
+                try:
+                    from chat_client.knowledge_base import KnowledgeBase, build_embed_fn
+                    emb = self.config.get('embedding', {}) or {}
+                    emb_key = emb.get('embedding_api_key') or ''
+                    emb_url = emb.get('embedding_base_url') or ''
+                    if emb_key and emb_url:
+                        embed = build_embed_fn(
+                            emb_key, emb_url,
+                            emb.get('embedding_model_name') or 'text-embedding-3-small',
+                            default_headers=self.config.get('default_headers'),
+                        )
+                        kb = KnowledgeBase(os.path.join(BASE_DIR, 'knowledge'), embed)
+                        res = kb.search(user_input, top_k=5, score=0.35)
+                        if res.get('status') and res.get('results'):
+                            kb_lines = [f"{h['citation']}\n{h['text']}" for h in res['results']]
+                            kb_block = "[Document Knowledge Base(for reference only)]:\n" + "\n\n".join(kb_lines) + "\n\n"
+                            system_prompt = (system_prompt + "\n\n" + kb_block) if system_prompt else kb_block
+                            logger.info("[KB] Document context injected for %s mode, hits: %d",
+                                        "opencode/claude/codex", len(res['results']))
+                except Exception as e:
+                    logger.debug("文档知识库注入失败（已记录）: %s", e)
         except Exception as e:
             logger.debug("RAG 上下文注入失败（已记录）: %s", e)
 

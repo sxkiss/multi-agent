@@ -233,6 +233,11 @@ class Agent:
 
         # 全局记忆检索开关（mem0 / ExternalRAG）
         self.use_global_rag = self.config.get("use_global_rag", False)
+
+        # 文档知识库开关（本机 knowledge/ 目录，与 mem0 记忆独立）
+        # 与 use_global_rag 的区别：mem0 存"记忆/偏好"，这里存"文档/资料"
+        self.use_document_kb = self.config.get("use_document_kb", True)
+        self._doc_kb = None  # 懒加载（首次检索时才建 embedding 客户端）
         
         # Code mode configuration
         self.code_mode = self.config.get("code_mode", False)
@@ -525,6 +530,54 @@ Here is some useful information about the environment you are running in:
         """
         self.global_rag.add_document(text, metadata)
 
+    def _get_doc_kb(self):
+        """懒加载文档知识库实例（knowledge/ 目录）。
+
+        仅在开启且首次检索时构造，避免每轮对话都新建 embedding 客户端。
+        embedding 未配置时返回 None（检索静默降级，不影响主对话）。
+        """
+        if self._doc_kb is not None:
+            return self._doc_kb
+        if not getattr(self, "use_document_kb", False):
+            return None
+        try:
+            from chat_client.knowledge_base import KnowledgeBase, build_embed_fn
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            kb_dir = self.config.get("document_kb_dir") or os.path.join(base_dir, "knowledge")
+            emb_api_key = self.config.get("embedding_api_key") or ""
+            emb_base_url = self.config.get("embedding_base_url") or ""
+            if not emb_api_key or not emb_base_url:
+                logger.debug("[KB] embedding 未配置，文档知识库不启用")
+                return None
+            embed = build_embed_fn(
+                emb_api_key, emb_base_url,
+                self.config.get("embedding_model_name") or "text-embedding-3-small",
+                default_headers=self.default_headers,
+            )
+            self._doc_kb = KnowledgeBase(kb_dir, embed)
+            return self._doc_kb
+        except Exception:
+            logger.warning("[KB] 文档知识库初始化失败，已降级", exc_info=True)
+            return None
+
+    def search_document_kb(self, query: str, top_k: int = 5, score: float = 0.35) -> list[dict]:
+        """检索文档知识库，返回带引用的命中列表（失败返回空）。
+
+        阈值 0.35 高于交互式默认的 0.2：自动注入是"顺带"增强，
+        宁可漏一点也不要把无关段落塞进上下文干扰回答。
+        """
+        kb = self._get_doc_kb()
+        if kb is None:
+            return []
+        try:
+            res = kb.search(query, top_k=top_k, score=score)
+            if not res.get("status"):
+                return []
+            return res.get("results", []) or []
+        except Exception:
+            logger.warning("[KB] 文档知识库检索失败，已降级", exc_info=True)
+            return []
+
     @staticmethod
     def _coerce_tool_args(func_name: str, args: dict[str, Any]) -> dict[str, Any]:
         """按 schema 把模型可能传成字符串的参数转回真实类型（如 timeout='60000' -> 60000）。"""
@@ -649,6 +702,16 @@ Here is some useful information about the environment you are running in:
                 if global_docs:
                     context_str += "[Global Knowledge Base(for reference only)]:\n" + "\n".join(global_docs) + "\n\n"
                 logger.info("[RAG] Global context injected, docs count: %d", len(global_docs))
+
+            # 文档知识库检索（用户自己入库的文档/资料，带来源引用）
+            # 与上面 mem0 记忆的区别：这里是长期沉淀的文档，不是对话记忆
+            if getattr(self, "use_document_kb", False) and user_text.strip():
+                kb_hits = self.search_document_kb(user_text, top_k=self.config.get("document_kb_top_k", 5))
+                if kb_hits:
+                    kb_lines = [f"{h['citation']}\n{h['text']}" for h in kb_hits]
+                    context_str += ("[Document Knowledge Base(for reference only)]:\n"
+                                    + "\n\n".join(kb_lines) + "\n\n")
+                    logger.info("[KB] Document context injected, hits count: %d", len(kb_hits))
 
             # 检查触发条件
             if self.memory.get_total_rounds() > self.rag_trigger_threshold:
