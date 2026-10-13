@@ -1962,6 +1962,13 @@ class AgentMain:
 4. 一个任务可匹配多技能时，指示成员加载 1 个主技能 + 必要时 1 个辅助技能。
 5. 清单中确实无匹配项，才允许成员用通用工具（Bash/Read/Write）执行。
 
+【市场发现工具（派任务时可指示成员调用）】
+- 专家市场：429 个领域专家（含完整人设提示词）。成员需要专业角色/人设时，
+  用 `ExpertMarket(keyword=...)` 搜索 + `GetExpertPrompt(name=...)` 取提示词。
+- 技能市场：`SkillMarket(keyword=...)` / `SkillCategories()` 探索社区技能。
+- 精选场景：`ExpertScenes()`。
+- 派任务时在 Task/RunCrew prompt 中写明：「先调用 ExpertMarket/SkillMarket 查找相关专家或技能，再按需加载」。
+
 【工作原则】
 1. 凡涉及实际操作——读写文件、执行命令、查询系统、抓取网页、分析日志等——必须通过上述工具**分派给对应成员**执行，
    严禁在没有工具结果的情况下自行编造过程或结论。
