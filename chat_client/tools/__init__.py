@@ -531,8 +531,9 @@ class ToolRegistry:
                     f"已自动转为后台执行。<task_id>{task_id}</task_id>\n"
                     f"【重要】该工具已在后台运行，禁止用相同参数重复调用它——"
                     f"重复调用会并发执行第二份，造成结果错乱与资源浪费。\n"
-                    f"请先继续处理其他工作。后台任务完成后，结果会自动回灌到对话上下文"
-                    f"（无需主动轮询）；如需提前查看，也可用 TaskStatus 查询。"
+                    f"请先继续处理其他工作，但【不要结束当前会话/停止对话】——"
+                    f"只有 AG 仍在本会话运行中，后台任务完成后结果才会自动回灌到对话上下文；"
+                    f"若停止会话或断开连接，结果将无法回传，只能下次用 TaskStatus 查询。"
                 )
                 logger.info("[ToolBackground] %s 转后台 task=%s", tool_label, task_id)
                 self._audit(tool_label, risk, audit_kwargs,
