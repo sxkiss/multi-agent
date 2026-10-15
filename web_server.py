@@ -636,6 +636,74 @@ class ChatJobManager:
         for k in stale:
             self._jobs.pop(k, None)
 
+    # 磁盘上 sessions/ 会话目录的保留时长（秒）。默认 3 天。
+    # sessions/ 只增不删（每个会话一个目录，含 sessions.json / journal / meta），
+    # 历史会话大量堆积占用磁盘，按目录 mtime 回收。0 或负 = 不清理。
+    SESSION_TTL = int(os.environ.get("AI_AGENT_SESSION_TTL", str(3 * 24 * 3600)))
+    # 单次清理最多删除的会话目录数，避免首次运行时一次性删除上千目录卡住事件循环
+    SESSION_PRUNE_BATCH = int(os.environ.get("AI_AGENT_SESSION_PRUNE_BATCH", "500"))
+
+    def prune_sessions(self):
+        """按「会话内文件最新 mtime」清理 sessions/ 下超过 TTL 的会话目录。
+
+        关键：目录 mtime 只在创建/删除/重命名子项时更新，追加写入 journal
+        不会刷新目录 mtime。因此不能用目录 mtime 判断活跃时间（活跃会话
+        也会被误判为过期）。这里改为取会话目录内所有文件（sessions.json /
+        sessions.journal.jsonl / meta.json）的最新 mtime 作为最近活动时间。
+
+        单批次上限 SESSION_PRUNE_BATCH，剩余留到下一轮。
+        """
+        ttl = self.SESSION_TTL
+        if ttl <= 0:
+            return 0
+        sessions_dir = os.path.join(BASE_DIR, "sessions")
+        if not os.path.isdir(sessions_dir):
+            return 0
+        now = time.time()
+        removed = 0
+        skipped = 0
+        try:
+            dirs = [d for d in os.listdir(sessions_dir)
+                     if os.path.isdir(os.path.join(sessions_dir, d))]
+        except Exception:
+            logger.warning("[ChatJob] 枚举 sessions/ 失败", exc_info=True)
+            return 0
+        # 按「会话内文件最新 mtime」升序：旧会话优先清理
+        def _latest_mtime(d):
+            spath = os.path.join(sessions_dir, d)
+            latest = 0.0
+            try:
+                for name in os.listdir(spath):
+                    fp = os.path.join(spath, name)
+                    if os.path.isfile(fp):
+                        latest = max(latest, os.path.getmtime(fp))
+            except OSError:
+                pass
+            return latest
+        try:
+            dirs.sort(key=_latest_mtime)
+        except Exception:
+            logger.warning("[ChatJob] 统计会话 mtime 失败", exc_info=True)
+            return 0
+        for d in dirs:
+            try:
+                if now - _latest_mtime(d) < ttl:
+                    continue
+                import shutil as _shutil
+                _shutil.rmtree(os.path.join(sessions_dir, d))
+                removed += 1
+                if removed >= self.SESSION_PRUNE_BATCH:
+                    skipped = len(dirs) - removed
+                    break
+            except FileNotFoundError:
+                continue
+            except Exception:
+                logger.warning("[ChatJob] 清理会话目录失败: %s", d, exc_info=True)
+        if removed:
+            logging.info(f"[ChatJob] 清理过期会话目录 {removed} 个"
+                         + (f"，剩余 {skipped} 个待下一轮" if skipped else ""))
+        return removed
+
 
 chat_jobs = ChatJobManager()
 
@@ -1528,6 +1596,30 @@ class AgentMain:
                 else:
                     system_prompt = context_block
                 logger.info("[RAG] Global context injected for %s mode, docs count: %d", "opencode/claude/codex", len(docs))
+
+            # 文档知识库注入（CLI 模式同样生效）
+            if self.config.get('use_document_kb', True):
+                try:
+                    from chat_client.knowledge_base import KnowledgeBase, build_embed_fn
+                    emb = self.config.get('embedding', {}) or {}
+                    emb_key = emb.get('embedding_api_key') or ''
+                    emb_url = emb.get('embedding_base_url') or ''
+                    if emb_key and emb_url:
+                        embed = build_embed_fn(
+                            emb_key, emb_url,
+                            emb.get('embedding_model_name') or 'text-embedding-3-small',
+                            default_headers=self.config.get('default_headers'),
+                        )
+                        kb = KnowledgeBase(os.path.join(BASE_DIR, 'knowledge'), embed)
+                        res = kb.search(user_input, top_k=5, score=0.35)
+                        if res.get('status') and res.get('results'):
+                            kb_lines = [f"{h['citation']}\n{h['text']}" for h in res['results']]
+                            kb_block = "[Document Knowledge Base(for reference only)]:\n" + "\n\n".join(kb_lines) + "\n\n"
+                            system_prompt = (system_prompt + "\n\n" + kb_block) if system_prompt else kb_block
+                            logger.info("[KB] Document context injected for %s mode, hits: %d",
+                                        "opencode/claude/codex", len(res['results']))
+                except Exception as e:
+                    logger.debug("文档知识库注入失败（已记录）: %s", e)
         except Exception as e:
             logger.debug("RAG 上下文注入失败（已记录）: %s", e)
 
@@ -1862,6 +1954,20 @@ class AgentMain:
 {chr(10).join(mcp_lines)}
 """ if mcp_lines else ""}
 派任务时，如果某目标需要特定技能，在 Task/RunCrew 的 prompt 中写明「使用 Skills(name='技能名') 加载对应技能」或直接调用对应 MCP 工具。
+
+【技能使用铁律（必须遵守）】
+1. 拆解任务的第一步，先在上方技能清单中查找匹配技能（比对"遇到以下情况就使用/适用场景/触发词"段落）。
+2. 只要找到匹配技能，Task/RunCrew 的 prompt 中必须写明「先调用 Skills(name='技能名') 加载完整工作流，再按技能流程执行」——禁止让成员用通用手段硬干。
+3. 领域-技能映射速查：excel/数据分析→数据分析类；ppt/演示→PPT类；seo/排名→SEO类；浏览器/爬虫→Web类；逆向/安全→安全类；微信/图片/视频→社媒类；运维/部署→DevOps类；写代码→编程语言类；图片识别/OCR→SN技能。
+4. 一个任务可匹配多技能时，指示成员加载 1 个主技能 + 必要时 1 个辅助技能。
+5. 清单中确实无匹配项，才允许成员用通用工具（Bash/Read/Write）执行。
+
+【市场发现工具（派任务时可指示成员调用）】
+- 专家市场：429 个领域专家（含完整人设提示词）。成员需要专业角色/人设时，
+  用 `ExpertMarket(keyword=...)` 搜索 + `GetExpertPrompt(name=...)` 取提示词。
+- 技能市场：`SkillMarket(keyword=...)` / `SkillCategories()` 探索社区技能。
+- 精选场景：`ExpertScenes()`。
+- 派任务时在 Task/RunCrew prompt 中写明：「先调用 ExpertMarket/SkillMarket 查找相关专家或技能，再按需加载」。
 
 【工作原则】
 1. 凡涉及实际操作——读写文件、执行命令、查询系统、抓取网页、分析日志等——必须通过上述工具**分派给对应成员**执行，
@@ -3133,6 +3239,27 @@ async def _periodic_job_cleanup():
             logger.warning("[ChatJob] 周期性清理失败", exc_info=True)
 
 
+async def _periodic_session_cleanup():
+    """周期性回收 sessions/ 下超过 3 天的会话目录。
+
+    prune_sessions 是同步阻塞 I/O（listdir + stat + rmtree），用 to_thread
+    丢到线程池，避免卡住事件循环。清理间隔取 TTL 的 1/4（约 18 小时），
+    但不少于 1 小时、不超过 24 小时。
+    """
+    ttl = ChatJobManager.SESSION_TTL
+    if ttl <= 0:
+        return
+    interval = max(3600, min(24 * 3600, ttl // 4))
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await asyncio.to_thread(chat_jobs.prune_sessions)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.warning("[ChatJob] 周期性会话清理失败", exc_info=True)
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
     """启动/退出钩子。
@@ -3150,10 +3277,13 @@ async def _lifespan(_app):
         logger.warning("[startup] job 恢复失败", exc_info=True)
     # 长期运行的服务只靠启动清理不够：jobs/ 持续写入，需要周期性回收
     _cleanup_task = asyncio.create_task(_periodic_job_cleanup())
+    # 会话目录同样只增不删，周期清理超过 3 天的旧会话
+    _session_cleanup_task = asyncio.create_task(_periodic_session_cleanup())
     try:
         yield
     finally:
         _cleanup_task.cancel()
+        _session_cleanup_task.cancel()
         # 进程退出时优雅停止仍在运行的任务，避免 agent 数据丢失
         # （原先只在 __main__ 路径注册 atexit，uvicorn 启动时不会生效）
         running = [j for j in chat_jobs._jobs.values() if j.is_running]
@@ -3694,6 +3824,11 @@ def _assert_session_owner(request: Request, params: dict):
         allowed = "wx_"
         if not session_id.startswith(allowed):
             raise HTTPException(status_code=403, detail="无权访问该会话")
+    elif sub.startswith("service:"):
+        # 服务间令牌（clawbot）：须持服务密钥经 /api/service/token 换取（hmac 校验），
+        # 属可信组件。session_id 为网关侧鉴权过的用户 key（card_* / wx_*），
+        # 放行 —— clawbot 与小程序共用同一 user_key 会话。
+        return
     else:
         # 未知 sub：拒绝
         raise HTTPException(status_code=403, detail="未授权")
@@ -4399,6 +4534,134 @@ async def api_files_upload(file: UploadFile = File(...)):
         # L-4: 详细原因（含服务器绝对路径）只留在日志，对外返回通用提示
         logger.warning("上传文件失败（详情不返回客户端），详见日志", exc_info=True)
         return JSONResponse(public.returnMsg(False, "上传失败"))
+
+
+# ==================== 知识库 API（文档管线） ====================
+def _kb_instance():
+    """构造知识库实例（复用 config.json 的 embedding 段）。"""
+    import json as _json
+    from chat_client.knowledge_base import KnowledgeBase, build_embed_fn
+    cfg = {}
+    cfg_path = os.path.join(BASE_DIR, "config.json")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = _json.load(f)
+        except Exception:
+            logger.warning("读取 config.json 失败", exc_info=True)
+    emb = (cfg.get("embedding") or {}) if isinstance(cfg, dict) else {}
+    embed = build_embed_fn(
+        emb.get("embedding_api_key") or "",
+        emb.get("embedding_base_url") or "",
+        emb.get("embedding_model_name") or "text-embedding-3-small",
+        default_headers=cfg.get("default_headers"),
+    )
+    kb_dir = os.path.join(BASE_DIR, "knowledge")
+    os.makedirs(kb_dir, exist_ok=True)
+    return KnowledgeBase(kb_dir, embed)
+
+
+@app.get("/api/knowledge/list")
+async def api_knowledge_list():
+    """列出知识库全部文档 + 统计。"""
+    try:
+        kb = _kb_instance()
+        return JSONResponse(public.return_data(True, data={
+            "stats": kb.stats(),
+            "documents": kb.list_documents(),
+        }))
+    except Exception:
+        logger.warning("知识库列表失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "知识库列表失败"))
+
+
+@app.post("/api/knowledge/upload")
+async def api_knowledge_upload(file: UploadFile = File(...), ocr: bool = True, name: str = ""):
+    """上传文档并入库（pdf/docx/pptx/xlsx/html/md/txt/图片，图片走 OCR）。"""
+    MAX_KB_SIZE = int(os.environ.get("BT_MAX_KB_SIZE_MB", "100")) * 1024 * 1024
+    tmp_dir = os.path.join(BASE_DIR, "uploads")
+    try:
+        os.makedirs(tmp_dir, exist_ok=True)
+    except Exception:
+        return JSONResponse(public.returnMsg(False, "无法创建上传目录"))
+    fname = os.path.basename(file.filename or "upload.bin")
+    dest = os.path.join(tmp_dir, f"kb_{int(time.time())}_{fname}")
+    try:
+        size = 0
+        with open(dest, "wb") as out:
+            while True:
+                chunk = await file.read(8192)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_KB_SIZE:
+                    os.remove(dest)
+                    return JSONResponse(public.returnMsg(False, f"文件超过限制（{MAX_KB_SIZE // 1024 // 1024}MB）"))
+                out.write(chunk)
+        kb = _kb_instance()
+        result = kb.add_document(path=dest, name=name or fname, ocr=bool(ocr))
+        if not result.get("status"):
+            return JSONResponse(public.returnMsg(False, result.get("msg", "入库失败")))
+        return JSONResponse(public.return_data(True, data=result))
+    except Exception:
+        logger.warning("知识库上传入库失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "知识库入库失败"))
+
+
+@app.post("/api/knowledge/add_text")
+async def api_knowledge_add_text(request: Request):
+    """直接入库一段文本。body: {text, name?}"""
+    try:
+        params = await _params(request)
+        text = (params.get("text") or "").strip()
+        if not text:
+            return JSONResponse(public.returnMsg(False, "text 不能为空"))
+        kb = _kb_instance()
+        result = kb.add_document(text=text, name=params.get("name") or "")
+        if not result.get("status"):
+            return JSONResponse(public.returnMsg(False, result.get("msg", "入库失败")))
+        return JSONResponse(public.return_data(True, data=result))
+    except Exception:
+        logger.warning("知识库文本入库失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "文本入库失败"))
+
+
+@app.post("/api/knowledge/search")
+async def api_knowledge_search(request: Request):
+    """语义检索知识库。body: {query, top_k?, score?}"""
+    try:
+        params = await _params(request)
+        query = (params.get("query") or "").strip()
+        if not query:
+            return JSONResponse(public.returnMsg(False, "query 不能为空"))
+        kb = _kb_instance()
+        res = kb.search(query, top_k=int(params.get("top_k") or 5),
+                        score=float(params.get("score") or 0.2))
+        if not res.get("status"):
+            return JSONResponse(public.returnMsg(False, res.get("msg", "检索失败")))
+        return JSONResponse(public.return_data(True, data={"query": query,
+                                                           "results": res.get("results", [])}))
+    except Exception:
+        logger.warning("知识库检索失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "知识库检索失败"))
+
+
+@app.post("/api/knowledge/delete")
+async def api_knowledge_delete(request: Request):
+    """删除知识库文档。body: {doc_id}"""
+    try:
+        params = await _params(request)
+        doc_id = (params.get("doc_id") or "").strip()
+        if not doc_id:
+            return JSONResponse(public.returnMsg(False, "doc_id 不能为空"))
+        kb = _kb_instance()
+        result = kb.delete_document(doc_id)
+        if not result.get("status"):
+            return JSONResponse(public.returnMsg(False, result.get("msg", "删除失败")))
+        return JSONResponse(public.return_data(True, data=result))
+    except Exception:
+        logger.warning("知识库删除失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "知识库删除失败"))
 
 
 @app.get("/api/agent/run")

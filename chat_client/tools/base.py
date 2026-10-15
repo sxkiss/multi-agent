@@ -82,6 +82,27 @@ def inject_tool_name(xml: str, tool_name: str) -> str:
     return xml.replace("<tool>", f"<tool>\n<tool_name>{tool_name}</tool_name>", 1)
 
 
+def inject_duration(xml: str, seconds: float) -> str:
+    """幂等注入 <duration> 耗时标签（单位：秒，保留两位小数，带 s 后缀）。
+
+    约定沿用 Bash 工具既有的 duration 格式（如 "1.23s"），供模型感知每个工具
+    的执行耗时。仅注入到 <tool> 结构且尚无 <duration> 标签时才生效——
+    Bash 等工具已自带精确耗时，不覆盖。
+
+    供 _guarded_execute 统一调用（正常完成 / 转后台 / 后台回灌路径）。
+    """
+    if not xml or "<tool>" not in xml or "<duration>" in xml:
+        return xml
+    dur_str = f"{seconds:.2f}s"
+    # 注入到 <toolcall_result> 内首部（与 Bash metadata 的渲染位置一致），
+    # 兼容无 <toolcall_result> 的非标准结果（原样不加工）。
+    return xml.replace(
+        "<toolcall_result>\n",
+        f"<toolcall_result>\n<duration>{dur_str}</duration>\n",
+        1,
+    )
+
+
 # --- 输出截断工具（参考 opencode 保留前后各一半） ---
 MAX_OUTPUT_LENGTH = 30000
 SAFE_READONLY_COMMANDS = frozenset({

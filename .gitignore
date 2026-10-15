@@ -118,3 +118,18 @@ miniprogram/node_modules/
 miniprogram/package.json
 miniprogram/package-lock.json
 miniprogram/project.private.config.json
+
+# ===== 临时构建/CI 报告（2026-10-13 清理）=====
+build_status_report.txt
+gh*-report*.md
+gh_actions_report*.txt
+gha_*_report*.md
+ghcr*report*.md
+ydisks_build_report.txt
+reports/
+knowledge/
+
+# ===== 敏感文件：卡密库与用户配置（含真实卡密，禁止入库/push）=====
+card_keys.json
+card_user_configs.json
+*.key

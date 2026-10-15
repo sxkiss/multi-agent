@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FutureTimeout
 from typing import Any, get_type_hints
 
-from .base import _xml_response, inject_tool_name  # noqa: F401  (工具结果统一封装)
+from .base import _xml_response, inject_tool_name, inject_duration  # noqa: F401  (工具结果统一封装)
 
 # 项目根目录（chat_client 的上一级），作为所有工具的默认工作目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -159,6 +159,8 @@ class BackgroundTaskManager:
                     "tool": t.tool,
                     "status": t.status,
                     "result": result,
+                    # 后台任务总耗时（秒，保留两位小数）：从注册到完成
+                    "duration_s": round(time.time() - t.start_time, 2),
                 })
         return out
 
@@ -529,13 +531,16 @@ class ToolRegistry:
                     f"已自动转为后台执行。<task_id>{task_id}</task_id>\n"
                     f"【重要】该工具已在后台运行，禁止用相同参数重复调用它——"
                     f"重复调用会并发执行第二份，造成结果错乱与资源浪费。\n"
-                    f"请先继续处理其他工作。后台任务完成后，结果会自动回灌到对话上下文"
-                    f"（无需主动轮询）；如需提前查看，也可用 TaskStatus 查询。"
+                    f"请先继续处理其他工作，但【不要结束当前会话/停止对话】——"
+                    f"只有 AG 仍在本会话运行中，后台任务完成后结果才会自动回灌到对话上下文；"
+                    f"若停止会话或断开连接，结果将无法回传，只能下次用 TaskStatus 查询。"
                 )
                 logger.info("[ToolBackground] %s 转后台 task=%s", tool_label, task_id)
                 self._audit(tool_label, risk, audit_kwargs,
                             int((time.time() - started) * 1000), "background", task_id)
-                return inject_tool_name(_xml_response("running", msg), tool_label)
+                # 转后台通知也带前台等待耗时（秒），模型可感知等待开销
+                _bg_xml = _xml_response("running", msg)
+                return inject_tool_name(inject_duration(_bg_xml, time.time() - started), tool_label)
         except Exception as e:
             dur = int((time.time() - t0) * 1000)
             self._audit(tool_label, risk, audit_kwargs, dur, "error", str(e))
@@ -543,7 +548,10 @@ class ToolRegistry:
 
         dur = int((time.time() - t0) * 1000)
         self._audit(tool_label, risk, audit_kwargs, dur, "ok", str(result)[:200])
-        return inject_tool_name(result, tool_label)
+        # 注入本次工具调用耗时（秒）：沿用 Bash 既有 duration 约定，便于模型
+        # 感知各工具开销；工具自带 duration 时（如 Bash）不覆盖。
+        _elapsed = time.time() - t0
+        return inject_tool_name(inject_duration(result, _elapsed), tool_label)
 
     def _load_states(self) -> dict[str, Any]:
         """从文件加载工具状态"""
@@ -957,6 +965,8 @@ def TaskStop(task_id: str) -> str:
 from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注册副作用)
     agent_tools,
     edit,
+    knowledge,
+    market,
     mcp_tool,
     mem0,
     scheduler,

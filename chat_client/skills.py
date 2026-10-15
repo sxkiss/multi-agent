@@ -880,7 +880,7 @@ class SkillManager:
         categories = {}
         for s in skills:
             name = s.name
-            desc = s.description[:100] if s.description else ""
+            desc = s.description[:200] if s.description else ""
             cat = "其他"
             if any(k in name for k in ["seo", "geo", "content", "keyword", "rank", "meta", "schema", "backlink", "serp", "competitor", "domain", "alert", "on-page", "technical-seo", "internal-link", "topic", "refresher"]):
                 cat = "SEO/GEO"
@@ -920,7 +920,16 @@ class SkillManager:
         for cat, items in sorted(categories.items()):
             sample = items[:6]
             more = f" 等共{len(items)}个" if len(items) > 6 else ""
-            names = ', '.join([f"`{s['name']}`" for s in sample])
+            parts = []
+            for s in sample:
+                d = (s['desc'] or "").strip()
+                if d:
+                    # 截断到 120 字符，避免单行过长；保留触发场景（description 前部通常是用途/触发词）
+                    d = d if len(d) <= 120 else d[:120] + "…"
+                    parts.append(f"`{s['name']}`（{d}）")
+                else:
+                    parts.append(f"`{s['name']}`")
+            names = ', '.join(parts)
             lines.append(f"- **{cat}**{more}: {names}")
         return "\n".join(lines)
 

@@ -279,6 +279,7 @@
 
 <script>
 import { ref, computed } from 'vue'
+import { stripInlineThinking } from '../assistant-content.js'
 
 export default {
   name: 'MessageItem',
@@ -452,13 +453,14 @@ export default {
     }
 
     function parseMarkdown(content) {
+      const text = stripInlineThinking(content)
       try {
-        const md = window.marked?.parse(content) || content
+        const md = window.marked?.parse(text) || text
         return sanitizeHTML(md)
       } catch {
         console.error('Markdown parse error')
         // 解析失败也必须消毒后再进 v-html
-        return sanitizeHTML(content)
+        return sanitizeHTML(text)
       }
     }
 

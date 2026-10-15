@@ -233,6 +233,11 @@ class Agent:
 
         # 全局记忆检索开关（mem0 / ExternalRAG）
         self.use_global_rag = self.config.get("use_global_rag", False)
+
+        # 文档知识库开关（本机 knowledge/ 目录，与 mem0 记忆独立）
+        # 与 use_global_rag 的区别：mem0 存"记忆/偏好"，这里存"文档/资料"
+        self.use_document_kb = self.config.get("use_document_kb", True)
+        self._doc_kb = None  # 懒加载（首次检索时才建 embedding 客户端）
         
         # Code mode configuration
         self.code_mode = self.config.get("code_mode", False)
@@ -281,6 +286,32 @@ class Agent:
                     logger.info(f"技能摘要已注入系统提示（{len(skill_manager.all_enabled())} 个技能）")
             except Exception as e:
                 logger.debug(f"技能摘要注入失败: {e}")
+            # 技能使用硬规则：强制先评估技能再动手（2026-10-13 boss 反馈"有技能不用"）
+            self.system_prompt += (
+                "\n\n## 技能使用铁律（必须遵守）\n"
+                "- 接到任何任务，**第一步先在上方技能清单里查找**有没有匹配的技能："
+                "逐条比对任务的领域/触发词与技能的 description（尤其看\"遇到以下情况就使用\"\"适用场景\"\"触发词\"段落）。\n"
+                "- **只要找到匹配技能，必须先调用 `Skills(name=\"技能名\")` 加载该技能的完整工作流**，再按技能流程执行；禁止跳过技能直接用通用手段硬干。\n"
+                "- 技能匹配规则：任务涉及 excel/表格/数据分析→查数据分析类；ppt/演示→查 PPT 类；"
+                "seo/排名→查 SEO 类；浏览器/爬虫→查 Web 类；逆向/安全→查安全类；微信/图片/视频→查社媒类；"
+                "运维/部署/服务器→查 DevOps 类；写代码→查编程语言类；识别图片/OCR→查 SN 技能。\n"
+                "- 一个任务可能匹配多个技能：按\"最贴合\"优先加载 1 个主技能，必要时再加载 1 个辅助技能。\n"
+                "- 确实没有匹配技能（清单里无任何相关项）时，才允许用通用工具（Bash/Read/Write 等）执行。\n"
+                "- **自查**：回复用户前，确认自己是否漏用了技能——若清单里有明显匹配项而你没加载，就是违规。"
+            )
+            # 市场工具主动查询模板（2026-10-13）：专家市场/技能市场 发现与角色选用
+            self.system_prompt += (
+                "\n\n## 市场发现工具（主动使用，不要等用户给链接）\n"
+                "- 专家市场：429 个领域专家（含完整人设提示词），覆盖营销/技术/设计/运营等。"
+                "当用户需要专业角色/人设/专家时（如\"帮我找营销专家\"\"用产品经理视角分析\"），"
+                "主动调用 `ExpertMarket(keyword=...)` 搜索，再用 `GetExpertPrompt(name=...)` 取提示词作为角色设定。\n"
+                "- 技能市场：SkillHub 社区公开技能库。当本地技能不够、用户要找新技能/插件时，"
+                "调用 `SkillMarket(keyword=...)` 或 `SkillCategories()` 探索。\n"
+                "- 精选场景：`ExpertScenes()` 查看专家市场精选场景。\n"
+                "- 用法示例：用户说\"我需要一个内容营销专家\"→ 调 `ExpertMarket(keyword=\"内容创作\")`"
+                "→ 命中后调 `GetExpertPrompt(name=\"content-creator\")` 加载人设。\n"
+                "- **自查**：回复用户前，若涉及专家角色/外部技能需求而你没调过市场工具，就是漏用。"
+            )
             # 注入 mem0 记忆使用提示
             self.system_prompt += "\n\n## 记忆系统\n- `mem0_search` 查询历史记忆（用户偏好、踩坑记录、已完成任务）\n- `mem0_add` 写入重要信息（用户明确说'记住'、协作规则、技术决策）\n- `mem0_list` 列出所有记忆（按 agent_id 过滤，默认50条）\n- `mem0_delete` 删除指定 ID 的记忆（不可撤销）\n- `mem0_import` 批量导入（多行文本，每行一条）\n- 涉及跨会话上下文、用户偏好、历史决策时主动调用，不要凭空回答"
 
@@ -525,6 +556,54 @@ Here is some useful information about the environment you are running in:
         """
         self.global_rag.add_document(text, metadata)
 
+    def _get_doc_kb(self):
+        """懒加载文档知识库实例（knowledge/ 目录）。
+
+        仅在开启且首次检索时构造，避免每轮对话都新建 embedding 客户端。
+        embedding 未配置时返回 None（检索静默降级，不影响主对话）。
+        """
+        if self._doc_kb is not None:
+            return self._doc_kb
+        if not getattr(self, "use_document_kb", False):
+            return None
+        try:
+            from chat_client.knowledge_base import KnowledgeBase, build_embed_fn
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            kb_dir = self.config.get("document_kb_dir") or os.path.join(base_dir, "knowledge")
+            emb_api_key = self.config.get("embedding_api_key") or ""
+            emb_base_url = self.config.get("embedding_base_url") or ""
+            if not emb_api_key or not emb_base_url:
+                logger.debug("[KB] embedding 未配置，文档知识库不启用")
+                return None
+            embed = build_embed_fn(
+                emb_api_key, emb_base_url,
+                self.config.get("embedding_model_name") or "text-embedding-3-small",
+                default_headers=self.default_headers,
+            )
+            self._doc_kb = KnowledgeBase(kb_dir, embed)
+            return self._doc_kb
+        except Exception:
+            logger.warning("[KB] 文档知识库初始化失败，已降级", exc_info=True)
+            return None
+
+    def search_document_kb(self, query: str, top_k: int = 5, score: float = 0.35) -> list[dict]:
+        """检索文档知识库，返回带引用的命中列表（失败返回空）。
+
+        阈值 0.35 高于交互式默认的 0.2：自动注入是"顺带"增强，
+        宁可漏一点也不要把无关段落塞进上下文干扰回答。
+        """
+        kb = self._get_doc_kb()
+        if kb is None:
+            return []
+        try:
+            res = kb.search(query, top_k=top_k, score=score)
+            if not res.get("status"):
+                return []
+            return res.get("results", []) or []
+        except Exception:
+            logger.warning("[KB] 文档知识库检索失败，已降级", exc_info=True)
+            return []
+
     @staticmethod
     def _coerce_tool_args(func_name: str, args: dict[str, Any]) -> dict[str, Any]:
         """按 schema 把模型可能传成字符串的参数转回真实类型（如 timeout='60000' -> 60000）。"""
@@ -650,6 +729,16 @@ Here is some useful information about the environment you are running in:
                     context_str += "[Global Knowledge Base(for reference only)]:\n" + "\n".join(global_docs) + "\n\n"
                 logger.info("[RAG] Global context injected, docs count: %d", len(global_docs))
 
+            # 文档知识库检索（用户自己入库的文档/资料，带来源引用）
+            # 与上面 mem0 记忆的区别：这里是长期沉淀的文档，不是对话记忆
+            if getattr(self, "use_document_kb", False) and user_text.strip():
+                kb_hits = self.search_document_kb(user_text, top_k=self.config.get("document_kb_top_k", 5))
+                if kb_hits:
+                    kb_lines = [f"{h['citation']}\n{h['text']}" for h in kb_hits]
+                    context_str += ("[Document Knowledge Base(for reference only)]:\n"
+                                    + "\n\n".join(kb_lines) + "\n\n")
+                    logger.info("[KB] Document context injected, hits count: %d", len(kb_hits))
+
             # 检查触发条件
             if self.memory.get_total_rounds() > self.rag_trigger_threshold:
                 
@@ -742,6 +831,7 @@ Here is some useful information about the environment you are running in:
                             f"<task_id>{_t['task_id']}</task_id>\n"
                             f"<tool>{_t['tool']}</tool>\n"
                             f"<status>{_t['status']}</status>\n"
+                            f"<duration_s>{_t.get('duration_s', '')}</duration_s>\n"
                             f"<result>\n{_t['result']}\n</result>\n"
                             f"</background_task_done>\n"
                             f"以上是你之前转入后台的工具任务的执行结果，现已完成，"
@@ -963,6 +1053,7 @@ Here is some useful information about the environment you are running in:
                                         f"<task_id>{_t['task_id']}</task_id>\n"
                                         f"<tool>{_t['tool']}</tool>\n"
                                         f"<status>{_t['status']}</status>\n"
+                                        f"<duration_s>{_t.get('duration_s', '')}</duration_s>\n"
                                         f"<result>\n{_t['result']}\n</result>\n"
                                         f"</background_task_done>\n"
                                         f"以上是你之前转入后台的工具任务的执行结果，现已完成，"

@@ -108,7 +108,8 @@ Args:
 
 def Skills(name: str = "", action: str = "load", source: str = "", overwrite: bool = False, resource: str = ""):
     """
-    Placeholder docstring, will be replaced dynamically.
+    加载并使用技能（Skill）。**动手前先看这里**——多数专业任务都有现成技能封装了成熟工作流，
+    比自己从头写更可靠。用 Skills(action="list") 查看全部可用技能。
 
     技能工具，支持加载与生命周期管理（安装/卸载/市场）。
     - action="load"（默认）：渐进式披露加载 SKILL.md（Layer 2）或附属文件（Layer 3）
