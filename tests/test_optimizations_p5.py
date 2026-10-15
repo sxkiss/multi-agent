@@ -191,3 +191,58 @@ class TestMarketCache:
         cat.cache_market_expert("m2", "x", {})
         dicts = {e["id"]: e for e in cat.list_dicts()}
         assert dicts["m2"]["source"] == "market"
+
+
+class TestExpertFullModel:
+    """P5 对齐 Octop：专家完整数据模型（welcome/quick_prompts/files/color）。"""
+
+    def test_full_manifest_fields(self, tmp_path):
+        from chat_client.experts import ExpertCatalog
+        base = str(tmp_path)
+        d = os.path.join(base, "experts", "full")
+        os.makedirs(d)
+        manifest = {
+            "id": "full",
+            "label": {"zh": "完整专家"},
+            "description": {"zh": "描述"},
+            "welcome_message": {"zh": "欢迎语"},
+            "icon": "🚀",
+            "color": "#123456",
+            "category": "测试",
+            "prompt_files": ["SOUL.md", "IDENTITY.md"],
+            "quick_prompts": [
+                {"title": {"zh": "快捷1"}, "description": {"zh": "d1"},
+                 "prompt": {"zh": "p1"}, "color": "#fff", "icon_name": "star"},
+            ],
+        }
+        json.dump(manifest, open(os.path.join(d, "manifest.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        open(os.path.join(d, "SOUL.md"), "w").write("你是完整专家。")
+        open(os.path.join(d, "IDENTITY.md"), "w").write("# Identity")
+        e = ExpertCatalog(base).get("full")
+        assert e.welcome_message == "欢迎语"
+        assert e.color == "#123456"
+        assert len(e.quick_prompts) == 1
+        assert e.quick_prompts[0]["title"] == "快捷1"
+        assert e.prompt_files == ["SOUL.md", "IDENTITY.md"]
+
+    def test_files_recursive_discovery(self, tmp_path):
+        """对齐 Octop discover_seed_paths：递归列出所有文件（排除 manifest）。"""
+        from chat_client.experts import ExpertCatalog
+        base = str(tmp_path)
+        d = os.path.join(base, "experts", "rec")
+        os.makedirs(os.path.join(d, "skills", "sub"))
+        json.dump({"id": "rec"}, open(os.path.join(d, "manifest.json"), "w"))
+        open(os.path.join(d, "SOUL.md"), "w").write("s")
+        open(os.path.join(d, "skills", "sub", "helper.py"), "w").write("x")
+        e = ExpertCatalog(base).get("rec")
+        assert "SOUL.md" in e.files
+        assert "skills/sub/helper.py" in e.files
+        assert "manifest.json" not in e.files  # 排除 manifest
+
+    def test_to_dict_has_full_fields(self, tmp_path):
+        from chat_client.experts import ExpertCatalog
+        base = str(tmp_path)
+        _mk_expert(base, "e1")
+        d = ExpertCatalog(base).get("e1").to_dict()
+        for k in ("welcome_message", "quick_prompts", "color", "prompt_files", "files"):
+            assert k in d

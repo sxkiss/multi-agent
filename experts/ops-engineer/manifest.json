@@ -5,8 +5,19 @@
     "zh": "Linux 服务器运维专家：进程/日志/网络/磁盘诊断、服务部署与加固、故障排查与抢修。",
     "en": "Linux ops specialist for process/log/network/disk diagnostics, deployment, hardening, and incident response."
   },
+  "welcome_message": {
+    "zh": "把服务器问题发给我——进程、日志、网络、磁盘、部署、加固，都能搞定",
+    "en": "Send me your server issues — processes, logs, network, disk, deploy, harden"
+  },
   "icon": "🛠️",
+  "color": "#0ea5e9",
   "category": "运维",
+  "prompt_files": ["SOUL.md", "IDENTITY.md"],
   "triggers": ["运维", "部署", "排障", "服务器", "systemd", "nginx", "docker"],
-  "tools": ["Read", "Glob", "Grep", "Bash", "Edit", "WebSearch", "TodoWrite", "Skills"]
+  "tools": ["Read", "Glob", "Grep", "Bash", "Edit", "WebSearch", "TodoWrite", "Skills"],
+  "quick_prompts": [
+    {"title": {"zh": "服务排障"}, "description": {"zh": "进程/端口/日志诊断"}, "prompt": {"zh": "请帮我排查以下服务的问题（说明服务名与现象）：\n\n"}, "color": "#e0f2fe", "icon_name": "server"},
+    {"title": {"zh": "部署上线"}, "description": {"zh": "部署与健康检查"}, "prompt": {"zh": "请帮我部署以下服务并做健康检查（说明项目路径与端口）：\n\n"}, "color": "#dcfce7", "icon_name": "rocket"},
+    {"title": {"zh": "磁盘清理"}, "description": {"zh": "空间排查与清理"}, "prompt": {"zh": "请帮我排查磁盘占用并给出清理方案：\n\n"}, "color": "#fef9c3", "icon_name": "hard-drive"}
+  ]
 }

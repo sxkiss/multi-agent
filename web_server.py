@@ -3956,6 +3956,25 @@ async def api_sessions_stats(request: Request):
     return JSONResponse(public.return_data(True, data=session_tools.list_session_stats(BASE_DIR)))
 
 
+# ── P6: 工具结果归档（上下文治理）────────────────────────────
+@app.get("/api/context/archives")
+async def api_context_archives(session_id: str = ""):
+    """工具结果归档统计（上下文治理观测）。"""
+    from chat_client.tool_archive import archive_stats
+    return JSONResponse(public.return_data(True, data=archive_stats(BASE_DIR, session_id)))
+
+
+@app.get("/api/context/breakdown")
+async def api_context_breakdown(session_id: str, context_window_tokens: int = 256 * 1024):
+    """会话上下文分段占用（系统/历史/工具返回/思考/知识）。"""
+    from chat_client.session_tools import analyze_context
+    try:
+        return JSONResponse(public.return_data(True, data=analyze_context(
+            BASE_DIR, session_id, context_window_tokens=context_window_tokens)))
+    except Exception as e:
+        return JSONResponse(public.returnMsg(False, f"分析上下文失败: {e!s}"))
+
+
 # ── P5: 本地专家库（自动发现）──────────────────────────────────
 @app.get("/api/experts")
 async def api_experts():

@@ -79,9 +79,14 @@ class Expert:
         self.label = expert_id
         self.description = ""
         self.icon = "🧩"
+        self.color = ""
         self.category = "其他"
+        self.welcome_message = ""
+        self.quick_prompts: list[dict[str, Any]] = []
         self.triggers: list[str] = []
         self.tools: list[str] = []
+        self.prompt_files: list[str] = []
+        self.files: list[str] = []          # 递归文件清单（对齐 Octop discover_seed_paths）
         self.soul = ""
         self.identity = ""
         self.user = ""
@@ -100,9 +105,27 @@ class Expert:
         m = self.manifest
         self.label = _pick_lang(m.get("label") or m.get("name")) or self.id
         self.description = _pick_lang(m.get("description") or m.get("desc"))
-        self.icon = str(m.get("icon") or m.get("emoji") or "🧩").strip()
+        self.icon = str(m.get("icon") or m.get("emoji") or m.get("icon_name") or "🧩").strip()
+        self.color = str(m.get("color") or "").strip()
         self.category = _pick_lang(m.get("category")) or "其他"
         self.source = str(m.get("source") or self.source).strip() or self.source
+        self.welcome_message = _pick_lang(m.get("welcome_message") or m.get("welcome"))
+        # quick_prompts（对齐 Octop：title/description/prompt/color/icon）
+        qp = m.get("quick_prompts") or []
+        if isinstance(qp, list):
+            for item in qp:
+                if not isinstance(item, dict):
+                    continue
+                self.quick_prompts.append({
+                    "title": _pick_lang(item.get("title")),
+                    "description": _pick_lang(item.get("description")),
+                    "prompt": _pick_lang(item.get("prompt")),
+                    "color": str(item.get("color") or "").strip(),
+                    "icon": str(item.get("icon_name") or item.get("icon") or "").strip(),
+                })
+        # prompt_files（manifest 声明的 persona 文件）
+        pf = m.get("prompt_files") or []
+        self.prompt_files = [str(x) for x in pf] if isinstance(pf, list) else []
         trg = m.get("triggers") or m.get("trigger") or []
         if isinstance(trg, str):
             trg = [t.strip() for t in trg.split(",") if t.strip()]
@@ -132,6 +155,22 @@ class Expert:
                 d for d in os.listdir(sdir)
                 if os.path.isdir(os.path.join(sdir, d)) and not d.startswith(".")
             )
+        # 递归文件清单（对齐 Octop discover_seed_paths，排除 manifest.json）
+        self.files = self._discover_files()
+
+    def _discover_files(self) -> list[str]:
+        """递归列出专家目录下所有文件（相对路径），排除 manifest.json。"""
+        out: list[str] = []
+        if not os.path.isdir(self.directory):
+            return out
+        for root, dirs, fnames in os.walk(self.directory):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for fn in sorted(fnames):
+                if fn.startswith(".") or fn == "manifest.json":
+                    continue
+                rel = os.path.relpath(os.path.join(root, fn), self.directory)
+                out.append(rel.replace(os.sep, "/"))
+        return sorted(out)
 
     def to_dict(self, with_prompt: bool = False) -> dict[str, Any]:
         d = {
@@ -139,10 +178,15 @@ class Expert:
             "label": self.label,
             "description": self.description,
             "icon": self.icon,
+            "color": self.color,
             "category": self.category,
+            "welcome_message": self.welcome_message,
+            "quick_prompts": self.quick_prompts,
             "triggers": self.triggers,
             "tools": self.tools,
             "skills": self.skills,
+            "prompt_files": self.prompt_files,
+            "files": self.files,
             "source": self.source,
             "directory": self.directory,
         }

@@ -5,8 +5,19 @@
     "zh": "内容创作专家：营销文案、公众号/小红书/知乎文章、SEO 优化、标题打磨、内容改写。",
     "en": "Content writer for marketing copy, social articles, SEO optimization, headline polishing, and rewriting."
   },
+  "welcome_message": {
+    "zh": "告诉我平台和受众，我帮你写出能打动人心的内容",
+    "en": "Tell me the platform and audience, and I'll write content that lands"
+  },
   "icon": "✍️",
+  "color": "#db2777",
   "category": "内容",
+  "prompt_files": ["SOUL.md", "IDENTITY.md"],
   "triggers": ["文案", "写文章", "公众号", "小红书", "SEO", "内容", "标题"],
-  "tools": ["Read", "Write", "WebSearch", "WebFetch", "Skills"]
+  "tools": ["Read", "Write", "WebSearch", "WebFetch", "Skills"],
+  "quick_prompts": [
+    {"title": {"zh": "公众号文章"}, "description": {"zh": "选题到成稿"}, "prompt": {"zh": "请帮我写一篇公众号文章（说明主题/受众/字数）：\n\n"}, "color": "#fce7f3", "icon_name": "file-text"},
+    {"title": {"zh": "小红书笔记"}, "description": {"zh": "爆款风格"}, "prompt": {"zh": "请帮我写一篇小红书笔记（说明产品/主题）：\n\n"}, "color": "#fee2e2", "icon_name": "heart"},
+    {"title": {"zh": "SEO 优化"}, "description": {"zh": "关键词+结构"}, "prompt": {"zh": "请为以下内容做 SEO 优化（说明目标关键词）：\n\n"}, "color": "#e0f2fe", "icon_name": "search"}
+  ]
 }

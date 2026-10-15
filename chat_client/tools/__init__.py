@@ -1110,6 +1110,7 @@ from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注�
     task,
     terminal,
     todo,
+    tool_archive,
     webfetch,
     websearch,
     wechat_media,

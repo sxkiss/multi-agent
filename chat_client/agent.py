@@ -31,6 +31,7 @@ from chat_client.retrieval import ExternalRAGService, RAGService, Mem0Service
 
 from .tools import registry, set_session_allow_high, get_background_manager
 from .tools.base import _xml_response, inject_tool_name
+from .tools import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -1307,10 +1308,21 @@ Here is some useful information about the environment you are running in:
                         "id": call_id
                     }
 
-                    # 截断过长的工具结果，防止上下文爆炸 (413 错误)
-                    MAX_TOOL_RESULT_LEN = 50000
-                    if isinstance(result_str, str) and len(result_str) > MAX_TOOL_RESULT_LEN:
-                        result_str = result_str[:MAX_TOOL_RESULT_LEN] + f"\n\n[...工具结果过长，已截断，共 {len(result_str)} 字符...]"
+                    # P6（2026-10-15）：工具结果精简+归档——大结果保留头尾+折叠标记，
+                    # 完整内容落盘 tool_archives/，模型可用 ReadToolArchive 按需召回。
+                    # 取代旧的 50K 硬截断（截断即丢信息）。阈值可配、可禁用。
+                    try:
+                        from .tool_archive import archive_result
+                        _base = self.config.get("base_dir") or PROJECT_ROOT
+                        result_str, _arch_meta = archive_result(
+                            result_str,
+                            base_dir=_base,
+                            session_id=self.session_id,
+                            tool_name=func_name,
+                            config=self.config,
+                        )
+                    except Exception as _arch_err:
+                        logger.debug(f"工具结果归档失败（按原样返回）: {_arch_err!s}")
 
                     # Construct content with XML structure
                     content_structure = [

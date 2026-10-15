@@ -5,8 +5,19 @@
     "zh": "代码审查专家：找 bug、查安全问题、评可维护性、给改进建议，输出结构化审查报告。",
     "en": "Code reviewer for bugs, security issues, maintainability, and structured improvement reports."
   },
+  "welcome_message": {
+    "zh": "把代码或 PR 发给我——找 bug、查安全、评设计，每条意见都指到具体行",
+    "en": "Send me code or a PR — bugs, security, design, each finding pinned to a line"
+  },
   "icon": "🔍",
+  "color": "#7c3aed",
   "category": "研发",
+  "prompt_files": ["SOUL.md", "IDENTITY.md"],
   "triggers": ["代码审查", "code review", "review", "查bug", "安全审查", "重构"],
-  "tools": ["Read", "Glob", "Grep", "Bash", "Skills"]
+  "tools": ["Read", "Glob", "Grep", "Bash", "Skills"],
+  "quick_prompts": [
+    {"title": {"zh": "审查 PR"}, "description": {"zh": "找 bug 与风险"}, "prompt": {"zh": "请审查以下 PR/改动（说明仓库与分支）：\n\n"}, "color": "#ede9fe", "icon_name": "git-pull-request"},
+    {"title": {"zh": "安全审查"}, "description": {"zh": "查漏洞与隐患"}, "prompt": {"zh": "请对以下代码做安全审查（说明范围）：\n\n"}, "color": "#fee2e2", "icon_name": "shield"},
+    {"title": {"zh": "重构建议"}, "description": {"zh": "可维护性改进"}, "prompt": {"zh": "请评估以下代码的可维护性并给重构建议：\n\n"}, "color": "#e0f2fe", "icon_name": "wrench"}
+  ]
 }
