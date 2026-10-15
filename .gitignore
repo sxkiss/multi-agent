@@ -133,3 +133,6 @@ knowledge/
 card_keys.json
 card_user_configs.json
 *.key
+
+# ===== 专家市场缓存（运行时落盘，对齐 Octop expert_market/）=====
+expert_market/

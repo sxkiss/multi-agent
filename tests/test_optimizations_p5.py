@@ -138,3 +138,56 @@ class TestInstallFromLocal:
         assert "已安装为团队成员" in out, out
         data = json.load(open(crew_file, encoding="utf-8"))
         assert "市场专家提示词" in data["agents"][0]["backstory"]
+
+
+class TestMarketCache:
+    """P5 对齐 Octop：市场专家落盘后自动发现。"""
+
+    def test_cache_market_expert_then_discovered(self, tmp_path):
+        from chat_client.experts import ExpertCatalog
+        base = str(tmp_path)
+        cat = ExpertCatalog(base)
+        d = cat.cache_market_expert("marketing-expert", "你是营销专家。",
+                                    {"displayName": {"zh": "营销专家"},
+                                     "description": {"zh": "增长与营销"},
+                                     "tags": [{"zh": "营销"}]})
+        assert os.path.isdir(d)
+        e = cat.get("marketing-expert")
+        assert e is not None
+        assert e.source == "market"
+        assert "营销专家" in e.soul
+        assert e.label == "营销专家"
+
+    def test_bundled_takes_precedence_over_market(self, tmp_path):
+        from chat_client.experts import ExpertCatalog
+        base = str(tmp_path)
+        _mk_expert(base, "dup", label="内置版")
+        cat = ExpertCatalog(base)
+        cat.cache_market_expert("dup", "市场版", {"displayName": "市场版"})
+        e = cat.get("dup")
+        assert e.source == "bundled"
+        assert e.label == "内置版"
+
+    def test_summary_shows_both_sources(self, tmp_path):
+        from chat_client.experts import ExpertCatalog
+        base = str(tmp_path)
+        _mk_expert(base, "b1", label="内置一")
+        cat = ExpertCatalog(base)
+        cat.cache_market_expert("m1", "市场专家", {"displayName": "市场一"})
+        s = cat.generate_expert_summary()
+        assert "内置专家" in s and "市场专家缓存" in s
+        assert "内置一" in s and "市场一" in s
+
+    def test_cache_rejects_illegal_id(self, tmp_path):
+        from chat_client.experts import ExpertCatalog
+        cat = ExpertCatalog(str(tmp_path))
+        with pytest.raises(ValueError):
+            cat.cache_market_expert("../../etc/passwd", "x")
+
+    def test_market_cache_not_in_git(self, tmp_path):
+        """market 目录应可被识别（source=market），便于前端区分。"""
+        from chat_client.experts import ExpertCatalog
+        cat = ExpertCatalog(str(tmp_path))
+        cat.cache_market_expert("m2", "x", {})
+        dicts = {e["id"]: e for e in cat.list_dicts()}
+        assert dicts["m2"]["source"] == "market"

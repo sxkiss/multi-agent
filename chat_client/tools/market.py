@@ -213,6 +213,14 @@ def GetExpertPrompt(name: str) -> str:
         return _xml_response("error", str(e))
     except Exception as e:
         return _xml_response("error", f"获取专家提示词失败: {e!s}")
+    # P5: 落盘到 expert_market/ 缓存，使其被自动发现（对齐 Octop expert_market/）
+    try:
+        from . import PROJECT_ROOT
+        from ..experts import get_catalog
+        meta = find_expert_meta(key) or find_expert_meta(name)
+        get_catalog(PROJECT_ROOT).cache_market_expert(key, text, meta or {})
+    except Exception as _cache_err:
+        logger.debug(f"专家缓存落盘失败（不影响返回）: {_cache_err!s}")
     if len(text) > 30000:
         text = text[:30000] + "\n\n[...提示词过长已截断...]"
     return _xml_response("done", f"<!-- 专家: {key} -->\n{text}")
