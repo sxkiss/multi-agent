@@ -3903,6 +3903,93 @@ async def api_chat_messages(request: Request):
     return JSONResponse(agent_main.get_chat(params))
 
 
+# ── P4: 会话工具（上下文分解 / 导出 / 分支 / 统计）──────────────
+@app.get("/api/session/context")
+async def api_session_context(request: Request):
+    """上下文用量分解：估算会话各段 token 占用。"""
+    params = dict(request.query_params)
+    _assert_session_owner(request, params)
+    from chat_client import session_tools
+    sid = str(params.get("session_id") or "")
+    win = int(params.get("window_tokens") or (agent_main.config.get("context_window_kb", 256) * 1024))
+    return JSONResponse(public.return_data(True, data=session_tools.analyze_context(BASE_DIR, sid, context_window_tokens=win)))
+
+
+@app.get("/api/session/export")
+async def api_session_export(request: Request):
+    """导出会话为 Markdown/JSON。"""
+    params = dict(request.query_params)
+    _assert_session_owner(request, params)
+    from chat_client import session_tools
+    res = session_tools.export_session(BASE_DIR, str(params.get("session_id") or ""),
+                                       fmt=str(params.get("format") or "markdown"))
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "导出失败")))
+
+
+@app.post("/api/session/fork")
+async def api_session_fork(request: Request):
+    """从指定消息分叉出一个新会话（原会话不变）。"""
+    params = await _params(request)
+    _assert_session_owner(request, params)
+    from chat_client import session_tools
+    res = session_tools.fork_session(BASE_DIR, str(params.get("session_id") or ""),
+                                     up_to_message_id=str(params.get("message_id") or ""),
+                                     new_session_id=str(params.get("new_session_id") or ""))
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "分叉失败")))
+
+
+@app.get("/api/sessions/stats")
+async def api_sessions_stats(request: Request):
+    """列出各会话规模统计。"""
+    from chat_client import session_tools
+    return JSONResponse(public.return_data(True, data=session_tools.list_session_stats(BASE_DIR)))
+
+
+# ── P4-d: 备份 ─────────────────────────────────────────────────
+@app.get("/api/backups")
+async def api_backups():
+    from chat_client import backup
+    return JSONResponse(public.return_data(True, data=backup.list_backups(BASE_DIR)))
+
+
+@app.post("/api/backups/create")
+async def api_backups_create(request: Request):
+    from chat_client import backup
+    params = await _params(request)
+    res = backup.create_backup(BASE_DIR, label=str(params.get("label") or ""),
+                               keep=int(params.get("keep") or 10))
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "备份失败")))
+
+
+@app.post("/api/backups/restore")
+async def api_backups_restore(request: Request):
+    from chat_client import backup
+    params = await _params(request)
+    res = backup.restore_backup(BASE_DIR, str(params.get("name") or ""),
+                                dry_run=bool(params.get("dry_run", True)))
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "恢复失败")))
+
+
+@app.post("/api/backups/auto")
+async def api_backups_auto(request: Request):
+    """启动/停止自动备份。action=start|stop|status"""
+    from chat_client import backup
+    params = await _params(request)
+    action = str(params.get("action") or "status").lower()
+    if action == "start":
+        res = backup.start_auto_backup(BASE_DIR, interval_sec=int(params.get("interval_sec") or 3600),
+                                       keep=int(params.get("keep") or 10))
+    elif action == "stop":
+        res = backup.stop_auto_backup()
+    else:
+        res = backup.auto_backup_status()
+    return JSONResponse(public.return_data(True, data=res))
+
+
 # ── session 归属校验：防止卡密/小程序用户伪造 session_id 读写他人会话 ──────
 def _assert_session_owner(request: Request, params: dict):
     """在非管理员请求中，验证 session_id 是否属于当前 token 对应的主人。

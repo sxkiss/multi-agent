@@ -11,6 +11,7 @@
       @load-conversation="loadConversation"
       @delete-conversation="deleteConversation"
       @delete-conversations="deleteConversations"
+      @export-conversation="exportConversation"
       @open-settings="openSettingsDrawer"
       @toggle-fullscreen="toggleFullscreen"
     />
@@ -1221,6 +1222,29 @@ function deleteConversations(ids) {
       } else if (window.layer) {
         window.layer.msg(result.msg || '批量删除失败', { icon: 2 })
       }
+  })
+}
+
+// 导出会话（P4）：拉取 Markdown 内容并触发浏览器下载
+function exportConversation(id) {
+  if (!id) return
+  apiGet(`/api/session/export?session_id=${encodeURIComponent(id)}&format=markdown`, (result) => {
+    if (result.status && result.data) {
+      const content = result.data.content || ''
+      const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      const safeName = String(id).replace(/[^\w.-]+/g, '_').slice(0, 60)
+      a.href = url
+      a.download = `conversation_${safeName}.md`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(url), 2000)
+      if (window.layer) window.layer.msg('已导出为 Markdown', { icon: 1 })
+    } else if (window.layer) {
+      window.layer.msg((result && result.msg) || '导出失败', { icon: 2 })
+    }
   })
 }
 

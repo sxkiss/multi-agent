@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import { marked } from 'marked'
 import App from './App.vue'
 import './styles.css'
+import './theme.css'
 import { authOpts } from './auth.js'
 
 // ==================== 面板全局对象（原版内联于 index.html，现随源码编译） ====================
@@ -170,3 +171,6 @@ marked.setOptions({
 })
 
 createApp(App).mount('#app')
+
+// 前端功能增强（主题切换 / 对话搜索 / 快捷键 / 自动滚底）——非侵入式
+import('./enhance.js').catch((e) => console.warn('[enhance] 加载失败', e))

@@ -126,6 +126,18 @@
                     <div class="conv-time">{{ conv.timeStr }}</div>
                     <button
                       v-if="!selectMode"
+                      class="conv-act-btn export-btn"
+                      title="导出会话"
+                      @click.stop="$emit('export-conversation', conv.id)"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                      </svg>
+                    </button>
+                    <button
+                      v-if="!selectMode"
                       class="delete-btn"
                       title="删除对话"
                       @click.stop="$emit('delete-conversation', conv.id)"
@@ -153,6 +165,18 @@
                 </label>
                 <div class="conv-title">{{ conv.title || '新对话' }}</div>
                 <div class="conv-time">{{ conv.timeStr }}</div>
+                <button
+                  v-if="!selectMode"
+                  class="conv-act-btn export-btn"
+                  title="导出会话"
+                  @click.stop="$emit('export-conversation', conv.id)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                </button>
                 <button
                   v-if="!selectMode"
                   class="delete-btn"
@@ -194,7 +218,8 @@ export default {
     'delete-conversations',
     'load-conversation',
     'open-settings',
-    'toggle-fullscreen'
+    'toggle-fullscreen',
+    'export-conversation'
   ],
   data() {
     return {
@@ -717,8 +742,31 @@ export default {
   justify-content: center;
 }
 
-.conversation-item:hover .delete-btn {
+.conv-act-btn.export-btn {
+  position: absolute;
+  right: 26px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.conversation-item:hover .delete-btn,
+.conversation-item:hover .conv-act-btn {
   display: flex;
+}
+
+.conv-act-btn.export-btn:hover {
+  background: #ecfdf5;
+  color: #07c160;
 }
 
 .delete-btn:hover {

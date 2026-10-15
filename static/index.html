@@ -3,12 +3,58 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#07c160" />
+  <meta name="description" content="Multi-agent 多智能体协作助手" />
   <title>多智能体协作助手</title>
   <link rel="icon" href="/favicon.png" />
-  <script type="module" crossorigin src="/static/assets/index.BkJwwXAu.js"></script>
-  <link rel="stylesheet" crossorigin href="/static/assets/index.CNt5gE2W.css">
+  <style>
+    /* 首屏加载态：避免白屏闪烁，提升观感 */
+    #bt-boot {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      background: #f6f7f9;
+      z-index: 99998;
+      transition: opacity 0.3s ease;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    html[data-theme="dark"] #bt-boot { background: #0f1115; }
+    #bt-boot.hide { opacity: 0; pointer-events: none; }
+    .bt-boot-spinner {
+      width: 40px; height: 40px;
+      border: 3px solid rgba(7, 193, 96, 0.2);
+      border-top-color: #07c160;
+      border-radius: 50%;
+      animation: bt-spin 0.8s linear infinite;
+    }
+    @keyframes bt-spin { to { transform: rotate(360deg); } }
+    .bt-boot-text { color: #9ca3af; font-size: 13px; letter-spacing: 0.3px; }
+    html[data-theme="dark"] .bt-boot-text { color: #6b7280; }
+  </style>
+  <script type="module" crossorigin src="/static/assets/index.BNsqUI9O.js"></script>
+  <link rel="stylesheet" crossorigin href="/static/assets/index.Cbh1D7JL.css">
 </head>
 <body>
   <div id="app"></div>
+  <div id="bt-boot">
+    <div class="bt-boot-spinner"></div>
+    <div class="bt-boot-text">正在加载多智能体协作助手…</div>
+  </div>
+  <script>
+    // 尽早应用已保存主题，避免闪白
+    try {
+      var t = localStorage.getItem('bt-theme');
+      if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    } catch (e) {}
+    // 首屏加载完成后淡出
+    window.addEventListener('load', function () {
+      var b = document.getElementById('bt-boot');
+      if (b) { setTimeout(function () { b.classList.add('hide'); setTimeout(function(){ b.remove(); }, 400); }, 200); }
+    });
+  </script>
 </body>
 </html>
