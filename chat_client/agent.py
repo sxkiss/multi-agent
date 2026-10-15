@@ -15,7 +15,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Generator
-from typing import Any
+from typing import Any, Callable
 
 import openai
 
@@ -60,6 +60,12 @@ def _cancel_event():
     from .tools import get_current_job
     job = get_current_job()
     return getattr(job, "cancel_event", None)
+
+
+def _get_current_job():
+    """取当前执行上下文的 job（工具并行执行时用于上下文隔离恢复）。"""
+    from .tools import get_current_job
+    return get_current_job()
 
 
 def _is_cancelled() -> bool:
@@ -1151,53 +1157,60 @@ Here is some useful information about the environment you are running in:
                     messages[-1]["reasoning_content"] = assistant_msg_kwargs["reasoning_content"]
 
                 # 执行工具
-                for tc in assistant_msg_kwargs["tool_calls"]:
+                # ── 工具执行：预处理(顺序) → 执行(并行) → 回填(顺序) ──
+                # 2026-10-15 修复（boss 反馈）：此前是串行 for 循环，同一条消息里的多个
+                # 工具调用（尤其多个 Task 子代理）被逐个执行，前一个卡满前台等待上限
+                # 才轮到下一个，与 Task 工具 docstring 承诺的「并发启动多个 agent」不符。
+                # 现改为并行执行同一轮的所有工具调用（config: tool_parallel_enabled，
+                # 默认 True），yield 事件顺序与落库顺序保持不变。
+                _tool_calls = assistant_msg_kwargs["tool_calls"]
+                _plans: list[dict[str, Any]] = []
+                _abort = False
+
+                for tc in _tool_calls:
                     # 停止检查：已请求停止则不再执行后续工具（含 Bash 等高危工具）
                     if _is_cancelled():
-                        self._mark_unexecuted_tools(assistant_msg_kwargs["tool_calls"], messages, ai_msg_id)
+                        self._mark_unexecuted_tools(_tool_calls, messages, ai_msg_id)
                         return
                     func_name = tc["function"]["name"]
                     args_str = tc["function"]["arguments"]
                     call_id = tc["id"]
-                    
+
                     tool_exists = registry.tool_exists(func_name)
                     tool_enabled = registry.is_tool_enabled(func_name, self.enabled_tools) if tool_exists else False
-                    
-                    #处理不存在的工具
+
+                    # 处理不存在的工具
                     if not tool_exists:
-                        result_str = inject_tool_name(
-                            _xml_response("error", f"Error: Tool '{func_name}' does not exist."),
-                            func_name)
-                        content_structure = [{"type": "text", "text": result_str}]
-                        self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": content_structure
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name,
+                            "yield_call": False, "yield_result": False, "write_memory": True,
+                            "immediate": inject_tool_name(
+                                _xml_response("error", f"Error: Tool '{func_name}' does not exist."),
+                                func_name),
                         })
                         continue
-                    
-                    #处理未启用的工具
+
+                    # 处理未启用的工具
                     if not tool_enabled:
                         tool_id = registry.get_tool_id(func_name)
-                        result_str = inject_tool_name(
-                            _xml_response("error", f"Error: Tool '{func_name}' (ID: {tool_id}) is not enabled. You do not have permission to use this tool."),
-                            func_name)
-                        content_structure = [{"type": "text", "text": result_str}]
-                        self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": content_structure
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name,
+                            "yield_call": False, "yield_result": False, "write_memory": True,
+                            "immediate": inject_tool_name(
+                                _xml_response("error", f"Error: Tool '{func_name}' (ID: {tool_id}) is not enabled. You do not have permission to use this tool."),
+                                func_name),
                         })
                         continue
-                    
+
+                    # 通过存在/启用校验后，先 yield tool_call（与原行为一致：在参数解析前）
                     yield {
                         "type": "tool_call",
                         "tool": func_name,
                         "args": args_str,
                         "id": call_id
                     }
+
+                    # 参数解析
                     try:
                         if args_str and args_str.strip():
                             args = json.loads(args_str)
@@ -1206,76 +1219,57 @@ Here is some useful information about the environment you are running in:
                             args = {}
                             self._bad_args_streak = 0
                     except json.JSONDecodeError:
-                        # 关键修复：此前非法 JSON 被静默降级为 {} 继续执行，模型看不到
-                        # 任何错误，于是不断重试同一个超大 Write（参数被输出上限截断），
-                        # 形成"截断 → 非法 → 空跑 → 再截断"的死循环刷 token。
-                        # 改为：把明确错误回灌给模型 + 连续多次即熔断，逼它改用分段写入。
+                        # 非法 JSON 回灌明确错误 + 连续多次熔断（逼模型改分段写入）
                         self._bad_args_streak = self.next_bad_args_streak(self._bad_args_streak)
                         logger.warning(
                             "[Tool-Args] 工具 %s 的参数不是合法 JSON（连续第 %d 次）: %r",
                             func_name, self._bad_args_streak, (args_str or "")[:200]
                         )
-                        _err_structure = [{"type": "text", "text": bad_args_hint(func_name)}]
-                        self.memory.add_message("tool", _err_structure, tool_call_id=call_id, id=ai_msg_id)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": _err_structure
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                            "yield_call": True, "yield_result": False, "write_memory": True,
+                            "immediate": bad_args_hint(func_name),
                         })
                         if self._bad_args_streak >= self.BAD_ARGS_MAX_STREAK:
-                            # 熔断：连续多次同类失败，直接结束本轮，避免无限烧 token
                             logger.error("[Tool-Args] 连续 %d 次非法参数，熔断结束本轮", self._bad_args_streak)
-                            yield {
-                                "type": "warning",
-                                "data": f"工具 {func_name} 参数连续多次非法（内容可能过长被截断），已停止重试。"
-                                        "请换用更小的实现或分段写入。"
-                            }
-                            # return 是本文件既有的中止模式（同 _is_cancelled 分支），
-                            # 且需标记未执行的工具，保持消息序列合法
-                            self._mark_unexecuted_tools(assistant_msg_kwargs["tool_calls"], messages, ai_msg_id)
-                            return
+                            _abort = True
+                            break
                         continue
 
                     # 类型矫正：按 schema 把字符串化的数字/布尔参数转回真实类型
-                    # （模型常把 timeout 等数值传成字符串，导致 _validate_args 报 type error）
                     args = self._coerce_tool_args(func_name, args)
 
-                    # Special handling for Task/RunCrew/ConsultPeer to inherit config
+                    # 参数注入（config/session/cwd）与卡密安全校验
                     try:
                         if func_name in ("Task", "RunCrew", "ConsultPeer"):
-                            # Create a copy of config to avoid modification
                             agent_config = self.config.copy()
-                            # Remove specific keys that shouldn't be inherited or will be overridden
                             agent_config.pop("system_prompt", None)
                             agent_config.pop("tools", None)
-
-                            # Inject into args
                             args["parent_config"] = agent_config
                             args["parent_session_id"] = self.session_id
 
-                        # Inject session_id for Todo and Summary tools
                         if func_name in ["TodoWrite", "TodoRead", "TaskSummary"]:
                             args["session_id"] = self.session_id
                             args["sessions_dir"] = self.config.get("sessions_dir", "sessions")
 
-                        # Inject cwd for Bash/Terminal tools
-                        # 注意：CheckCommandStatus/StopCommand 不接收 cwd 参数（它们的
-                        # execute 签名只有 command_id/output_priority），传了会报
-                        # "unexpected keyword argument 'cwd'"。仅 Bash 需要 cwd。
+                        # 注意：CheckCommandStatus/StopCommand 不接收 cwd 参数，仅 Bash 需要
                         if func_name == "Bash":
                             cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else None
                             if cwd and "cwd" not in args:
                                 args["cwd"] = cwd
-                        
+
                         # 【安全】卡密用户：限制 Bash 命令，禁止危险操作
                         if self._is_card_user and func_name == "Bash":
                             cmd = args.get("command", "")
                             dangerous_patterns = ["cat /etc/", "passwd", "/proc/", "chmod 777", "rm -rf /", "sudo", "su "]
                             if any(p in cmd for p in dangerous_patterns) or cmd.startswith("cat /"):
-                                result_str = inject_tool_name(
-                                    _xml_response("error", f"安全限制：卡密用户禁止执行此命令（包含敏感路径或高危操作）。"),
-                                    func_name)
-                                yield {"type": "tool_result", "tool": func_name, "result": result_str, "id": call_id}
+                                _plans.append({
+                                    "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                                    "yield_call": True, "yield_result": True, "write_memory": False,
+                                    "immediate": inject_tool_name(
+                                        _xml_response("error", f"安全限制：卡密用户禁止执行此命令（包含敏感路径或高危操作）。"),
+                                        func_name),
+                                })
                                 continue
 
                         # 【安全】卡密用户：限制 Write 工具路径
@@ -1283,30 +1277,75 @@ Here is some useful information about the environment you are running in:
                             fp = args.get("file_path", "")
                             logger.info(f"[安全] Card user Write: fp={fp}, workspace={self._user_workspace}, starts={fp.startswith(self._user_workspace) if fp else False}")
                             if fp and not fp.startswith(self._user_workspace):
-                                result_str = inject_tool_name(
-                                    _xml_response("error", f"安全限制：卡密用户只能在隔离工作目录内操作文件（{_user_workspace}）"),
-                                    func_name)
-                                yield {"type": "tool_result", "tool": func_name, "result": result_str, "id": call_id}
+                                _plans.append({
+                                    "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                                    "yield_call": True, "yield_result": True, "write_memory": False,
+                                    "immediate": inject_tool_name(
+                                        _xml_response("error", f"安全限制：卡密用户只能在隔离工作目录内操作文件（{_user_workspace}）"),
+                                        func_name),
+                                })
                                 continue
-                        
-                        func = registry.get_tool_func(func_name)
-                        if func:
-                            result_str = func(**args)
-                        else:
-                            result_str = inject_tool_name(
-                                _xml_response("error", f"Error: Tool {func_name} not found."),
-                                func_name)
                     except Exception as e:
-                        result_str = inject_tool_name(
-                            _xml_response("error", f"Error executing tool: {e!s}"),
-                            func_name)
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                            "yield_call": True, "yield_result": True, "write_memory": True,
+                            "immediate": inject_tool_name(
+                                _xml_response("error", f"Error preparing tool: {e!s}"), func_name),
+                        })
+                        continue
 
-                    yield {
-                        "type": "tool_result",
-                        "tool": func_name,
-                        "result": result_str,
-                        "id": call_id
-                    }
+                    func = registry.get_tool_func(func_name)
+                    if func:
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                            "yield_call": True, "yield_result": True, "write_memory": True,
+                            "func": func, "args": args,
+                        })
+                    else:
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                            "yield_call": True, "yield_result": True, "write_memory": True,
+                            "immediate": inject_tool_name(
+                                _xml_response("error", f"Error: Tool {func_name} not found."), func_name),
+                        })
+
+                # 阶段2：并行执行所有待执行工具（func 已含黑名单/风险/超时/审计守卫）
+                _exec_plans = [p for p in _plans if p.get("func") is not None]
+                if _exec_plans:
+                    _parallel_on = bool(self.config.get("tool_parallel_enabled", True))
+                    _ctx_job = _get_current_job()
+                    if _parallel_on and len(_exec_plans) > 1:
+                        from concurrent.futures import ThreadPoolExecutor as _TPE
+                        _mw = int(self.config.get("tool_parallel_max_workers", 8) or 8)
+                        _mw = max(1, min(_mw, 16))
+                        with _TPE(max_workers=min(len(_exec_plans), _mw),
+                                  thread_name_prefix="tool-par") as _pool:
+                            _futs = {
+                                id(p): _pool.submit(self._run_one_tool, p["func"], p["args"], p["func_name"], _ctx_job)
+                                for p in _exec_plans
+                            }
+                            for p in _exec_plans:
+                                p["result"] = _futs[id(p)].result()
+                    else:
+                        for p in _exec_plans:
+                            p["result"] = self._run_one_tool(p["func"], p["args"], p["func_name"], _ctx_job)
+
+                # 阶段3：按原顺序回填（yield tool_result + P6 归档 + 落库）
+                for p in _plans:
+                    call_id = p["call_id"]
+                    func_name = p["func_name"]
+                    result_str = p.get("result")
+                    if result_str is None:
+                        result_str = p.get("immediate", "") or ""
+                    if p["yield_result"]:
+                        yield {
+                            "type": "tool_result",
+                            "tool": func_name,
+                            "result": result_str,
+                            "id": call_id
+                        }
+                    if not p["write_memory"]:
+                        continue
 
                     # P6（2026-10-15）：工具结果精简+归档——大结果保留头尾+折叠标记，
                     # 完整内容落盘 tool_archives/，模型可用 ReadToolArchive 按需召回。
@@ -1324,15 +1363,7 @@ Here is some useful information about the environment you are running in:
                     except Exception as _arch_err:
                         logger.debug(f"工具结果归档失败（按原样返回）: {_arch_err!s}")
 
-                    # Construct content with XML structure
-                    content_structure = [
-                        {
-                            "type": "text",
-                            "text": result_str
-                        }
-                    ]
-
-                    # Add to memory with new structure
+                    content_structure = [{"type": "text", "text": result_str}]
                     self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
                     messages.append({
                         "role": "tool",
@@ -1340,6 +1371,14 @@ Here is some useful information about the environment you are running in:
                         "content": content_structure
                     })
 
+                if _abort:
+                    yield {
+                        "type": "warning",
+                        "data": "工具参数连续多次非法（内容可能过长被截断），已停止重试。"
+                                "请换用更小的实现或分段写入。"
+                    }
+                    self._mark_unexecuted_tools(_tool_calls, messages, ai_msg_id)
+                    return
             # 6. 最终记忆更新 (助手响应)
             if not tool_call_chunks and full_response_content:
                  kwargs = {}
@@ -1381,6 +1420,25 @@ Here is some useful information about the environment you are running in:
         finally:
             set_session_allow_high(self.session_id, False)
     
+    @staticmethod
+    def _run_one_tool(func: Callable, args: dict, func_name: str, ctx_job) -> str:
+        """在（可能并行的）worker 线程中执行单个工具。
+
+        关键：必须恢复 job 上下文（_restore_job_ctx），否则多会话并发时
+        全局 job 引用会串台（工具内部 emit_progress / is_allow_high /
+        _current_session_id 读错会话）。func 本身已含黑名单/风险/超时/
+        审计守卫（registry 包装的 _guarded_execute），这里只兜底异常。
+        """
+        from .tools import _restore_job_ctx
+        if ctx_job is not None:
+            _restore_job_ctx(ctx_job)
+        try:
+            return func(**args)
+        except Exception as e:
+            return inject_tool_name(
+                _xml_response("error", f"Error executing tool: {e!s}"),
+                func_name)
+
     def _mark_unexecuted_tools(self, tool_calls: list[dict], messages: list[dict], ai_msg_id: str):
         """任务被停止时，为未执行/未回填结果的 tool_call 补齐"未执行"结果。
 
