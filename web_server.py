@@ -2040,6 +2040,21 @@ class AgentMain:
                 f"该会话并行任务已满（{chat_jobs.MAX_PARALLEL}），等待任一任务完成后自动继续派发",
             )
 
+        # ── per-thread HITL 审批模式（P1，2026-10-15）──────────────────
+        # 请求可携带 hitl（ask/allow_all/allow_tools）+ hitl_tools（allow_tools 白名单）。
+        # 会话级覆盖，作用于本次及后续该会话的高风险工具放行判断。
+        try:
+            _hitl = str(get.get('hitl', '') or '').strip().lower()
+            if _hitl in ('ask', 'allow_all', 'allow_tools'):
+                from chat_client.tools import set_session_hitl
+                _hitl_tools = get.get('hitl_tools') or []
+                if isinstance(_hitl_tools, str):
+                    _hitl_tools = [t.strip() for t in _hitl_tools.split(',') if t.strip()]
+                set_session_hitl(session_id, _hitl, _hitl_tools)
+                logger.info("[chat_start] HITL 模式=%s tools=%s session=%s", _hitl, _hitl_tools, session_id)
+        except Exception:
+            logger.warning("[chat_start] 设置 HITL 模式失败", exc_info=True)
+
         # ── opencode 模式 ────────────────────────────────────────────
         if mode == 'opencode':
             from chat_client.opencode_bridge import run_opencode_chat

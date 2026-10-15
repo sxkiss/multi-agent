@@ -319,8 +319,32 @@ class Agent:
             # 单 Agent 模式：默认全量工具，排除集团协作工具
             # 集团工具（Task/RunCrew/ConsultPeer/CreateDepartment/RecruitMember）需要多 Agent 编排
             _all_ids = {m["id"] for m in registry._metadata.values()}
-            self.enabled_tools.extend(t for t in _all_ids - self._GROUP_TOOLS
-                                      if t not in self.enabled_tools)
+            _add = _all_ids - self._GROUP_TOOLS
+            # 工具下发裁剪（P1，2026-10-15）：AI_AGENT_TOOL_DISCLOSURE=trim 时，
+            # 门控组（媒体/数据库/知识库/记忆/市场/定时/网站）默认不下发，
+            # 只保留核心 + 常驻工具，降低首 token 延迟（对齐 Octop CRITICAL/gate）。
+            # 默认 full = 全量，保持向后兼容。显式指定在 config["tools"] 里的工具
+            # 或 config["tool_gate_enabled"] 组始终保留。
+            try:
+                from .tools import disclosure_mode, get_gated_tools
+                if disclosure_mode() == "trim":
+                    _enabled_groups = set(self.config.get("tool_gate_enabled", []) or [])
+                    _extra_gate = {
+                        t.strip() for t in
+                        (self.config.get("tool_extra_gate") or "").split(",") if t.strip()
+                    }
+                    _gated = get_gated_tools(_enabled_groups, _extra_gate)
+                    # 用户显式指定的工具（original_tools）优先保留，不受门控
+                    _explicit = {registry.get_tool_id(t) or t for t in self.original_tools}
+                    _gated -= _explicit
+                    _add = _add - _gated
+                    logger.info(
+                        "[ToolDisclosure] trim 模式：门控 %d 个工具（启用组=%s），实际下发 %d 个",
+                        len(_gated), sorted(_enabled_groups) or "无", len(_add | set(self.enabled_tools)),
+                    )
+            except Exception:
+                logger.warning("[ToolDisclosure] 裁剪失败，回退全量下发", exc_info=True)
+            self.enabled_tools.extend(t for t in _add if t not in self.enabled_tools)
             
         self.memory = MemoryManager(
             session_id=session_id, 

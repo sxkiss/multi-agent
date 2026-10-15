@@ -26,6 +26,68 @@ from .base import _xml_response, inject_tool_name, inject_duration  # noqa: F401
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ============================================================
+# 工具下发策略（Tool Disclosure Policy）
+# 背景：单 Agent 模式默认把全部工具下发，工具数多时首 token 延迟偏高
+# （ARCHITECTURE.md §13 记录）。参照 Octop 的 CRITICAL/gate 三级裁剪：
+#   1. CRITICAL_TOOLS：核心工具，永不被裁剪（保证基础能力）
+#   2. 条件门控（gated）：按配置/环境启用的工具，默认不下发，需显式开启
+#   3. 其余工具：正常下发
+# 通过环境变量 AI_AGENT_TOOL_DISCLOSURE=trim 开启裁剪（默认 off = 全量，保持向后兼容）。
+# 通过 AI_AGENT_TOOL_EXTRA_GATE 追加门控工具（逗号分隔）。
+# ============================================================
+CRITICAL_TOOLS: frozenset[str] = frozenset({
+    "Read", "Glob", "Grep", "Write", "Edit", "Patch", "Bash",
+    "Task", "TodoWrite", "Skills", "CheckCommandStatus", "StopCommand",
+    "WebFetch", "WebSearch",
+})
+
+# 条件门控工具：默认不下发，需通过 config["tool_gate_enabled"] 或环境变量显式开启。
+# 分组便于按需开启（如只开媒体组）。
+GATED_TOOL_GROUPS: dict[str, frozenset[str]] = {
+    # 媒体/多模态
+    "media": frozenset({"WechatMedia", "SendMedia", "ImageGenerate"}),
+    # 数据库
+    "database": frozenset({"MySQLQuery", "SQLQuery", "DatabaseQuery"}),
+    # 知识库（文档 RAG）
+    "knowledge": frozenset({"KnowledgeAdd", "KnowledgeSearch", "KnowledgeList", "KnowledgeDelete"}),
+    # 记忆
+    "memory": frozenset({"mem0_search", "mem0_add", "mem0_list", "mem0_delete", "mem0_import",
+                         "Mem0Search", "Mem0Add"}),
+    # 市场发现
+    "market": frozenset({"ExpertMarket", "GetExpertPrompt", "InstallExpert",
+                         "SkillMarket", "SkillCategories", "ExpertScenes"}),
+    # 定时任务
+    "scheduler": frozenset({"ScheduleTask", "ListScheduledTasks", "CancelScheduledTask",
+                            "RunScheduledTaskNow"}),
+    # 网站/运维
+    "website": frozenset({"SiteList", "SiteConf", "SiteLogs", "SiteAnalysis", "ServerStatus",
+                          "FirewallStatus", "DockerInfo", "DockerContainers"}),
+}
+
+
+def get_gated_tools(enabled_groups: set[str] | None = None,
+                    extra: set[str] | None = None) -> set[str]:
+    """返回当前应被门控（不下发）的工具集合。
+
+    enabled_groups：显式启用的门控组名（这些组**不**被门控，正常下发）。
+    extra：额外门控的工具名（无条件门控）。
+    """
+    enabled_groups = enabled_groups or set()
+    gated: set[str] = set()
+    for grp, tools in GATED_TOOL_GROUPS.items():
+        if grp not in enabled_groups:
+            gated |= tools
+    if extra:
+        gated |= extra
+    return gated - CRITICAL_TOOLS  # 核心工具永不被门控
+
+
+def disclosure_mode() -> str:
+    """当前工具下发模式：'trim'（裁剪）或 'full'（全量，默认）。"""
+    return os.environ.get("AI_AGENT_TOOL_DISCLOSURE", "").strip().lower() or "full"
+
+
+# ============================================================
 # 后台任务管理器：所有工具超时后自动转入后台执行
 # 对齐终端工具的 CommandManager，但覆盖范围是全部 66 个工具
 # ============================================================
@@ -212,6 +274,62 @@ def is_allow_high() -> bool:
         return False
     with _allow_high_lock:
         return _session_allow_high.get(sid, False)
+
+
+# ============================================================
+# per-thread HITL 审批模式（P1，2026-10-15，对齐 Octop/Codex）
+# 三档：ask（默认，高风险需确认）/ allow_all（破甲，放行全部）/
+#       allow_tools（放行白名单内的高风险工具）
+# 独立于 _session_allow_high（后者由 strict_tools 决定，是基线），
+# HITL 是在基线之上由用户显式选择的会话级覆盖。
+# ============================================================
+_session_hitl: dict[str, dict[str, Any]] = {}
+_hitl_lock = threading.Lock()
+
+HITL_MODES = ("ask", "allow_all", "allow_tools")
+
+
+def set_session_hitl(session_id: str, mode: str = "ask", tools: list[str] | None = None) -> None:
+    """设置指定会话的 HITL 审批模式（ask/allow_all/allow_tools）。"""
+    if not session_id:
+        return
+    mode = (mode or "ask").strip().lower()
+    if mode not in HITL_MODES:
+        mode = "ask"
+    with _hitl_lock:
+        if mode == "ask":
+            _session_hitl.pop(session_id, None)
+        else:
+            _session_hitl[session_id] = {
+                "mode": mode,
+                "tools": {str(t).strip() for t in (tools or []) if str(t).strip()},
+            }
+
+
+def get_session_hitl(session_id: str) -> dict[str, Any]:
+    """返回会话的 HITL 设置（默认 ask）。"""
+    with _hitl_lock:
+        cfg = _session_hitl.get(session_id)
+        if not cfg:
+            return {"mode": "ask", "tools": set()}
+        return {"mode": cfg["mode"], "tools": set(cfg["tools"])}
+
+
+def is_high_allowed(tool_name: str = "") -> bool:
+    """综合判断当前会话是否放行指定工具的高风险执行。
+
+    优先级：HITL allow_all > HITL allow_tools(命中) > 基线 allow_high。
+    """
+    sid = _current_session_id()
+    if sid:
+        with _hitl_lock:
+            cfg = _session_hitl.get(sid)
+        if cfg:
+            if cfg["mode"] == "allow_all":
+                return True
+            if cfg["mode"] == "allow_tools" and tool_name and tool_name in cfg["tools"]:
+                return True
+    return is_allow_high()
 
 
 # ============================================================
@@ -472,8 +590,9 @@ class ToolRegistry:
                 )
 
         # 2. high 风险工具：需用户确认；成员代理豁免（招聘即授权）
+        #    HITL 三档覆盖：allow_all / allow_tools(命中) 直接放行。
         if (self.risk_guard_enabled and risk == "high"
-                and not is_allow_high()):
+                and not is_high_allowed(tool_label)):
             logger.warning("[RiskGuard] 拦截高风险工具调用: %s", tool_label)
             self._audit(tool_label, risk, audit_kwargs, 0, "blocked-high-risk", "")
             return _risk_denied_response(

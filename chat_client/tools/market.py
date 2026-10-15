@@ -147,6 +147,53 @@ def ExpertMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
     return _xml_response("done", "\n".join(lines))
 
 
+def fetch_expert_prompt(name: str) -> tuple[str, str]:
+    """拉取专家提示词原文（供 GetExpertPrompt / InstallExpert 复用）。
+
+    返回 (key, text)；失败时抛异常，由调用方转成用户可读错误。
+    """
+    key = (name or "").strip()
+    if not key:
+        raise ValueError("需要提供 name（专家标识）")
+    # 若传的是完整路径（如 /plugins/content-creator/agents/...），提取相对路径
+    prompt_path = key
+    if key.startswith("/"):
+        prompt_path = key.lstrip("/")
+    elif key.startswith(EXPERT_BASE):
+        prompt_path = key[len(EXPERT_BASE):].lstrip("/")
+    resp = requests.get(f"{EXPERT_BASE}/{prompt_path}", timeout=REQUEST_TIMEOUT)
+    if resp.status_code != 200:
+        # 回退：直接用 key 拼标准路径
+        fallback = f"{EXPERT_BASE}/plugins/{key}/agents/{key}.md"
+        resp = requests.get(fallback, timeout=REQUEST_TIMEOUT)
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"未取到专家提示词（HTTP {resp.status_code}）：{key}。"
+            "可先用 ExpertMarket 确认准确的 name，或传完整 promptFile 路径。"
+        )
+    return key, resp.text
+
+
+def find_expert_meta(name: str) -> Dict[str, Any]:
+    """在专家清单中按标识/名称查找专家元数据（找不到返回空 dict）。"""
+    target = (name or "").strip().lower()
+    if not target:
+        return {}
+    try:
+        experts = _load_experts()
+    except Exception:
+        return {}
+    for ex in experts:
+        if not isinstance(ex, dict):
+            continue
+        if _expert_id(ex).lower() == target:
+            return ex
+        nm = _expert_field(ex, "displayName", "name", "Name", "title").lower()
+        if nm and nm == target:
+            return ex
+    return {}
+
+
 @register_tool(category="市场", name_cn="获取专家提示词", risk_level="low")
 def GetExpertPrompt(name: str) -> str:
     """
@@ -154,30 +201,134 @@ def GetExpertPrompt(name: str) -> str:
 
     - name：专家标识（来自 ExpertMarket 结果，如 "marketing-expert"）
     路径规则：{base}/plugins/{name}/agents/{name}.md
+
+    提示：若希望把该专家**落地为可复用的团队成员**（而非每次临时取提示词），
+    请改用 InstallExpert(name=...) —— 它会写入 crew_agents.json 并立即可派发。
     """
     if not (name or "").strip():
         return _xml_response("error", "需要提供 name（专家标识）")
-    key = name.strip()
-    # 若传的是完整路径（如 /plugins/content-creator/agents/...），提取相对路径
-    prompt_path = key
-    if key.startswith("/"):
-        prompt_path = key.lstrip("/")
-    elif key.startswith(EXPERT_BASE):
-        prompt_path = key[len(EXPERT_BASE):].lstrip("/")
     try:
-        resp = requests.get(f"{EXPERT_BASE}/{prompt_path}", timeout=REQUEST_TIMEOUT)
-        if resp.status_code != 200:
-            # 回退：直接用 key 拼标准路径
-            fallback = f"{EXPERT_BASE}/plugins/{key}/agents/{key}.md"
-            resp = requests.get(fallback, timeout=REQUEST_TIMEOUT)
-        if resp.status_code != 200:
-            return _xml_response("error", f"未取到专家提示词（HTTP {resp.status_code}）：{key}。可先用 ExpertMarket 确认准确的 name，或传完整 promptFile 路径。")
-        text = resp.text
+        key, text = fetch_expert_prompt(name)
+    except ValueError as e:
+        return _xml_response("error", str(e))
     except Exception as e:
         return _xml_response("error", f"获取专家提示词失败: {e!s}")
     if len(text) > 30000:
         text = text[:30000] + "\n\n[...提示词过长已截断...]"
     return _xml_response("done", f"<!-- 专家: {key} -->\n{text}")
+
+
+@register_tool(category="市场", name_cn="安装专家为成员", risk_level="medium", timeout=90)
+def InstallExpert(name: str, department: str = "experts", member_name: str = "",
+                  tools: Optional[List[str]] = None, identity: str = "") -> str:
+    """
+    把专家市场的一个专家**落地为可复用的团队成员**（写入 crew_agents.json，立即生效）。
+    与 GetExpertPrompt（临时取提示词）不同：安装后该专家成为集团常驻成员，
+    可通过 Task(subagent_type=成员名) 或 RunCrew 反复调用，无需每次重新取提示词。
+
+    **何时使用**：
+    - 用户说"把 XX 专家加进团队""招一个营销专家""以后都用这个专家"
+    - 某个领域会反复用到同一专家（省去每次 ExpertMarket→GetExpertPrompt 的开销）
+
+    Args:
+        name: 专家市场标识（来自 ExpertMarket，如 "marketing-expert"）
+        department: 目标部门标识（默认 experts；不存在会自动创建「专家部」）
+        member_name: 落地后的成员名（留空则用专家标识规范化生成）
+        tools: 授予该成员的工具名列表（留空则用一套通用只读+读写默认集）
+        identity: 可选身份补充（名字/定位/风格），会作为身份层拼进成员系统提示词
+    """
+    import re as _re
+    # 1. 取专家提示词 + 元数据
+    try:
+        key, prompt_text = fetch_expert_prompt(name)
+    except ValueError as e:
+        return _xml_response("error", str(e))
+    except Exception as e:
+        return _xml_response("error", f"获取专家提示词失败: {e!s}")
+
+    meta = find_expert_meta(key) or find_expert_meta(name)
+    display = _expert_field(meta, "displayName", "name", "Name", "title") if meta else ""
+    desc = _expert_field(meta, "description", "desc", "summary", "intro") if meta else ""
+    category = _expert_field(meta, "categoryName", "category", "group", "type") if meta else ""
+
+    # 2. 规范化成员名：优先 member_name，其次专家标识；非法字符转 -
+    raw_member = (member_name or key or "").strip().lower()
+    member = _re.sub(r"[^a-z0-9_\-]", "-", raw_member).strip("-")
+    if not _re.match(r"^[a-z0-9_\-]{2,40}$", member or ""):
+        return _xml_response("error", f"成员名不合法（规范化后为 {member!r}）。请用 member_name 指定一个仅含小写字母/数字/_/- 的名字。")
+    dept = (department or "experts").strip().lower()
+
+    # 3. 组装 backstory（系统提示词）：专家原文 + 可选身份层
+    backstory = prompt_text.strip()
+    if len(backstory) > 20000:
+        backstory = backstory[:20000] + "\n\n[...专家提示词过长已截断...]"
+    id_line = ""
+    if identity.strip():
+        id_line = f"\n\n[身份设定]\n{identity.strip()}"
+        backstory += id_line
+
+    # 4. 工具集：留空给一套通用默认（只读为主 + 常用执行）
+    default_tools = [
+        "Read", "Glob", "Grep", "Write", "Edit", "Bash",
+        "WebSearch", "WebFetch", "TodoWrite", "Skills",
+    ]
+    grant = tools if tools else default_tools
+
+    # 5. 落地：复用 task.py 的部门/成员持久化逻辑（延迟导入避免循环依赖）
+    from .task import _CREW_LOCK, _crew_load_file, _crew_save_file, reload_custom_agents
+    with _CREW_LOCK:
+        data = _crew_load_file()
+        # 自动建部门
+        depts = {d.get("name") for d in data["departments"]}
+        dept_created = False
+        if dept not in depts:
+            if len(data["departments"]) >= 20:
+                return _xml_response("error", "部门数量已达上限（20），无法自动创建 experts 部。请先指定一个已存在的 department。")
+            data["departments"].append({
+                "name": dept,
+                "title": "专家部" if dept == "experts" else dept,
+                "description": "由专家市场安装的领域专家成员",
+            })
+            dept_created = True
+        # 成员查重
+        if any(a.get("name") == member for a in data["agents"]):
+            return _xml_response("error", f"成员已存在: {member}（可用 member_name 换名，或先卸载）")
+        if len(data["agents"]) >= 50:
+            return _xml_response("error", "成员数量已达上限（50）")
+        # 工具白名单过滤
+        from . import registry as _tool_registry
+        known = set(_tool_registry._metadata.keys()) | {
+            s["function"]["name"] for s in _tool_registry._schemas
+        }
+        granted = [t for t in grant if t in known]
+        dropped = [t for t in grant if t not in known]
+        if not granted:
+            sample = ", ".join(sorted(known)[:15])
+            return _xml_response("error", f"tools 全部无效。系统真实可用工具例如：{sample}。")
+        data["agents"].append({
+            "name": member,
+            "department": dept,
+            "description": (desc or f"专家市场安装的专家（{key}）")[:500],
+            "backstory": backstory[:20000],
+            "tools": granted[:40],
+            "model": "",
+            "expert_source": key,          # 溯源：记录来源专家标识
+            "expert_category": category[:80],
+            "identity": identity.strip()[:2000],
+        })
+        _crew_save_file(data)
+
+    reload_custom_agents()
+
+    note = f"（未识别工具已忽略: {dropped}）" if dropped else ""
+    dept_note = "（已自动创建专家部）" if dept_created else ""
+    return _xml_response(
+        "done",
+        f"专家「{display or key}」已安装为团队成员：**{member}**（部门 {dept}）{dept_note}\n"
+        f"授予工具：{', '.join(granted)} {note}\n"
+        f"立即生效：可用 Task(subagent_type='{member}') 派发任务，或在 RunCrew 计划中作为成员调用。\n"
+        f"来源专家标识：{key}（记录于 crew_agents.json 的 expert_source 字段，便于溯源/更新）。",
+    )
 
 
 @register_tool(category="市场", name_cn="查询技能市场", risk_level="low")
