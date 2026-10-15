@@ -288,22 +288,41 @@ _hitl_lock = threading.Lock()
 
 HITL_MODES = ("ask", "allow_all", "allow_tools")
 
+# P7（2026-10-15）HITL 硬保护（对齐 Octop hitl_session.py）：
+# - 确认类工具永不跳过（即使用户开了 allow_all 也必须弹确认）
+# - 工具名长度/数量校验，防注入超长名单
+_HITL_NEVER_SKIP: frozenset[str] = frozenset({"AskUserQuestion", "ask_user_question"})
+_HITL_MAX_TOOLS = 64
+_HITL_MAX_TOOL_NAME = 128
+
 
 def set_session_hitl(session_id: str, mode: str = "ask", tools: list[str] | None = None) -> None:
-    """设置指定会话的 HITL 审批模式（ask/allow_all/allow_tools）。"""
+    """设置指定会话的 HITL 审批模式（ask/allow_all/allow_tools）。
+
+    P7 硬保护：确认类工具（AskUserQuestion）永不进入白名单；工具名超长/超量
+    的条目被丢弃（对齐 Octop hitl_session 的 _MAX_TOOLS/_MAX_TOOL_NAME 校验）。
+    """
     if not session_id:
         return
     mode = (mode or "ask").strip().lower()
     if mode not in HITL_MODES:
         mode = "ask"
+    # 校验工具白名单：过滤确认类、超长、超量
+    clean: set[str] = set()
+    for t in (tools or []):
+        name = str(t).strip()
+        if not name or name in _HITL_NEVER_SKIP:
+            continue
+        if len(name) > _HITL_MAX_TOOL_NAME:
+            continue
+        if len(clean) >= _HITL_MAX_TOOLS:
+            break
+        clean.add(name)
     with _hitl_lock:
         if mode == "ask":
             _session_hitl.pop(session_id, None)
         else:
-            _session_hitl[session_id] = {
-                "mode": mode,
-                "tools": {str(t).strip() for t in (tools or []) if str(t).strip()},
-            }
+            _session_hitl[session_id] = {"mode": mode, "tools": clean}
 
 
 def get_session_hitl(session_id: str) -> dict[str, Any]:
@@ -319,7 +338,11 @@ def is_high_allowed(tool_name: str = "") -> bool:
     """综合判断当前会话是否放行指定工具的高风险执行。
 
     优先级：HITL allow_all > HITL allow_tools(命中) > 基线 allow_high。
+    P7 硬保护：确认类工具（AskUserQuestion）永不跳过——即使 allow_all 也返回 False。
     """
+    # 确认类工具永不跳过（对齐 Octop：ask_user_question is never skipped）
+    if tool_name and tool_name in _HITL_NEVER_SKIP:
+        return False
     sid = _current_session_id()
     if sid:
         with _hitl_lock:
@@ -404,7 +427,11 @@ _DANGEROUS_CMD_PATTERNS = [
 
 
 def _scan_dangerous_payload(kwargs: dict[str, Any]):
-    """扫描工具参数中的高危命令特征，命中返回 (True, 描述)"""
+    """扫描工具参数中的高危命令特征，命中返回 (True, 描述)。
+
+    P7（2026-10-15）：优先用**可编辑 YAML 护栏规则库**（chat_client/guard_rules.py，
+    对齐 Octop tool_guard_rules），YAML 不存在时回退硬编码 _DANGEROUS_CMD_PATTERNS。
+    """
     import re as _re
     texts = []
     for v in kwargs.values():
@@ -413,6 +440,16 @@ def _scan_dangerous_payload(kwargs: dict[str, Any]):
         elif isinstance(v, (list, tuple)):
             texts.extend(str(i) for i in v if isinstance(i, str))
     payload = "\n".join(texts)
+    # 1) YAML 护栏规则库（可编辑、可热加载）
+    try:
+        from ..guard_rules import get_guard_rules
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        blocked, rule = get_guard_rules(base_dir).scan(payload)
+        if blocked:
+            return True, f"{rule.get('id')}:{rule.get('description')}"
+    except Exception:
+        pass  # 规则库异常不阻断，回退硬编码
+    # 2) 回退：硬编码黑名单（向后兼容）
     for pat in _DANGEROUS_CMD_PATTERNS:
         try:
             m = _re.search(pat, payload)

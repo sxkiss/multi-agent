@@ -65,13 +65,23 @@ def _content_to_text(content: Any) -> str:
 # P4-a: 上下文用量分解
 # ============================================================
 def analyze_context(base_dir: str, session_id: str, *,
-                    context_window_tokens: int = 256 * 1024) -> dict[str, Any]:
-    """估算某会话的上下文占用，按段分解（系统/历史/工具结果/知识）。
+                    context_window_tokens: int = 256 * 1024,
+                    system_prompt: str = "", tool_definitions: str = "",
+                    skills: str = "", mcp: str = "", subagent: str = "") -> dict[str, Any]:
+    """估算某会话的上下文占用，按段分解。
 
-    返回 {total_tokens, window_tokens, usage_ratio, segments:[{name,tokens,ratio}]}
+    P7（2026-10-15）：对齐 Octop context_breakdown 的 7 段模型：
+      system_prompt / tool_definitions / rules / skills / mcp /
+      subagent_definitions / conversation
+    其中「conversation」由会话历史细分（对话正文/工具返回/思考/知识注入）；
+    其余段为静态注入，可由调用方传入实测值（不传则从会话元数据估算）。
+
+    返回 {total_tokens, window_tokens, usage_ratio, segments:[{name,tokens,ratio}],
+          segments_dict: {key: tokens}}
     """
     msgs = _load_session_json(base_dir, session_id)
-    seg = {
+    # 会话内可归因的部分
+    conv = {
         "conversation": 0,      # 对话正文
         "tool_results": 0,      # 工具返回（含 <tool_result>）
         "thinking": 0,          # 思考段
@@ -85,30 +95,47 @@ def analyze_context(base_dir: str, session_id: str, *,
         toks = _estimate_tokens(text)
         role = str(m.get("role", ""))
         if "<tool_result>" in text or "<tool_name>" in text or role == "tool":
-            seg["tool_results"] += toks
+            conv["tool_results"] += toks
         elif "think" in text[:40].lower() and ("思考" in text or "<think" in text):
-            seg["thinking"] += toks
+            conv["thinking"] += toks
         elif role in ("user", "assistant", "system"):
-            # 知识/记忆注入通常出现在 system 或带 [来源 前缀
             if role == "system" or "[来源:" in text:
-                seg["knowledge"] += toks
+                conv["knowledge"] += toks
             else:
-                seg["conversation"] += toks
+                conv["conversation"] += toks
         else:
-            seg["other"] += toks
+            conv["other"] += toks
 
-    total = sum(seg.values())
+    # 静态注入段（对齐 Octop SEGMENT_KEYS）
+    static = {
+        "system_prompt": _estimate_tokens(system_prompt),
+        "tool_definitions": _estimate_tokens(tool_definitions),
+        "rules": 0,          # 护栏/规则注入（bt 目前极少，预留）
+        "skills": _estimate_tokens(skills),
+        "mcp": _estimate_tokens(mcp),
+        "subagent_definitions": _estimate_tokens(subagent),
+    }
+    # 会话内细分并入 conversation 段（对话正文=正文+知识+思考+其他；工具返回单列）
+    segments_dict: dict[str, int] = {
+        **static,
+        "conversation": conv["conversation"] + conv["thinking"] + conv["knowledge"] + conv["other"],
+        "tool_results": conv["tool_results"],
+    }
+    total = sum(segments_dict.values())
     names = {
+        "system_prompt": "系统提示",
+        "tool_definitions": "工具定义",
+        "rules": "规则注入",
+        "skills": "技能摘要",
+        "mcp": "MCP 工具",
+        "subagent_definitions": "子代理定义",
         "conversation": "对话正文",
         "tool_results": "工具返回",
-        "thinking": "思考段",
-        "knowledge": "系统/知识注入",
-        "other": "其他",
     }
     segments = [
         {"name": names[k], "key": k, "tokens": v,
          "ratio": round(v / total, 4) if total else 0}
-        for k, v in seg.items() if v > 0
+        for k, v in segments_dict.items() if v > 0
     ]
     segments.sort(key=lambda s: s["tokens"], reverse=True)
     return {
@@ -119,6 +146,7 @@ def analyze_context(base_dir: str, session_id: str, *,
         "window_tokens": context_window_tokens,
         "usage_ratio": round(total / context_window_tokens, 4) if context_window_tokens else 0,
         "segments": segments,
+        "segments_dict": segments_dict,
         "note": "token 为按字符数估算（2 字符≈1 token），非精确值，仅用于占比参考。",
     }
 

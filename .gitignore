@@ -139,3 +139,9 @@ expert_market/
 
 # ===== 工具结果归档（运行时落盘，P6 上下文治理）=====
 tool_archives/
+
+# ===== P7 运行时产物 =====
+hitl_approvals.json
+workspace/inbound/
+skills/_packages/
+security/tool_guard/

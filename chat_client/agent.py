@@ -489,6 +489,21 @@ class Agent:
             except Exception:
                 logger.warning("[ToolDisclosure] 裁剪失败，回退全量下发", exc_info=True)
             self.enabled_tools.extend(t for t in _add if t not in self.enabled_tools)
+
+            # P7（2026-10-15）会话模式（Ask/Plan/Craft，对齐 Octop conversation_mode）：
+            # ask=只读问答 / plan=先规划 / craft=全能力。按模式裁剪工具白名单。
+            try:
+                from .conversation_mode import resolve_mode, filter_tools_for_mode, mode_instructions
+                _mode = resolve_mode(self.config, self.config.get("session_mode"))
+                if _mode != "craft":
+                    self.enabled_tools = filter_tools_for_mode(self.enabled_tools, _mode)
+                    _instr = mode_instructions(_mode)
+                    if _instr:
+                        self.system_prompt += _instr
+                    logger.info("[ConversationMode] %s 模式：工具裁剪至 %d 个",
+                                _mode, len(self.enabled_tools))
+            except Exception:
+                logger.debug("[ConversationMode] 应用失败，回退全量", exc_info=True)
             
         self.memory = MemoryManager(
             session_id=session_id, 
@@ -820,6 +835,23 @@ Here is some useful information about the environment you are running in:
         # 仅对 qwen 系模型注入 DashScope 专属扩展参数（原条件 "qwen" or ... 恒真，会污染所有模型）
         if "qwen" in model_l or "default" in model_l:
             params["extra_body"]["enable_thinking"] = thinking
+
+        # P7（2026-10-15）per-turn reasoning 覆盖（对齐 Octop middleware/reasoning）：
+        # 不同 provider 对「思考强度」的字段名/取值不同，按模型家族覆盖请求参数。
+        # config: reasoning_overrides = {"<provider关键字>": {...要覆盖的 params 片段...}}
+        # 例：{"o1": {"reasoning_effort": "high"}, "deepseek": {"extra_body": {"thinking": {"type": "enabled"}}}}
+        try:
+            overrides = self.config.get("reasoning_overrides") or {}
+            for key, patch in overrides.items():
+                if key and key.lower() in model_l and isinstance(patch, dict):
+                    for pk, pv in patch.items():
+                        if pk == "extra_body" and isinstance(pv, dict):
+                            params.setdefault("extra_body", {}).update(pv)
+                        else:
+                            params[pk] = pv
+                    break
+        except Exception as _ro_err:
+            logger.debug(f"reasoning_overrides 应用失败: {_ro_err!s}")
 
         # 原实现把 enable_search 绑死在 qwen 系上，导致其它模型（doubao/gpt 等）
         # 即使前端开关打开也静默失效。联网搜索已改为独立的 WebSearch 工具

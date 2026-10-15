@@ -248,7 +248,48 @@ class KnowledgeBase:
                 f"②确认相关文档已用 KnowledgeAdd 入库（当前库内 {len(self.manifest)} 篇）；"
                 f"③适当降低 score 门槛。"
             )
-        return {"status": True, "results": results, "gate": gate, "hint": hint}
+        # P7（2026-10-15）机器可读引用（对齐 Octop citations.py）：
+        # 内嵌一段 JSON 注释，供前端/下游解析出结构化引用（去重、带 doc/块/相似度）。
+        citations_md = self._machine_citations(results)
+        return {"status": True, "results": results, "gate": gate,
+                "hint": hint, "citations": citations_md,
+                "citations_data": [
+                    {"doc_id": r["doc_id"], "name": r["name"], "idx": r["idx"],
+                     "score": r["score"]} for r in results
+                ]}
+
+    @staticmethod
+    def _machine_citations(results: list[dict]) -> str:
+        """生成机器可读引用块（去重）。
+
+        格式：<!--bt-kb-citations {"citations":[{doc_id,name,idx,score}...]} -->
+        """
+        seen = set()
+        cites = []
+        for r in results:
+            key = (r["doc_id"], r["idx"])
+            if key in seen:
+                continue
+            seen.add(key)
+            cites.append({"doc_id": r["doc_id"], "name": r["name"],
+                          "idx": r["idx"], "score": r["score"]})
+        if not cites:
+            return ""
+        return "<!--bt-kb-citations " + json.dumps(
+            {"citations": cites}, ensure_ascii=False) + " -->"
+
+    def capability_gate(self) -> dict:
+        """能力门禁（对齐 Octop knowledge/gate.py）：报告 embedding 可用性。
+
+        供上层在检索/入库前判断能力是否就绪，而非硬编码后端。
+        """
+        try:
+            v = self.embed_fn(["ping"])
+            ok = bool(v and len(v[0]) > 0)
+        except Exception as e:
+            return {"passed": False, "reason": f"embedding 调用失败: {e!s}"}
+        return {"passed": ok, "dim": len(v[0]) if ok else 0,
+                "docs": len(self.manifest), "chunks": len(self.chunks)}
 
     # ---------- 管理 ----------
     def list_documents(self) -> list[dict]:
