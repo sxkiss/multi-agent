@@ -933,6 +933,170 @@ class SkillManager:
             lines.append(f"- **{cat}**{more}: {names}")
         return "\n".join(lines)
 
+    # ==================== P2-a: 技能包（复用/导出/导入） ====================
+    # 技能包 = 一组技能的清单（manifest），可导出为 ZIP 跨项目/跨会话复用。
+    # 参照 Octop 的 skill_package 概念：把精选技能打成一个可分享单元。
+
+    PACKAGE_FORMAT = "bt-skill-package/v1"
+
+    def export_package(self, names: list[str], package_name: str = "") -> bytes:
+        """把指定技能打包为 ZIP（含 manifest.json）。返回 zip 字节。"""
+        import io
+        import zipfile
+        names = [str(n).strip() for n in (names or []) if str(n).strip()]
+        if not names:
+            raise ValueError("技能列表为空")
+        found = {}
+        for nm in names:
+            sk = self.get(nm)
+            if not sk:
+                raise ValueError(f"技能不存在: {nm}")
+            found[nm] = sk
+        pkg_name = (package_name or "skill-package").strip()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            manifest = {
+                "format": self.PACKAGE_FORMAT,
+                "name": pkg_name,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "skills": [],
+            }
+            for nm, sk in found.items():
+                skill_dir = os.path.dirname(sk.location)
+                # 技能目录下的所有文件（含 SKILL.md 与附属脚本/参考）
+                for root, dirs, files in os.walk(skill_dir):
+                    dirs[:] = [d for d in dirs if not d.startswith(".")]
+                    for fn in files:
+                        if fn.startswith("."):
+                            continue
+                        full = os.path.join(root, fn)
+                        rel = os.path.relpath(full, skill_dir)
+                        arc = f"skills/{nm}/{rel}".replace(os.sep, "/")
+                        zf.write(full, arc)
+                manifest["skills"].append({
+                    "name": nm,
+                    "description": sk.description,
+                    "files": len(self.list_files(skill_dir)),
+                })
+            zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        return buf.getvalue()
+
+    def import_package(self, zip_bytes: bytes, overwrite: bool = False) -> dict:
+        """导入技能包 ZIP（可含多个技能）。逐个技能安装，返回汇总结果。"""
+        import io
+        import zipfile
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        except Exception as e:
+            return {"status": False, "msg": f"不是有效的 ZIP: {e!s}"}
+        # 校验 manifest（可选，用于报告包名）
+        pkg_name = ""
+        try:
+            if "manifest.json" in zf.namelist():
+                mf = json.loads(zf.read("manifest.json").decode("utf-8"))
+                if isinstance(mf, dict):
+                    pkg_name = mf.get("name", "")
+                    if mf.get("format") and mf["format"] != self.PACKAGE_FORMAT:
+                        return {"status": False, "msg": f"不支持的包格式: {mf.get('format')}"}
+        except Exception:
+            pass
+
+        # 按 skills/<name>/ 分组，逐个技能构造单技能 zip 再交给 install_from_zip，
+        # 复用其全部安全校验（Zip-Slip/体积/压缩比/路径穿越）。
+        groups: dict[str, list[str]] = {}
+        for item in zf.namelist():
+            if item == "manifest.json" or item.endswith("/"):
+                continue
+            parts = item.split("/")
+            if len(parts) >= 3 and parts[0] == "skills":
+                groups.setdefault(parts[1], []).append(item)
+        if not groups:
+            # 兼容：包内直接是单技能（根或唯一一级子目录），直接透传
+            res = self.install_from_zip(zip_bytes, overwrite=overwrite)
+            if isinstance(res, dict):
+                res.setdefault("package_name", pkg_name)
+            return res
+
+        installed, skipped, errors = [], [], []
+        for sk_name, members in groups.items():
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
+                for item in members:
+                    rel = item[len("skills/" + sk_name + "/"):]
+                    if not rel:
+                        continue
+                    out.writestr(rel, zf.read(item))
+            res = self.install_from_zip(buf.getvalue(), overwrite=overwrite)
+            if isinstance(res, dict) and res.get("status"):
+                installed.append(res.get("name", sk_name))
+            elif isinstance(res, dict) and "已存在" in str(res.get("msg", "")):
+                skipped.append(sk_name)
+            else:
+                errors.append(f"{sk_name}: {(res or {}).get('msg', '未知错误')}")
+
+        return {
+            "status": bool(installed) or (not errors and not skipped),
+            "msg": f"技能包 {pkg_name or ''} 导入完成：安装 {len(installed)}，跳过 {len(skipped)}，失败 {len(errors)}",
+            "package_name": pkg_name,
+            "installed": installed,
+            "skipped": skipped,
+            "errors": errors,
+        }
+
+    # ==================== P2-b: 技能呈现层（icon/分类/触发词） ====================
+    # 从 SKILL.md frontmatter 提取展示元数据，供前端/市场呈现，不影响技能执行。
+
+    _CATEGORY_KEYWORDS = {
+        "SEO/GEO": ["seo", "geo", "content", "keyword", "rank", "meta", "schema", "backlink", "serp"],
+        "数据分析": ["excel", "csv", "chart", "visual", "stat", "kpi", "trend", "parquet", "pandas"],
+        "PPT/演示": ["ppt", "pptx", "deck", "slide", "presentation"],
+        "Agent/工作流": ["agent", "workflow", "codex", "skill", "hermes", "memory", "team", "task"],
+        "DevOps/运维": ["git", "docker", "k8s", "linux", "bash", "deploy", "ci", "test", "shell"],
+        "Web/浏览器": ["web", "browser", "playwright", "scrap", "crawl"],
+        "社媒/多媒体": ["weixin", "wechat", "tieba", "video", "image", "social", "doubao", "yuanbao"],
+        "安全/逆向": ["reverse", "pwn", "ida", "radare", "firmware", "security", "exploit", "malware"],
+        "编程语言": ["python", "rust", "go", "dotnet", "nodejs", "typescript", "async"],
+        "前端/移动端": ["frontend", "react", "vue", "nextjs", "css", "mobile", "android", "ios"],
+        "数据库": ["database", "sql", "postgres", "migration"],
+        "API设计": ["api", "rest", "graphql", "openapi"],
+        "云/基础设施": ["cloud", "aws", "azure", "gcp", "terraform", "k8s", "grafana", "cost"],
+        "SN技能": ["sn-"],
+        "工具集成": ["opencode", "ccload", "sub2api"],
+    }
+
+    def _infer_category(self, name: str, description: str = "") -> str:
+        blob = f"{name} {description}".lower()
+        for cat, kws in self._CATEGORY_KEYWORDS.items():
+            if any(k in blob for k in kws):
+                return cat
+        return "其他"
+
+    def get_skill_presentation(self, name: str) -> dict:
+        """返回技能的展示元数据（icon/category/triggers/when_to_use）。"""
+        sk = self.get(name)
+        if not sk:
+            return {}
+        md = sk.metadata or {}
+        # frontmatter 可显式指定 icon/category/triggers
+        icon = str(md.get("icon") or md.get("emoji") or "").strip()
+        category = str(md.get("category") or "").strip() or self._infer_category(sk.name, sk.description)
+        triggers = md.get("triggers") or md.get("trigger") or []
+        if isinstance(triggers, str):
+            triggers = [t.strip() for t in triggers.split(",") if t.strip()]
+        when_to_use = str(md.get("when_to_use") or "").strip()
+        return {
+            "name": sk.name,
+            "icon": icon,
+            "category": category,
+            "triggers": list(triggers) if isinstance(triggers, list) else [],
+            "when_to_use": when_to_use,
+            "description": sk.description,
+        }
+
+    def get_all_presentations(self) -> list[dict]:
+        """返回所有已启用技能的展示元数据列表。"""
+        return [self.get_skill_presentation(s.name) for s in self.all_enabled()]
+
 
 # 全局单例
 skill_manager = SkillManager.get_instance()

@@ -188,8 +188,14 @@ class KnowledgeBase:
                doc_ids: list[str] | None = None) -> dict:
         """语义检索，返回带引用的命中列表。
 
+        P2-c 增强（2026-10-15）：
+        - gate：命中数不足或最高分低于门槛时，返回 hint 提示（而非静默空结果）
+        - hint：无命中时给出可操作建议（换关键词/先入库/放宽门槛）
+        - citation：引用带文档名+块号+相似度，便于溯源
+
         Returns:
-            {"status": bool, "results": [{text, doc_id, name, idx, score, citation}]}
+            {"status": bool, "results": [{text, doc_id, name, idx, score, citation}],
+             "gate": {...}, "hint": str}
         """
         if not query or not query.strip():
             return {"status": False, "msg": "查询为空", "results": []}
@@ -199,7 +205,9 @@ class KnowledgeBase:
             allowed = set(doc_ids)
             candidates = [c for c in candidates if c["doc_id"] in allowed]
         if not candidates:
-            return {"status": True, "results": [], "msg": "知识库为空"}
+            return {"status": True, "results": [], "msg": "知识库为空",
+                    "gate": {"passed": False, "reason": "empty"},
+                    "hint": "知识库为空：请先用 KnowledgeAdd 入库文档或文本，再检索。"}
 
         qvecs = self.embed_fn([query])
         if not qvecs:
@@ -221,7 +229,7 @@ class KnowledgeBase:
         for sim, c in scored:
             doc = self.manifest.get(c["doc_id"], {})
             dname = doc.get("name", c["doc_id"])
-            citation = f"[来源: {dname}#块{c['idx']}]"
+            citation = f"[来源: {dname}#块{c['idx']} 相似度{round(sim, 3)}]"
             results.append({
                 "text": c["text"],
                 "doc_id": c["doc_id"],
@@ -230,7 +238,17 @@ class KnowledgeBase:
                 "score": round(sim, 4),
                 "citation": citation,
             })
-        return {"status": True, "results": results}
+
+        # gate + hint：命中为空时给出可操作建议
+        gate = {"passed": bool(results), "threshold": score, "hits": len(results)}
+        hint = ""
+        if not results:
+            hint = (
+                f"未检索到相关内容（门槛 {score}）：可尝试①换更具体的关键词重试；"
+                f"②确认相关文档已用 KnowledgeAdd 入库（当前库内 {len(self.manifest)} 篇）；"
+                f"③适当降低 score 门槛。"
+            )
+        return {"status": True, "results": results, "gate": gate, "hint": hint}
 
     # ---------- 管理 ----------
     def list_documents(self) -> list[dict]:

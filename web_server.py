@@ -38,7 +38,7 @@ import logging
 import uvicorn
 from fastapi import FastAPI, File, Request, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 # suppress verbose logging
@@ -3505,6 +3505,53 @@ async def api_tools():
     return JSONResponse(await asyncio.to_thread(agent_main.get_tool_list))
 
 
+# ── P3-b: 可观测性（进程内指标）──────────────────────────────────
+@app.get("/api/metrics")
+async def api_metrics(format: str = "json"):
+    """进程内运行指标：工具/LLM 调用计数与耗时。format=prometheus 返回文本格式。"""
+    from chat_client.metrics import get_metrics
+    m = get_metrics()
+    if (format or "").lower() in ("prometheus", "text"):
+        return PlainTextResponse(m.to_prometheus())
+    return JSONResponse(public.return_data(True, data=m.snapshot()))
+
+
+# ── P3-a: 插件体系 ──────────────────────────────────────────────
+@app.get("/api/plugins")
+async def api_plugins():
+    """列出磁盘上的插件及加载状态。"""
+    from chat_client.plugins import get_plugin_manager
+    return JSONResponse(public.return_data(True, data=get_plugin_manager().status()))
+
+
+@app.post("/api/plugins/load")
+async def api_plugins_load(request: Request):
+    """加载插件（name 留空则加载全部）。"""
+    from chat_client.plugins import get_plugin_manager
+    params = await _params(request)
+    pm = get_plugin_manager()
+    name = str(params.get("name", "")).strip()
+    if name:
+        res = pm.load_plugin(name)
+    else:
+        res = pm.load_all()
+    return JSONResponse(public.return_data(True, data=res) if (isinstance(res, dict) and res.get("status", True))
+                        else public.returnMsg(False, (res or {}).get("msg", "加载失败")))
+
+
+@app.post("/api/plugins/unload")
+async def api_plugins_unload(request: Request):
+    """卸载插件。"""
+    from chat_client.plugins import get_plugin_manager
+    params = await _params(request)
+    name = str(params.get("name", "")).strip()
+    if not name:
+        return JSONResponse(public.returnMsg(False, "缺少 name"))
+    res = get_plugin_manager().unload_plugin(name)
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "卸载失败")))
+
+
 @app.get("/api/skills")
 async def api_skills():
     return JSONResponse(agent_main.get_skill_list())
@@ -3534,6 +3581,54 @@ async def api_skill_status(request: Request):
     params = await _params(request)
     # 前端字段为 skill_name/enabled，与 agent_main.set_skill_status 一致，原样透传
     return JSONResponse(agent_main.set_skill_status(params))
+
+
+# ── P2-a: 技能包（导出/导入）────────────────────────────────────
+@app.get("/api/skills/presentation")
+async def api_skills_presentation():
+    """技能展示元数据（icon/分类/触发词），供前端呈现层使用。"""
+    from chat_client.skills import skill_manager
+    return JSONResponse(public.return_data(True, data={
+        "skills": skill_manager.get_all_presentations(),
+    }))
+
+
+@app.post("/api/skills/export_package")
+async def api_skills_export_package(request: Request):
+    """把一组技能导出为技能包 ZIP（base64 返回）。"""
+    import base64
+    from chat_client.skills import skill_manager
+    params = await _params(request)
+    names = params.get("names") or []
+    if isinstance(names, str):
+        names = [n.strip() for n in names.split(",") if n.strip()]
+    try:
+        data = skill_manager.export_package(names, params.get("package_name", ""))
+    except Exception as e:
+        return JSONResponse(public.returnMsg(False, f"导出失败: {e!s}"))
+    return JSONResponse(public.return_data(True, data={
+        "package_name": params.get("package_name", "") or "skill-package",
+        "size": len(data),
+        "zip_base64": base64.b64encode(data).decode("ascii"),
+    }))
+
+
+@app.post("/api/skills/import_package")
+async def api_skills_import_package(request: Request):
+    """导入技能包 ZIP（接受 base64 或 zip_base64 字段）。"""
+    import base64
+    from chat_client.skills import skill_manager
+    params = await _params(request)
+    raw = params.get("zip_base64") or params.get("content") or params.get("zip") or ""
+    if not raw:
+        return JSONResponse(public.returnMsg(False, "缺少 zip_base64 内容"))
+    try:
+        zip_bytes = base64.b64decode(raw)
+    except Exception as e:
+        return JSONResponse(public.returnMsg(False, f"base64 解码失败: {e!s}"))
+    res = skill_manager.import_package(zip_bytes, overwrite=bool(params.get("overwrite")))
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "导入失败")))
 
 
 @app.post("/api/tools/show_status")

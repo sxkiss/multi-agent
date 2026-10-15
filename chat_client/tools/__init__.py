@@ -576,6 +576,13 @@ class ToolRegistry:
         risk = meta.get("risk_level", "low")
         audit_kwargs = dict(kwargs)
 
+        # P3-b 可观测性：工具调用指标（延迟导入避免循环依赖）
+        try:
+            from ..metrics import get_metrics
+            _metrics = get_metrics()
+        except Exception:
+            _metrics = None
+
         # 1. 危险命令黑名单：仅集团模式（严格模式，is_allow_high()=False）下强制拦截
         #    单 Agent / Codex-X 破甲模式不拦截，放行专业操作
         if not is_allow_high():
@@ -583,6 +590,8 @@ class ToolRegistry:
             if danger:
                 logger.warning("[RiskGuard] 工具 %s 命中危险命令黑名单 (%s)，已拦截", tool_label, pattern)
                 self._audit(tool_label, risk, audit_kwargs, 0, "blocked-dangerous", pattern or "")
+                if _metrics:
+                    _metrics.record_tool(tool_label, (time.time() - t0) * 1000, "blocked-dangerous")
                 return _risk_denied_response(
                     "此操作命中危险命令黑名单，已被安全策略拦截，拒绝执行。"
                     "请勿尝试绕过，请告知用户该操作被禁止。",
@@ -595,6 +604,8 @@ class ToolRegistry:
                 and not is_high_allowed(tool_label)):
             logger.warning("[RiskGuard] 拦截高风险工具调用: %s", tool_label)
             self._audit(tool_label, risk, audit_kwargs, 0, "blocked-high-risk", "")
+            if _metrics:
+                _metrics.record_tool(tool_label, (time.time() - t0) * 1000, "blocked-high-risk")
             return _risk_denied_response(
                 f"此操作（{tool_label}）为高风险操作，执行前必须获得用户的明确确认。"
                 "请停止调用该工具，向用户说明将要执行的操作内容与潜在风险，"
@@ -663,10 +674,14 @@ class ToolRegistry:
         except Exception as e:
             dur = int((time.time() - t0) * 1000)
             self._audit(tool_label, risk, audit_kwargs, dur, "error", str(e))
+            if _metrics:
+                _metrics.record_tool(tool_label, dur, "error")
             raise
 
         dur = int((time.time() - t0) * 1000)
         self._audit(tool_label, risk, audit_kwargs, dur, "ok", str(result)[:200])
+        if _metrics:
+            _metrics.record_tool(tool_label, dur, "ok")
         # 注入本次工具调用耗时（秒）：沿用 Bash 既有 duration 约定，便于模型
         # 感知各工具开销；工具自带 duration 时（如 Bash）不覆盖。
         _elapsed = time.time() - t0
