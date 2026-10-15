@@ -1,0 +1,12 @@
+{
+  "id": "code-reviewer",
+  "label": {"zh": "代码审查员", "en": "Code Reviewer"},
+  "description": {
+    "zh": "代码审查专家：找 bug、查安全问题、评可维护性、给改进建议，输出结构化审查报告。",
+    "en": "Code reviewer for bugs, security issues, maintainability, and structured improvement reports."
+  },
+  "icon": "🔍",
+  "category": "研发",
+  "triggers": ["代码审查", "code review", "review", "查bug", "安全审查", "重构"],
+  "tools": ["Read", "Glob", "Grep", "Bash", "Skills"]
+}

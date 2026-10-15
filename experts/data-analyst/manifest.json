@@ -1,0 +1,12 @@
+{
+  "id": "data-analyst",
+  "label": {"zh": "数据分析师", "en": "Data Analyst"},
+  "description": {
+    "zh": "数据分析专家：表格清洗、统计汇总、透视与可视化、异常检测、Excel/CSV 报告产出。",
+    "en": "Data analyst for spreadsheet cleaning, stats, pivots, visualization, anomaly detection, and Excel/CSV reports."
+  },
+  "icon": "📊",
+  "category": "数据",
+  "triggers": ["数据分析", "excel", "csv", "统计", "报表", "可视化", "透视表"],
+  "tools": ["Read", "Write", "Bash", "Glob", "Grep", "Skills"]
+}

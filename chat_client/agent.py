@@ -286,6 +286,17 @@ class Agent:
                     logger.info(f"技能摘要已注入系统提示（{len(skill_manager.all_enabled())} 个技能）")
             except Exception as e:
                 logger.debug(f"技能摘要注入失败: {e}")
+            # P5: 注入本地专家库摘要（自动发现，对齐 Octop）
+            try:
+                from .experts import get_catalog
+                _base = self.config.get("base_dir") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                expert_summary = get_catalog(_base).generate_expert_summary()
+                if expert_summary:
+                    self.system_prompt += f"\n\n{expert_summary}"
+                    logger.info("专家库摘要已注入系统提示（自动发现 %d 位）",
+                                len(get_catalog(_base).scan()))
+            except Exception as e:
+                logger.debug(f"专家摘要注入失败: {e}")
             # 技能使用硬规则：强制先评估技能再动手（2026-10-13 boss 反馈"有技能不用"）
             self.system_prompt += (
                 "\n\n## 技能使用铁律（必须遵守）\n"

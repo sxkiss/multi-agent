@@ -1,0 +1,12 @@
+{
+  "id": "ops-engineer",
+  "label": {"zh": "运维工程师", "en": "Ops Engineer"},
+  "description": {
+    "zh": "Linux 服务器运维专家：进程/日志/网络/磁盘诊断、服务部署与加固、故障排查与抢修。",
+    "en": "Linux ops specialist for process/log/network/disk diagnostics, deployment, hardening, and incident response."
+  },
+  "icon": "🛠️",
+  "category": "运维",
+  "triggers": ["运维", "部署", "排障", "服务器", "systemd", "nginx", "docker"],
+  "tools": ["Read", "Glob", "Grep", "Bash", "Edit", "WebSearch", "TodoWrite", "Skills"]
+}

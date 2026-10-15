@@ -1,0 +1,12 @@
+{
+  "id": "content-writer",
+  "label": {"zh": "内容创作者", "en": "Content Writer"},
+  "description": {
+    "zh": "内容创作专家：营销文案、公众号/小红书/知乎文章、SEO 优化、标题打磨、内容改写。",
+    "en": "Content writer for marketing copy, social articles, SEO optimization, headline polishing, and rewriting."
+  },
+  "icon": "✍️",
+  "category": "内容",
+  "triggers": ["文案", "写文章", "公众号", "小红书", "SEO", "内容", "标题"],
+  "tools": ["Read", "Write", "WebSearch", "WebFetch", "Skills"]
+}

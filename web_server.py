@@ -1916,6 +1916,12 @@ class AgentMain:
                 skill_summary = skill_manager.generate_skill_summary()
             except Exception:
                 skill_summary = ""
+            # P5: 注入本地专家库摘要（自动发现），供经理派任务时选用
+            try:
+                from chat_client.experts import get_catalog
+                expert_summary = get_catalog(BASE_DIR).generate_expert_summary()
+            except Exception:
+                expert_summary = ""
             # 注入 MCP 工具清单，让经理知道成员可通过 MCP 调用的外部能力
             mcp_lines = []
             try:
@@ -1950,10 +1956,13 @@ class AgentMain:
 【成员可用的技能与工具】
 你本人不直接执行任务，但要知道团队有哪些能力，以便在派任务时指示成员使用：
 {skill_summary or '（暂无技能摘要）'}
+{f"""{expert_summary}
+""" if expert_summary else ""}
 {f"""[MCP 外部工具（成员可调用）]
 {chr(10).join(mcp_lines)}
 """ if mcp_lines else ""}
 派任务时，如果某目标需要特定技能，在 Task/RunCrew 的 prompt 中写明「使用 Skills(name='技能名') 加载对应技能」或直接调用对应 MCP 工具。
+若目标匹配上方【本地专家库】中的某位专家，可用 InstallExpert(name='专家id') 落地为团队成员，或指示成员调用 GetExpertPrompt 取人设。
 
 【技能使用铁律（必须遵守）】
 1. 拆解任务的第一步，先在上方技能清单中查找匹配技能（比对"遇到以下情况就使用/适用场景/触发词"段落）。
@@ -3945,6 +3954,29 @@ async def api_sessions_stats(request: Request):
     """列出各会话规模统计。"""
     from chat_client import session_tools
     return JSONResponse(public.return_data(True, data=session_tools.list_session_stats(BASE_DIR)))
+
+
+# ── P5: 本地专家库（自动发现）──────────────────────────────────
+@app.get("/api/experts")
+async def api_experts():
+    """列出本地专家库（自动发现 experts/ 目录）。"""
+    from chat_client.experts import get_catalog
+    cat = get_catalog(BASE_DIR)
+    return JSONResponse(public.return_data(True, data={
+        "experts": cat.list_dicts(),
+        "total": len(cat.scan()),
+        "experts_dir": cat.experts_dir,
+    }))
+
+
+@app.get("/api/experts/{expert_id}")
+async def api_expert_detail(expert_id: str):
+    """获取单个专家详情（含人格文件）。"""
+    from chat_client.experts import get_catalog
+    e = get_catalog(BASE_DIR).get(expert_id)
+    if not e:
+        return JSONResponse(public.returnMsg(False, f"专家不存在: {expert_id}"))
+    return JSONResponse(public.return_data(True, data=e.to_dict(with_prompt=True)))
 
 
 # ── P4-d: 备份 ─────────────────────────────────────────────────

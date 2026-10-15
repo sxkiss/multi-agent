@@ -238,18 +238,43 @@ def InstallExpert(name: str, department: str = "experts", member_name: str = "",
         identity: 可选身份补充（名字/定位/风格），会作为身份层拼进成员系统提示词
     """
     import re as _re
-    # 1. 取专家提示词 + 元数据
+    # 0. 优先从**本地专家库**（自动发现）取——本地专家无需联网、含完整人格文件
+    local = None
     try:
-        key, prompt_text = fetch_expert_prompt(name)
-    except ValueError as e:
-        return _xml_response("error", str(e))
-    except Exception as e:
-        return _xml_response("error", f"获取专家提示词失败: {e!s}")
+        from ..experts import get_catalog
+        from . import PROJECT_ROOT
+        cat = get_catalog(PROJECT_ROOT)
+        local = cat.get(name)
+    except Exception:
+        local = None
 
-    meta = find_expert_meta(key) or find_expert_meta(name)
-    display = _expert_field(meta, "displayName", "name", "Name", "title") if meta else ""
-    desc = _expert_field(meta, "description", "desc", "summary", "intro") if meta else ""
-    category = _expert_field(meta, "categoryName", "category", "group", "type") if meta else ""
+    if local is not None:
+        key = local.id
+        display = local.label
+        desc = local.description
+        category = local.category
+        # 组装 backstory：SOUL + IDENTITY 作为系统提示
+        prompt_text = (local.soul or "").strip()
+        if local.identity:
+            prompt_text += "\n\n" + local.identity.strip()
+        if not prompt_text:
+            prompt_text = f"你是{display}。{desc}"
+        # 本地专家可携带推荐工具
+        if not tools and local.tools:
+            tools = list(local.tools)
+    else:
+        # 1. 取专家市场提示词 + 元数据
+        try:
+            key, prompt_text = fetch_expert_prompt(name)
+        except ValueError as e:
+            return _xml_response("error", str(e))
+        except Exception as e:
+            return _xml_response("error", f"获取专家提示词失败: {e!s}")
+
+        meta = find_expert_meta(key) or find_expert_meta(name)
+        display = _expert_field(meta, "displayName", "name", "Name", "title") if meta else ""
+        desc = _expert_field(meta, "description", "desc", "summary", "intro") if meta else ""
+        category = _expert_field(meta, "categoryName", "category", "group", "type") if meta else ""
 
     # 2. 规范化成员名：优先 member_name，其次专家标识；非法字符转 -
     raw_member = (member_name or key or "").strip().lower()
