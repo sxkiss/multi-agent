@@ -174,6 +174,61 @@ class Agent:
     # 集团协作工具：需要多 Agent 编排，单 Agent / Codex-X 模式不加载
     _GROUP_TOOLS: set[str] = {"RunCrew", "ConsultPeer", "CreateDepartment", "RecruitMember"}
 
+    # ── 工具并行安全分类（2026-10-15）──────────────────────────────
+    # 不是所有工具都能并行：写类/读改写类工具并发会互相覆盖或丢更新。
+    # 策略：默认只让「只读/幂等/无共享副作用」的工具并行，写类工具串行执行。
+    # 可用 config 覆盖：tool_parallel_force（强制并行名单）、
+    #                  tool_parallel_deny（强制串行名单，优先级最高）。
+    _PARALLEL_DENY: set[str] = {
+        # 写文件类：同一文件并发写会互相覆盖
+        "Write", "Edit", "Patch", "LargeFileEdit", "extract_archive", "compress_files",
+        # 读-改-写类：并发会丢更新
+        "TodoWrite", "mem0_add", "mem0_import", "mem0_delete",
+        "KnowledgeAdd", "KnowledgeDelete",
+        # 有共享/顺序副作用
+        "Bash", "kill_process", "restart_service", "manage_service", "docker_manage",
+        "cron_manage", "cleanup_temp", "GrantWriteAccess", "ManageWritePaths",
+        "ScheduleTask", "CancelScheduledTask", "RunScheduledTaskNow",
+        "CreateDepartment", "RecruitMember", "InstallExpert",
+        "MCP", "Skills", "TaskSummary",
+    }
+    # 明确可并行的（只读/幂等/独立）：用于「白名单模式」时的判定
+    _PARALLEL_ALLOW: set[str] = {
+        "Read", "Glob", "Grep", "ReadToolArchive",
+        "TaskStatus", "CheckCommandStatus", "TaskStop", "StopCommand",
+        "WebFetch", "WebSearch", "curl_url", "http_check", "ping_target",
+        "check_domain", "check_ssl_cert", "get_server_ip",
+        "get_current_time", "get_service_status", "get_system_resources",
+        "get_top_processes", "get_docker_info", "get_docker_containers",
+        "get_docker_inspect", "get_docker_logs", "get_firewall_status",
+        "get_mysql_list", "get_sites", "get_sites_conf", "get_sites_logs",
+        "get_site_analysis", "list_port_bindings", "dir_usage", "find_large_files",
+        "tail_log",
+        "mem0_search", "mem0_search_all", "mem0_list",
+        "KnowledgeSearch", "KnowledgeList",
+        "ExpertMarket", "GetExpertPrompt", "ExpertScenes",
+        "SkillMarket", "SkillCategories",
+        "ListScheduledTasks", "TodoRead",
+        # 子代理：本身无共享状态，可并行（这是本次修复的主要目标）
+        "Task", "ConsultPeer",
+    }
+
+    def _tool_parallel_safe(self, func_name: str) -> bool:
+        """判断某工具能否与同轮其它工具并行执行。
+
+        优先级：config 强制名单 > 内置黑名单 > 内置白名单 > 默认（保守：不可并行）。
+        """
+        deny = set(self.config.get("tool_parallel_deny") or [])
+        force = set(self.config.get("tool_parallel_force") or [])
+        if func_name in force:
+            return True
+        if func_name in deny or func_name in self._PARALLEL_DENY:
+            return False
+        if func_name in self._PARALLEL_ALLOW:
+            return True
+        # 未知工具：保守串行（宁可慢，不可错）
+        return False
+
     # 工具参数连续非法的熔断阈值：达到即结束本轮，避免"截断→非法→空跑→再截断"死循环
     BAD_ARGS_MAX_STREAK = 3
 
@@ -1309,26 +1364,42 @@ Here is some useful information about the environment you are running in:
                                 _xml_response("error", f"Error: Tool {func_name} not found."), func_name),
                         })
 
-                # 阶段2：并行执行所有待执行工具（func 已含黑名单/风险/超时/审计守卫）
+                # 阶段2：执行待执行工具
+                # 并行安全策略（2026-10-15）：只让「只读/幂等/无共享副作用」的工具并行，
+                # 写类/读改写类（Write/Edit/TodoWrite/Bash/...）串行，避免互相覆盖或丢更新。
+                # 未知工具保守串行。可用 config.tool_parallel_force/deny 覆盖。
                 _exec_plans = [p for p in _plans if p.get("func") is not None]
                 if _exec_plans:
                     _parallel_on = bool(self.config.get("tool_parallel_enabled", True))
                     _ctx_job = _get_current_job()
-                    if _parallel_on and len(_exec_plans) > 1:
+
+                    def _run_plan(p):
+                        p["result"] = self._run_one_tool(
+                            p["func"], p["args"], p["func_name"], _ctx_job)
+
+                    if _parallel_on:
+                        _par_plans = [p for p in _exec_plans if self._tool_parallel_safe(p["func_name"])]
+                        _ser_plans = [p for p in _exec_plans if not self._tool_parallel_safe(p["func_name"])]
+                    else:
+                        _par_plans, _ser_plans = [], _exec_plans
+
+                    # 并行组（仅当 >1 个才起线程池；单个直接跑）
+                    if len(_par_plans) > 1:
                         from concurrent.futures import ThreadPoolExecutor as _TPE
                         _mw = int(self.config.get("tool_parallel_max_workers", 8) or 8)
                         _mw = max(1, min(_mw, 16))
-                        with _TPE(max_workers=min(len(_exec_plans), _mw),
+                        with _TPE(max_workers=min(len(_par_plans), _mw),
                                   thread_name_prefix="tool-par") as _pool:
-                            _futs = {
-                                id(p): _pool.submit(self._run_one_tool, p["func"], p["args"], p["func_name"], _ctx_job)
-                                for p in _exec_plans
-                            }
-                            for p in _exec_plans:
-                                p["result"] = _futs[id(p)].result()
+                            _futs = [(_pool.submit(_run_plan, p), p) for p in _par_plans]
+                            for _f, _p in _futs:
+                                _f.result()
                     else:
-                        for p in _exec_plans:
-                            p["result"] = self._run_one_tool(p["func"], p["args"], p["func_name"], _ctx_job)
+                        for p in _par_plans:
+                            _run_plan(p)
+
+                    # 串行组：按原顺序逐个执行（写类工具保序，避免并发副作用）
+                    for p in _ser_plans:
+                        _run_plan(p)
 
                 # 阶段3：按原顺序回填（yield tool_result + P6 归档 + 落库）
                 for p in _plans:

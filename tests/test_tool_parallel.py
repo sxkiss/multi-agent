@@ -119,3 +119,62 @@ class TestParallelConfig:
         assert 'tool_parallel_max_workers' in src
         assert '"tool_parallel_enabled", True' in src.replace("'", '"') or \
                "'tool_parallel_enabled', True" in src
+
+
+class TestParallelSafety:
+    """不是所有工具都能并行：写类/读改写类必须串行。"""
+
+    def _agent(self):
+        from chat_client.agent import Agent
+        return Agent(session_id="t", config={"api_key": "x", "base_url": "y", "model_name": "z"})
+
+    def test_readonly_tools_parallel_safe(self):
+        ag = self._agent()
+        for t in ("Read", "Glob", "Grep", "WebSearch", "Task", "ConsultPeer",
+                  "mem0_search", "KnowledgeSearch", "TaskStatus"):
+            assert ag._tool_parallel_safe(t), f"{t} 应可并行"
+
+    def test_write_tools_not_parallel_safe(self):
+        ag = self._agent()
+        for t in ("Write", "Edit", "Patch", "TodoWrite", "Bash", "MCP",
+                  "restart_service", "mem0_add", "KnowledgeAdd", "InstallExpert"):
+            assert not ag._tool_parallel_safe(t), f"{t} 应串行"
+
+    def test_unknown_tool_conservative(self):
+        ag = self._agent()
+        assert not ag._tool_parallel_safe("SomeUnknownTool")
+
+    def test_config_force_overrides(self):
+        from chat_client.agent import Agent
+        ag = Agent(session_id="t", config={"api_key": "x", "base_url": "y",
+                                           "model_name": "z",
+                                           "tool_parallel_force": ["Bash"]})
+        assert ag._tool_parallel_safe("Bash")  # 强制并行
+
+    def test_config_deny_overrides(self):
+        from chat_client.agent import Agent
+        ag = Agent(session_id="t", config={"api_key": "x", "base_url": "y",
+                                           "model_name": "z",
+                                           "tool_parallel_deny": ["Read"]})
+        assert not ag._tool_parallel_safe("Read")  # 强制串行
+
+
+class TestTodoSessionId:
+    """TodoWrite/TodoRead 的 session_id 校验：真实会话 id 含冒号，不应误报。"""
+
+    def test_real_session_id_accepted(self, tmp_path):
+        from chat_client.tools.todo import TodoManager
+        m = TodoManager("single:assistant:sxkiss_com:20261015-8", sessions_dir=str(tmp_path))
+        assert m.session_id == "single_assistant_sxkiss_com_20261015-8"
+        assert os.path.isdir(m.session_dir)
+
+    def test_path_traversal_rejected(self, tmp_path):
+        from chat_client.tools.todo import TodoManager
+        for bad in ("../../etc/passwd", "a/b", "a\\b", "x\x00y"):
+            with pytest.raises(ValueError):
+                TodoManager(bad, sessions_dir=str(tmp_path))
+
+    def test_long_id_bounded(self, tmp_path):
+        from chat_client.tools.todo import TodoManager
+        m = TodoManager("x" * 300, sessions_dir=str(tmp_path))
+        assert len(m.session_id) <= 128
