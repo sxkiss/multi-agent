@@ -121,42 +121,74 @@ class TestParallelConfig:
                "'tool_parallel_enabled', True" in src
 
 
-class TestParallelSafety:
-    """不是所有工具都能并行：写类/读改写类必须串行。"""
+class TestResourceConflictParallel:
+    """按资源冲突判定并行（对齐 Claude Code/Cursor），非按工具名一刀切。"""
 
-    def _agent(self):
+    def _agent(self, **cfg):
         from chat_client.agent import Agent
-        return Agent(session_id="t", config={"api_key": "x", "base_url": "y", "model_name": "z"})
+        c = {"api_key": "x", "base_url": "y", "model_name": "z"}
+        c.update(cfg)
+        return Agent(session_id="t", config=c)
 
-    def test_readonly_tools_parallel_safe(self):
+    def test_different_files_parallel(self):
+        """改不同文件的 Edit 资源键不同 → 可并行。"""
         ag = self._agent()
-        for t in ("Read", "Glob", "Grep", "WebSearch", "Task", "ConsultPeer",
-                  "mem0_search", "KnowledgeSearch", "TaskStatus"):
-            assert ag._tool_parallel_safe(t), f"{t} 应可并行"
+        k1 = ag._tool_resource_key("Edit", {"file_path": "/a/1.py"})
+        k2 = ag._tool_resource_key("Edit", {"file_path": "/a/2.py"})
+        assert k1 != k2
 
-    def test_write_tools_not_parallel_safe(self):
+    def test_same_file_conflict(self):
+        """改同一文件的 Edit 资源键相同 → 冲突串行。"""
         ag = self._agent()
-        for t in ("Write", "Edit", "Patch", "TodoWrite", "Bash", "MCP",
-                  "restart_service", "mem0_add", "KnowledgeAdd", "InstallExpert"):
-            assert not ag._tool_parallel_safe(t), f"{t} 应串行"
+        k1 = ag._tool_resource_key("Edit", {"file_path": "/a/1.py"})
+        k2 = ag._tool_resource_key("Edit", {"file_path": "/a/1.py"})
+        assert k1 == k2
 
-    def test_unknown_tool_conservative(self):
+    def test_readonly_free(self):
         ag = self._agent()
-        assert not ag._tool_parallel_safe("SomeUnknownTool")
+        for t, a in (("Read", {"file_path": "/a/1.py"}), ("Grep", {}),
+                     ("Task", {}), ("ConsultPeer", {}), ("WebSearch", {})):
+            assert ag._tool_resource_key(t, a) == "·free", t
 
-    def test_config_force_overrides(self):
-        from chat_client.agent import Agent
-        ag = Agent(session_id="t", config={"api_key": "x", "base_url": "y",
-                                           "model_name": "z",
-                                           "tool_parallel_force": ["Bash"]})
-        assert ag._tool_parallel_safe("Bash")  # 强制并行
+    def test_exclusive_tools(self):
+        ag = self._agent()
+        for t in ("Bash", "TodoWrite", "MCP", "Skills", "InstallExpert", "SomeUnknown"):
+            assert ag._tool_resource_key(t, {}) == "·exclusive", t
 
-    def test_config_deny_overrides(self):
-        from chat_client.agent import Agent
-        ag = Agent(session_id="t", config={"api_key": "x", "base_url": "y",
-                                           "model_name": "z",
-                                           "tool_parallel_deny": ["Read"]})
-        assert not ag._tool_parallel_safe("Read")  # 强制串行
+    def test_service_resource_key(self):
+        ag = self._agent()
+        assert ag._tool_resource_key("restart_service", {"service_name": "nginx"}) != \
+               ag._tool_resource_key("restart_service", {"service_name": "mysql"})
+        assert ag._tool_resource_key("restart_service", {"service_name": "nginx"}) == \
+               ag._tool_resource_key("restart_service", {"service_name": "nginx"})
+
+    def test_grouping_mixed(self):
+        """混合场景分组：异文件 Edit 并入同组并行，同文件落后续组。"""
+        ag = self._agent()
+        def mk(n, a):
+            return {"func_name": n, "args": a, "_res_key": ag._tool_resource_key(n, a)}
+        plans = [
+            mk("Edit", {"file_path": "/a/1.py"}),
+            mk("Edit", {"file_path": "/a/2.py"}),
+            mk("Edit", {"file_path": "/a/1.py"}),  # 与第一个冲突
+            mk("Read", {"file_path": "/x.py"}),
+            mk("Task", {}),
+            mk("Bash", {"command": "ls"}),        # 独占
+        ]
+        groups = ag._plan_parallel_groups(plans)
+        # 组0 应包含前两个 Edit + Read + Task（4个并行）
+        g0 = [p["func_name"] for p in groups[0]]
+        assert g0.count("Edit") == 2 and "Read" in g0 and "Task" in g0
+        # 第3个 Edit（同文件）不在组0
+        assert len(groups) >= 2
+
+    def test_config_deny_forces_exclusive(self):
+        ag = self._agent(tool_parallel_deny=["Read"])
+        assert ag._tool_resource_key("Read", {}) == "·exclusive"
+
+    def test_config_force_forces_free(self):
+        ag = self._agent(tool_parallel_force=["Bash"])
+        assert ag._tool_resource_key("Bash", {}) == "·free"
 
 
 class TestTodoSessionId:

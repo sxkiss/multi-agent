@@ -174,25 +174,45 @@ class Agent:
     # 集团协作工具：需要多 Agent 编排，单 Agent / Codex-X 模式不加载
     _GROUP_TOOLS: set[str] = {"RunCrew", "ConsultPeer", "CreateDepartment", "RecruitMember"}
 
-    # ── 工具并行安全分类（2026-10-15）──────────────────────────────
-    # 不是所有工具都能并行：写类/读改写类工具并发会互相覆盖或丢更新。
-    # 策略：默认只让「只读/幂等/无共享副作用」的工具并行，写类工具串行执行。
-    # 可用 config 覆盖：tool_parallel_force（强制并行名单）、
-    #                  tool_parallel_deny（强制串行名单，优先级最高）。
-    _PARALLEL_DENY: set[str] = {
-        # 写文件类：同一文件并发写会互相覆盖
-        "Write", "Edit", "Patch", "LargeFileEdit", "extract_archive", "compress_files",
-        # 读-改-写类：并发会丢更新
-        "TodoWrite", "mem0_add", "mem0_import", "mem0_delete",
-        "KnowledgeAdd", "KnowledgeDelete",
-        # 有共享/顺序副作用
-        "Bash", "kill_process", "restart_service", "manage_service", "docker_manage",
-        "cron_manage", "cleanup_temp", "GrantWriteAccess", "ManageWritePaths",
-        "ScheduleTask", "CancelScheduledTask", "RunScheduledTaskNow",
-        "CreateDepartment", "RecruitMember", "InstallExpert",
-        "MCP", "Skills", "TaskSummary",
+    # ── 工具并行：按「资源冲突」判定（2026-10-15）──────────────────
+    # 对齐 Claude Code / Cursor 的做法：不按工具名一刀切，而是看**资源冲突**。
+    #   · 两个 Edit 改不同文件 → 可并行；改同一文件 → 串行
+    #   · 两个 restart_service 重启不同服务 → 可并行；同一服务 → 串行
+    #   · 只读工具（Read/Grep/查询类）无写资源 → 自由并行
+    #   · 有全局共享状态、无法用资源键区分的（Bash/TodoWrite/MCP/Skills/
+    #     InstallExpert/TaskSummary 等）→ 独占串行
+    #   · 子代理（Task/ConsultPeer）无共享状态 → 并行
+    # 可用 config 覆盖：tool_parallel_force（强制并行）、tool_parallel_deny
+    #                  （强制串行，优先级最高）。
+
+    # 独占工具：无可用资源键区分、共享全局状态，必须串行
+    _PARALLEL_EXCLUSIVE: set[str] = {
+        "Bash",                       # cwd/后台任务/环境共享，且顺序敏感
+        "TodoWrite", "TaskSummary",   # 单文件读改写，全局唯一
+        "MCP", "Skills",              # 插件/技能加载全局状态
+        "InstallExpert", "RecruitMember", "CreateDepartment",  # 写 crew_agents.json
+        "GrantWriteAccess", "ManageWritePaths",  # 全局写白名单
+        "cron_manage", "cleanup_temp",           # 系统级共享
     }
-    # 明确可并行的（只读/幂等/独立）：用于「白名单模式」时的判定
+    # 写类工具 → 资源键为文件路径（同文件串行，异文件并行）
+    _WRITE_FILE_TOOLS: dict[str, tuple[str, ...]] = {
+        "Write": ("file_path",),
+        "Edit": ("file_path",),
+        "LargeFileEdit": ("file_path",),
+        "compress_files": ("archive_path",),   # 输出包路径
+        "extract_archive": ("dest_dir",),       # 解压目标目录
+    }
+    # 服务/容器类工具 → 资源键为服务名/容器名（同目标串行，异目标并行）
+    _RESOURCE_TOOLS: dict[str, tuple[str, ...]] = {
+        "restart_service": ("service_name",),
+        "manage_service": ("service_name",),
+        "docker_manage": ("container_id",),
+        "kill_process": ("pid",),
+        "ScheduleTask": ("name",),
+        "CancelScheduledTask": ("name_or_id",),
+        "RunScheduledTaskNow": ("name_or_id",),
+    }
+    # 只读工具：无写资源，自由并行
     _PARALLEL_ALLOW: set[str] = {
         "Read", "Glob", "Grep", "ReadToolArchive",
         "TaskStatus", "CheckCommandStatus", "TaskStop", "StopCommand",
@@ -209,25 +229,73 @@ class Agent:
         "ExpertMarket", "GetExpertPrompt", "ExpertScenes",
         "SkillMarket", "SkillCategories",
         "ListScheduledTasks", "TodoRead",
-        # 子代理：本身无共享状态，可并行（这是本次修复的主要目标）
+        # 子代理：本身无共享状态，可并行（本次修复的主要目标）
         "Task", "ConsultPeer",
     }
 
-    def _tool_parallel_safe(self, func_name: str) -> bool:
-        """判断某工具能否与同轮其它工具并行执行。
-
-        优先级：config 强制名单 > 内置黑名单 > 内置白名单 > 默认（保守：不可并行）。
+    def _tool_resource_key(self, func_name: str, args: dict) -> str | None:
+        """计算工具调用的「资源键」。返回 None 表示：
+        - 只读/无冲突 → 自由并行（返回特殊值 "·free"）
+        - 独占 → 返回 "·exclusive"（与任何其它调用冲突）
         """
-        deny = set(self.config.get("tool_parallel_deny") or [])
         force = set(self.config.get("tool_parallel_force") or [])
+        deny = set(self.config.get("tool_parallel_deny") or [])
+        if func_name in deny:
+            return "·exclusive"
         if func_name in force:
-            return True
-        if func_name in deny or func_name in self._PARALLEL_DENY:
-            return False
+            return "·free"
+        if func_name in self._PARALLEL_EXCLUSIVE:
+            return "·exclusive"
+        # 写文件类：资源键 = 规范化后的文件路径
+        keys = self._WRITE_FILE_TOOLS.get(func_name)
+        if keys:
+            for k in keys:
+                v = args.get(k)
+                if v:
+                    try:
+                        return "file:" + os.path.realpath(str(v))
+                    except Exception:
+                        return "file:" + str(v)
+            return "·exclusive"  # 拿不到路径，保守独占
+        # 服务/容器类：资源键 = 目标标识
+        rkeys = self._RESOURCE_TOOLS.get(func_name)
+        if rkeys:
+            for k in rkeys:
+                v = args.get(k)
+                if v not in (None, ""):
+                    return f"res:{func_name}:{v}"
+            return "·exclusive"
         if func_name in self._PARALLEL_ALLOW:
-            return True
-        # 未知工具：保守串行（宁可慢，不可错）
-        return False
+            return "·free"
+        # 未知工具：保守独占（宁可慢，不可错）
+        return "·exclusive"
+
+    def _plan_parallel_groups(self, plans: list[dict]) -> list[list[dict]]:
+        """把待执行计划按资源冲突分组：同组内无冲突可并行，组间串行。
+
+        算法：贪心装箱——依次把每个计划放进「第一个无资源冲突的组」，
+        放不进则新开一组。这样只读/异文件工具会尽量并入同组并行，
+        冲突的自动落到后续组串行。保持原有相对顺序。
+        """
+        groups: list[list[dict]] = []
+        group_keys: list[set[str]] = []
+        for p in plans:
+            key = p.get("_res_key")
+            if key == "·exclusive":
+                groups.append([p]); group_keys.append({"·exclusive"})
+                continue
+            placed = False
+            for gi, gk in enumerate(group_keys):
+                if "·exclusive" in gk:
+                    continue  # 独占组不再并入
+                if key == "·free" or key not in gk:
+                    groups[gi].append(p)
+                    gk.add(key)
+                    placed = True
+                    break
+            if not placed:
+                groups.append([p]); group_keys.append({key})
+        return groups
 
     # 工具参数连续非法的熔断阈值：达到即结束本轮，避免"截断→非法→空跑→再截断"死循环
     BAD_ARGS_MAX_STREAK = 3
@@ -1355,6 +1423,7 @@ Here is some useful information about the environment you are running in:
                             "call_id": call_id, "func_name": func_name, "args_str": args_str,
                             "yield_call": True, "yield_result": True, "write_memory": True,
                             "func": func, "args": args,
+                            "_res_key": self._tool_resource_key(func_name, args),
                         })
                     else:
                         _plans.append({
@@ -1364,10 +1433,10 @@ Here is some useful information about the environment you are running in:
                                 _xml_response("error", f"Error: Tool {func_name} not found."), func_name),
                         })
 
-                # 阶段2：执行待执行工具
-                # 并行安全策略（2026-10-15）：只让「只读/幂等/无共享副作用」的工具并行，
-                # 写类/读改写类（Write/Edit/TodoWrite/Bash/...）串行，避免互相覆盖或丢更新。
-                # 未知工具保守串行。可用 config.tool_parallel_force/deny 覆盖。
+                # 阶段2：执行待执行工具（按资源冲突分组并行，2026-10-15）
+                # 对齐 Claude Code / Cursor：不按工具名一刀切，而是看资源冲突——
+                # 改不同文件的 Edit 可并行，改同一文件的串行；只读/子代理自由并行；
+                # Bash/TodoWrite/MCP 等共享全局状态的独占串行。
                 _exec_plans = [p for p in _plans if p.get("func") is not None]
                 if _exec_plans:
                     _parallel_on = bool(self.config.get("tool_parallel_enabled", True))
@@ -1378,28 +1447,23 @@ Here is some useful information about the environment you are running in:
                             p["func"], p["args"], p["func_name"], _ctx_job)
 
                     if _parallel_on:
-                        _par_plans = [p for p in _exec_plans if self._tool_parallel_safe(p["func_name"])]
-                        _ser_plans = [p for p in _exec_plans if not self._tool_parallel_safe(p["func_name"])]
+                        # 贪心分组：同组无资源冲突 → 组内并行，组间串行
+                        _groups = self._plan_parallel_groups(_exec_plans)
                     else:
-                        _par_plans, _ser_plans = [], _exec_plans
+                        _groups = [[p] for p in _exec_plans]  # 关闭并行：逐个成组（等价串行）
 
-                    # 并行组（仅当 >1 个才起线程池；单个直接跑）
-                    if len(_par_plans) > 1:
-                        from concurrent.futures import ThreadPoolExecutor as _TPE
-                        _mw = int(self.config.get("tool_parallel_max_workers", 8) or 8)
-                        _mw = max(1, min(_mw, 16))
-                        with _TPE(max_workers=min(len(_par_plans), _mw),
-                                  thread_name_prefix="tool-par") as _pool:
-                            _futs = [(_pool.submit(_run_plan, p), p) for p in _par_plans]
-                            for _f, _p in _futs:
-                                _f.result()
-                    else:
-                        for p in _par_plans:
-                            _run_plan(p)
-
-                    # 串行组：按原顺序逐个执行（写类工具保序，避免并发副作用）
-                    for p in _ser_plans:
-                        _run_plan(p)
+                    from concurrent.futures import ThreadPoolExecutor as _TPE
+                    _mw = int(self.config.get("tool_parallel_max_workers", 8) or 8)
+                    _mw = max(1, min(_mw, 16))
+                    for _grp in _groups:
+                        if len(_grp) == 1:
+                            _run_plan(_grp[0])
+                        else:
+                            with _TPE(max_workers=min(len(_grp), _mw),
+                                      thread_name_prefix="tool-par") as _pool:
+                                _futs = [(_pool.submit(_run_plan, p), p) for p in _grp]
+                                for _f, _p in _futs:
+                                    _f.result()
 
                 # 阶段3：按原顺序回填（yield tool_result + P6 归档 + 落库）
                 for p in _plans:
