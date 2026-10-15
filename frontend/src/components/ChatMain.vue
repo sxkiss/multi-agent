@@ -184,6 +184,7 @@
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { authOpts } from '../auth.js'
 import MessageItem from './MessageItem.vue'
+import { stripInlineThinking } from '../assistant-content.js'
 
 export default {
   name: 'ChatMain',
@@ -314,13 +315,14 @@ export default {
     })
 
     const parseMarkdown = (content) => {
+      const text = stripInlineThinking(content)
       try {
-        const md = window.marked?.parse(content)
+        const md = window.marked?.parse(text) || text
         return sanitizeHTML(md)
       } catch {
         console.error('Markdown parse error')
         // 解析失败也必须消毒后再进 v-html
-        return sanitizeHTML(content)
+        return sanitizeHTML(text)
       }
     }
 
