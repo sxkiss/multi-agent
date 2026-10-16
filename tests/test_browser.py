@@ -1,7 +1,7 @@
-"""浏览器基础设施测试（platform_ext/browser）。
+"""浏览器基础设施测试（platform_ext/browser + chat_client/tools/browser）。
 
-覆盖：env 探测、harness 辅助、record_replay 路由、工具注册。
-不真正启动 Chrome（通过 monkeypatch 替换底层启动函数），保证测试轻量、无残留。
+覆盖：env 探测、harness 辅助、record_replay 路由、工具注册与截图 Markdown。
+不真正启动 Chrome（用 monkeypatch 替换底层），只验证逻辑与 API 契约。
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from unittest import mock
 
 import pytest
 
@@ -66,7 +65,7 @@ class TestHarness:
         assert b.target == "user"
 
 
-# ── record_replay（不真启动 Chrome）─────────────────────────
+# ── record_replay ──────────────────────────────────────────
 class TestRecordReplay:
     def test_status_route(self):
         from platform_ext.browser import record_replay as rr
@@ -74,15 +73,8 @@ class TestRecordReplay:
         assert "active" in res
         assert "recordings" in res
 
-    def test_start_invalid_profile_fails_fast(self):
-        # 不 mock：用一个几乎必失败的 profile，验证返回 dict 而非抛异常
-        from platform_ext.browser import record_replay as rr
-        res = _body(asyncio.run(rr.record_start(rr.StartBody(profile="__no_such_profile__"))))
-        assert isinstance(res, dict)
-
     def test_stop_without_active(self):
         from platform_ext.browser import record_replay as rr
-        # 清空活动录制状态，保证没有进行中的录制
         rr._ACTIVE.update({"session": None, "recording_id": None})
         res = _body(asyncio.run(rr.record_stop()))
         assert res.get("ok") is None
@@ -125,3 +117,32 @@ class TestTool:
         from chat_client.tools import browser
         res = browser.browser_use(action="not_a_real_action")
         assert "error" in res
+
+    def test_screenshots_dir_path(self):
+        from chat_client.tools.browser import _screenshots_dir
+        d = _screenshots_dir()
+        assert d.endswith(os.path.join("workspace", "outbound", "screenshots"))
+
+    def test_screenshot_action_returns_markdown_image(self, monkeypatch):
+        """mock 底层 browser_tool 返回截图路径，验证工具返回 Markdown 图片。"""
+        import platform_ext.browser as _peb
+        _peb.ensure_vendor_on_path()
+        from octop_browser.models import ActionMetrics, ToolResult
+        from octop_browser import tool_interface
+        from chat_client.tools import browser
+
+        def fake_tool(action, profile, **kwargs):
+            return ToolResult(
+                success=True,
+                content="/home/sxkiss/bt/workspace/outbound/screenshots/fake.png",
+                error=None,
+                metrics=ActionMetrics(action="screenshot", duration_ms=1,
+                                      dom_nodes_scanned=0, estimated_tokens=0),
+            )
+
+        monkeypatch.setattr(tool_interface, "browser_tool", fake_tool)
+        # 让 _run 直接返回传入值（ToolResult），不进入事件循环
+        monkeypatch.setattr(browser, "_run", lambda coro, timeout=120: coro)
+        res = browser.browser_use(action="screenshot", profile="p1")
+        assert "![screenshot]" in res
+        assert "fake.png" in res

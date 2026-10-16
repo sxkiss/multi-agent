@@ -12,13 +12,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
+import time
 from typing import Any
 
 from . import register_tool
 from .base import _xml_response
 
 logger = logging.getLogger(__name__)
+
+# 浏览器截图输出目录（对齐 Octop outbound/，在 /api/files/raw 白名单内）
+def _screenshots_dir() -> str:
+    base = os.environ.get("PROJECT_ROOT") or os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    return os.path.join(base, "workspace", "outbound", "screenshots")
 
 # 专用后台事件循环
 _loop: asyncio.AbstractEventLoop | None = None
@@ -105,6 +114,19 @@ def browser_use(action: str, url: str = "", x: int = 0, y: int = 0,
         if not url:
             return _xml_response("error", "navigate 需要 url 参数")
         params["url"] = url
+    elif action == "screenshot":
+        # 截图保存到 workspace/outbound/screenshots/（/api/files/raw 可访问），
+        # 使截图能在对话界面作为图片显示（对齐 Octop outbound 机制）。
+        shots_dir = _screenshots_dir()
+        try:
+            os.makedirs(shots_dir, exist_ok=True)
+        except OSError as exc:  # noqa: BLE001
+            logger.warning("创建截图目录失败: %s", exc)
+        if full_page := kwargs.get("full_page"):
+            params["full_page"] = bool(full_page)
+        params["path"] = os.path.join(
+            shots_dir, f"shot_{int(time.time() * 1000)}.png"
+        )
     elif action == "click":
         params["x"] = x
         params["y"] = y
@@ -149,7 +171,23 @@ def browser_use(action: str, url: str = "", x: int = 0, y: int = 0,
     if not getattr(result, "success", False):
         return _xml_response("error", getattr(result, "error", None) or f"{action} 执行失败")
     content = getattr(result, "content", "") or ""
-    # dom_tree / screenshot 返回结构化 JSON，直接透传
+
+    # screenshot：content 是保存的 PNG 路径 → 返回 Markdown 图片，使对话界面能显示画面
+    if action == "screenshot":
+        shot_path = (content or "").strip()
+        # 兼容：若返回的是 JSON（旧行为），尝试解析出路径
+        if shot_path.startswith("{"):
+            try:
+                parsed = json.loads(shot_path)
+                shot_path = parsed.get("path") or parsed.get("content") or ""
+            except Exception:  # noqa: BLE001
+                shot_path = ""
+        if shot_path and shot_path.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+            abs_path = os.path.abspath(shot_path)
+            md = f"浏览器截图：\n\n![screenshot]({abs_path})"
+            return _xml_response("success", md, tool_name="browser_use")
+
+    # dom_tree 等返回结构化 JSON，直接透传
     if content.strip().startswith(("{", "[")):
         return content
     return _xml_response("success", content)
