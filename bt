@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# BT 网关薄 CLI 启动器（复用 HTTP API）
+# 用法: ./bt status | ./bt connectors catalog | ./bt ask "问题"
+cd "$(dirname "$0")"
+exec .venv/bin/python -m platform_ext.cli "$@"
