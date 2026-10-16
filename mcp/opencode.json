@@ -5,7 +5,7 @@
       "type": "openai",
       "options": {
         "baseURL": "http://127.0.0.1:3333/v1",
-        "apiKey": "aa6811bb9126b87013a580e368b1d7494132fdfd6000bf06546e03c86da31863"
+        "apiKey": "b5c480aad3cc1131544549e6cf80605e763e836a8e257bdb13520789e6bc76af"
       },
       "models": {
         "auto": {

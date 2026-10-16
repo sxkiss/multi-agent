@@ -148,3 +148,6 @@ security/tool_guard/
 
 # Connector Hub：连接器凭据加密密钥（绝不入库）
 connector_hub/.fernet_key
+
+# octop-browser 运行时数据目录（浏览器 profile / 录制 / 截图）
+.octop-browser/
