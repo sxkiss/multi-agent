@@ -35,59 +35,83 @@ logger = logging.getLogger("platform-ext-gateway")
 router = APIRouter()
 
 # 支持的平台（对齐 octop_gateway.channels.SUPPORTED_CHANNEL_KINDS 的常用子集）
-PLATFORM_KINDS = {
+# 平台标签与配置说明（用于增强 SUPPORTED_CHANNEL_KINDS 的展示）
+_PLATFORM_META: dict[str, dict[str, Any]] = {
     "weixin": {
         "label": "微信 (iLink)",
-        "sdk": "octop_gateway.channels.weixin",
         "config_fields": [{"name": "token", "type": "string", "required": True}],
         "note": "复用 BT 869 微信能力，需配置 webhook/token",
     },
     "feishu": {
         "label": "飞书",
-        "sdk": "octop_gateway.channels.feishu",
         "config_fields": [{"name": "app_id", "type": "string", "required": True},
                           {"name": "app_secret", "type": "string", "required": True}],
         "note": "需 lark-oapi SDK",
     },
     "telegram": {
         "label": "Telegram",
-        "sdk": "octop_gateway.channels.telegram",
         "config_fields": [{"name": "bot_token", "type": "string", "required": True}],
         "note": "需 python-telegram-bot SDK",
     },
     "qq": {
         "label": "QQ",
-        "sdk": "octop_gateway.channels.qq",
         "config_fields": [{"name": "account", "type": "string", "required": True}],
         "note": "QQ 协议通道",
     },
     "dingtalk": {
         "label": "钉钉",
-        "sdk": "octop_gateway.channels.dingtalk",
         "config_fields": [{"name": "app_key", "type": "string", "required": True},
                           {"name": "app_secret", "type": "string", "required": True}],
         "note": "需 dingtalk-stream SDK",
     },
     "wecom": {
         "label": "企业微信",
-        "sdk": "octop_gateway.channels.wecom",
         "config_fields": [{"name": "corp_id", "type": "string", "required": True},
                           {"name": "secret", "type": "string", "required": True}],
         "note": "需 wecom-aibot-sdk",
     },
     "discord": {
         "label": "Discord",
-        "sdk": "octop_gateway.channels.discord",
         "config_fields": [{"name": "bot_token", "type": "string", "required": True}],
         "note": "需 discord-py SDK",
     },
     "yuanbao": {
         "label": "元宝",
-        "sdk": "octop_gateway.channels.yuanbao",
         "config_fields": [{"name": "token", "type": "string", "required": True}],
         "note": "元宝开放平台",
     },
+    "xiaoyi": {
+        "label": "小一 (xiaoyi)",
+        "config_fields": [{"name": "token", "type": "string", "required": True}],
+        "note": "小一智能助手",
+    },
+    "mqtt": {
+        "label": "MQTT",
+        "config_fields": [{"name": "broker", "type": "string", "required": True},
+                          {"name": "topic", "type": "string", "required": True}],
+        "note": "MQTT 协议通道，需 paho-mqtt SDK",
+    },
 }
+
+# 对齐 octop-gateway 官方 SUPPORTED_CHANNEL_KINDS（动态枚举，自动同步新平台）
+# 这样 octop-gateway 升级新增平台时，本模块自动跟随。
+def _build_platform_kinds() -> dict[str, dict[str, Any]]:
+    kinds = {}
+    try:
+        from octop_gateway import SUPPORTED_CHANNEL_KINDS
+        supported = sorted(SUPPORTED_CHANNEL_KINDS)
+    except Exception:  # noqa: BLE001
+        supported = list(_PLATFORM_META.keys())
+    for kind in supported:
+        meta = dict(_PLATFORM_META.get(kind, {}))
+        meta.setdefault("label", kind.title())
+        meta.setdefault("config_fields", [])
+        meta.setdefault("note", "Octop 官方通道（SDK 按需安装）")
+        kinds[kind] = meta
+    return kinds
+
+
+PLATFORM_KINDS: dict[str, dict[str, Any]] = _build_platform_kinds()
 
 
 def _config_path() -> str:
@@ -118,11 +142,11 @@ def _set_gateway_cfg(cfg: dict[str, Any]) -> None:
 
 
 def _sdk_available(kind: str) -> bool:
-    meta = PLATFORM_KINDS.get(kind)
-    if not meta:
+    if kind not in PLATFORM_KINDS:
         return False
+    # 平台 SDK 模块路径：octop_gateway.channels.<kind>（对齐官方 _CHANNEL_MAP）
     try:
-        __import__(meta["sdk"], fromlist=["*"])
+        __import__(f"octop_gateway.channels.{kind}", fromlist=["*"])
         return True
     except Exception:  # noqa: BLE001
         return False

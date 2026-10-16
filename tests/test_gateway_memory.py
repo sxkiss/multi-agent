@@ -33,7 +33,16 @@ class TestGateway:
         assert "weixin" in gateway.PLATFORM_KINDS
         assert "feishu" in gateway.PLATFORM_KINDS
         assert "telegram" in gateway.PLATFORM_KINDS
+        assert "xiaoyi" in gateway.PLATFORM_KINDS
+        assert "mqtt" in gateway.PLATFORM_KINDS
         assert gateway.PLATFORM_KINDS["weixin"]["label"]
+
+    def test_align_official_kinds(self):
+        """对齐 octop-gateway 官方 SUPPORTED_CHANNEL_KINDS（应>=10）。"""
+        from platform_ext import gateway
+        from octop_gateway import SUPPORTED_CHANNEL_KINDS
+        assert set(SUPPORTED_CHANNEL_KINDS) <= set(gateway.PLATFORM_KINDS)
+        assert len(gateway.PLATFORM_KINDS) >= 10
 
     def test_list_channels(self):
         from platform_ext import gateway
