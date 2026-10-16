@@ -5082,6 +5082,24 @@ async def api_agent_run_post(request: Request):
     )
 
 
+# ── Octop 连接器适配层（/api/v2/connectors/*，不破坏现有 /api/*）──────
+# 装载失败不得影响主服务：包在 try 里，仅记录日志。
+try:
+    from octop_bridge.connectors_api import router as _octop_connectors_router
+    app.include_router(_octop_connectors_router)
+    logger.info("[octop-bridge] 连接器路由已挂载: /api/v2/connectors/*")
+
+    @app.get("/connectors")
+    async def _octop_connectors_page():
+        """连接器管理可视化面板（免鉴权页面，内部 XHR 走 JWT）。"""
+        p = os.path.join(BASE_DIR, "static", "connectors.html")
+        if os.path.exists(p):
+            return FileResponse(p, media_type="text/html")
+        return JSONResponse(public.returnMsg(False, "连接器面板文件缺失"))
+except Exception:  # noqa: BLE001
+    logger.exception("[octop-bridge] 连接器路由挂载失败（主服务继续运行）")
+
+
 # Static files
 static_dir = os.path.join(BASE_DIR, "static")
 if os.path.exists(static_dir):

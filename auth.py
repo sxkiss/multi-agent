@@ -55,7 +55,7 @@ PBKDF2_ITERATIONS = 200_000
 # 免鉴权路径。登录接口本身 + 静态资源 + 首页 HTML。
 # 首页必须放行：否则用户连登录页都加载不出来，形成"没 token → 打不开页面 →
 # 无法登录"的死锁。静态资源同理。
-PUBLIC_EXACT = {"/", "/index.html", "/static/card-login.html"}
+PUBLIC_EXACT = {"/", "/index.html", "/static/card-login.html", "/connectors"}
 PUBLIC_PREFIX = (
     "/api/auth/login",
     # 微信登录必须放行：用户此刻还没有 token，若要求先鉴权就形成

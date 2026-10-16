@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>连接器管理 · Octop Bridge</title>
+<link rel="icon" href="/favicon.png" />
+<style>
+  :root {
+    --bt-primary: #07c160; --bt-primary-dark: #06ad56; --bt-primary-soft: rgba(7,193,96,.10);
+    --bt-accent: #3b82f6; --bt-bg: #f6f7f9; --bt-surface: #fff; --bt-surface-2: #f9fafb;
+    --bt-border: #e8eaed; --bt-text: #1f2937; --bt-text-2: #6b7280; --bt-text-3: #9ca3af;
+    --bt-shadow-sm: 0 1px 2px rgba(16,24,40,.05); --bt-shadow: 0 4px 14px rgba(16,24,40,.08);
+    --bt-shadow-lg: 0 12px 40px rgba(16,24,40,.16); --bt-radius: 12px; --bt-radius-sm: 8px;
+    --bt-danger: #ef4444; --bt-warn: #f59e0b;
+    --bt-transition: .2s cubic-bezier(.4,0,.2,1);
+  }
+  html[data-theme="dark"] {
+    --bt-bg: #0f1115; --bt-surface: #171a21; --bt-surface-2: #1d2129; --bt-border: #2a2f3a;
+    --bt-text: #e5e7eb; --bt-text-2: #9ca3af; --bt-text-3: #6b7280;
+    --bt-shadow-sm: 0 1px 2px rgba(0,0,0,.4); --bt-shadow: 0 4px 14px rgba(0,0,0,.5);
+    --bt-shadow-lg: 0 12px 40px rgba(0,0,0,.6); --bt-primary-soft: rgba(7,193,96,.16);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', Roboto, sans-serif;
+    background: var(--bt-bg); color: var(--bt-text); line-height: 1.6; min-height: 100vh;
+    transition: background var(--bt-transition), color var(--bt-transition);
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
+  header.top { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; flex-wrap: wrap; }
+  header.top .logo {
+    width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, var(--bt-primary), #10b981);
+    display: flex; align-items: center; justify-content: center; color: #fff; font-size: 20px; flex: none;
+  }
+  header.top h1 { font-size: 22px; font-weight: 700; }
+  header.top .sub { color: var(--bt-text-2); font-size: 13px; }
+  .spacer { flex: 1; }
+  .btn {
+    border: 1px solid var(--bt-border); background: var(--bt-surface); color: var(--bt-text);
+    padding: 8px 14px; border-radius: var(--bt-radius-sm); cursor: pointer; font-size: 13px;
+    transition: all var(--bt-transition); display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { border-color: var(--bt-primary); color: var(--bt-primary); }
+  .btn.primary { background: var(--bt-primary); border-color: var(--bt-primary); color: #fff; }
+  .btn.primary:hover { background: var(--bt-primary-dark); }
+  .btn.ghost { background: transparent; }
+  .btn.danger:hover { border-color: var(--bt-danger); color: var(--bt-danger); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .tabs { display: flex; gap: 6px; margin: 20px 0 16px; border-bottom: 1px solid var(--bt-border); flex-wrap: wrap; }
+  .tab {
+    padding: 9px 16px; cursor: pointer; font-size: 14px; color: var(--bt-text-2);
+    border-bottom: 2px solid transparent; transition: all var(--bt-transition); margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--bt-text); }
+  .tab.active { color: var(--bt-primary); border-bottom-color: var(--bt-primary); font-weight: 600; }
+  .panel { display: none; }
+  .panel.active { display: block; animation: fade .25s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .filters { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+  .search {
+    flex: 1; min-width: 200px; padding: 9px 14px; border: 1px solid var(--bt-border);
+    border-radius: var(--bt-radius-sm); background: var(--bt-surface); color: var(--bt-text); font-size: 14px;
+  }
+  .search:focus { outline: none; border-color: var(--bt-primary); box-shadow: 0 0 0 3px var(--bt-primary-soft); }
+  select.cat { padding: 9px 12px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm);
+    background: var(--bt-surface); color: var(--bt-text); font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--bt-surface); border: 1px solid var(--bt-border); border-radius: var(--bt-radius);
+    padding: 16px; box-shadow: var(--bt-shadow-sm); transition: all var(--bt-transition);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .card:hover { box-shadow: var(--bt-shadow); transform: translateY(-2px); }
+  .card .hd { display: flex; align-items: center; gap: 10px; }
+  .card .icon {
+    width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center;
+    font-size: 17px; font-weight: 700; color: #fff; flex: none;
+  }
+  .card .nm { font-weight: 600; font-size: 15px; }
+  .card .kind { color: var(--bt-text-3); font-size: 11px; font-family: ui-monospace, monospace; }
+  .card .desc { color: var(--bt-text-2); font-size: 13px; flex: 1; min-height: 38px; }
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; }
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 20px; background: var(--bt-surface-2);
+    color: var(--bt-text-2); border: 1px solid var(--bt-border);
+  }
+  .badge.mode-remote { background: rgba(59,130,246,.12); color: #3b82f6; border-color: transparent; }
+  .badge.mode-gateway { background: rgba(245,158,11,.14); color: #d97706; border-color: transparent; }
+  .badge.mode-internal { background: rgba(139,92,246,.14); color: #8b5cf6; border-color: transparent; }
+  .badge.ok { background: var(--bt-primary-soft); color: var(--bt-primary-dark); border-color: transparent; }
+  .badge.no { background: rgba(239,68,68,.12); color: var(--bt-danger); border-color: transparent; }
+  .card .ft { display: flex; gap: 8px; }
+  .empty { text-align: center; padding: 60px 20px; color: var(--bt-text-3); }
+  .empty .big { font-size: 40px; margin-bottom: 12px; }
+  /* 实例卡片 */
+  .inst .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .switch { position: relative; width: 40px; height: 22px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; inset: 0; background: var(--bt-border); border-radius: 22px;
+    cursor: pointer; transition: var(--bt-transition);
+  }
+  .slider:before {
+    content: ''; position: absolute; height: 16px; width: 16px; left: 3px; top: 3px;
+    background: #fff; border-radius: 50%; transition: var(--bt-transition);
+  }
+  .switch input:checked + .slider { background: var(--bt-primary); }
+  .switch input:checked + .slider:before { transform: translateX(18px); }
+  /* 弹窗 */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center;
+    justify-content: center; z-index: 1000; padding: 20px;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: var(--bt-surface); border-radius: var(--bt-radius); width: 100%; max-width: 560px;
+    max-height: 88vh; overflow-y: auto; box-shadow: var(--bt-shadow-lg); animation: pop .2s ease;
+  }
+  @keyframes pop { from { transform: scale(.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  .modal .mh { padding: 18px 22px; border-bottom: 1px solid var(--bt-border); display: flex; align-items: center; gap: 10px; }
+  .modal .mh h3 { font-size: 17px; flex: 1; }
+  .modal .mb { padding: 20px 22px; }
+  .modal .mf { padding: 16px 22px; border-top: 1px solid var(--bt-border); display: flex; gap: 10px; justify-content: flex-end; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .field label .req { color: var(--bt-danger); }
+  .field .hint { font-size: 12px; color: var(--bt-text-3); margin-top: 4px; }
+  .field input, .field textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm);
+    background: var(--bt-surface-2); color: var(--bt-text); font-size: 14px; font-family: inherit;
+  }
+  .field input:focus, .field textarea:focus { outline: none; border-color: var(--bt-primary); box-shadow: 0 0 0 3px var(--bt-primary-soft); }
+  .toast {
+    position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%) translateY(80px);
+    background: var(--bt-text); color: var(--bt-bg); padding: 11px 22px; border-radius: 24px;
+    font-size: 14px; box-shadow: var(--bt-shadow-lg); opacity: 0; transition: all .3s ease; z-index: 2000; max-width: 90vw;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  .toast.err { background: var(--bt-danger); color: #fff; }
+  .toast.ok { background: var(--bt-primary-dark); color: #fff; }
+  .loading { text-align: center; padding: 50px; color: var(--bt-text-3); }
+  .spin { width: 26px; height: 26px; border: 3px solid var(--bt-border); border-top-color: var(--bt-primary);
+    border-radius: 50%; animation: rot .8s linear infinite; margin: 0 auto 12px; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+  .a-link { color: var(--bt-accent); text-decoration: none; font-size: 12px; }
+  .a-link:hover { text-decoration: underline; }
+  .cli-warn { font-size: 12px; color: var(--bt-warn); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="logo">🔌</div>
+    <div>
+      <h1>连接器管理</h1>
+      <div class="sub">Octop Bridge · 对齐 Tencent Octop Connectors（27 个）</div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn ghost" id="themeBtn" title="切换主题">🌓</button>
+    <button class="btn" id="syncBtn">同步到 MCP</button>
+    <button class="btn" id="refreshBtn">刷新</button>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="market">连接器市场</div>
+    <div class="tab" data-tab="instances">我的连接器 <span id="instCount" class="badge">0</span></div>
+    <div class="tab" data-tab="gateway">Gateway 适配器</div>
+  </div>
+
+  <!-- 连接器市场 -->
+  <div class="panel active" id="panel-market">
+    <div class="filters">
+      <input class="search" id="searchInput" placeholder="搜索连接器名称 / 描述 / kind…" />
+      <select class="cat" id="catSelect"><option value="">全部分类</option></select>
+    </div>
+    <div id="marketList"><div class="loading"><div class="spin"></div>加载连接器目录…</div></div>
+  </div>
+
+  <!-- 我的连接器 -->
+  <div class="panel" id="panel-instances">
+    <div id="instList"></div>
+  </div>
+
+  <!-- Gateway 适配器 -->
+  <div class="panel" id="panel-gateway">
+    <div id="gwList"><div class="loading"><div class="spin"></div>加载适配器…</div></div>
+  </div>
+</div>
+
+<!-- 创建/编辑弹窗 -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <div class="mh">
+      <div class="icon" id="mIcon" style="width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700"></div>
+      <h3 id="mTitle">添加连接器</h3>
+      <button class="btn ghost" id="mClose">✕</button>
+    </div>
+    <div class="mb" id="mBody"></div>
+    <div class="mf">
+      <button class="btn ghost" id="mCancel">取消</button>
+      <button class="btn" id="mTest">测试凭据</button>
+      <button class="btn primary" id="mSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/static/js/panel-auth.js"></script>
+<script>
+(function () {
+  'use strict';
+  var API = '/api/v2/connectors';
+  var catalog = [], currentKind = null, editingId = null;
+  var $ = function (s) { return document.querySelector(s); };
+  var AF = (window.PanelAuth && window.PanelAuth.authFetch) ? window.PanelAuth.authFetch : window.fetch;
+
+  function toast(msg, type) {
+    var t = $('#toast'); t.textContent = msg; t.className = 'toast show ' + (type || '');
+    clearTimeout(t._tm); t._tm = setTimeout(function () { t.className = 'toast ' + (type || ''); }, 2600);
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function colorOf(e) { return e.color || '#666'; }
+  function initial(e) { return (e.name || e.kind || '?').slice(0, 1).toUpperCase(); }
+
+  async function api(path, opts) {
+    var r = await AF(API + path, opts);
+    return r.json();
+  }
+
+  // ── 加载目录 ──────────────────────────────────────────────
+  async function loadCatalog() {
+    try {
+      var res = await api('/catalog?locale=zh');
+      if (!res.status) throw new Error(res.msg || '加载失败');
+      catalog = res.data.connectors || [];
+      var cats = Object.keys(res.data.categories || {}).sort();
+      var sel = $('#catSelect');
+      cats.forEach(function (c) { var o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+      renderMarket();
+    } catch (e) {
+      $('#marketList').innerHTML = '<div class="empty"><div class="big">⚠️</div>' + esc(e.message) + '</div>';
+    }
+  }
+
+  function renderMarket() {
+    var q = $('#searchInput').value.trim().toLowerCase();
+    var cat = $('#catSelect').value;
+    var list = catalog.filter(function (e) {
+      if (cat && e.category !== cat) return false;
+      if (!q) return true;
+      return (e.name + ' ' + e.description + ' ' + e.kind).toLowerCase().indexOf(q) >= 0;
+    });
+    if (!list.length) { $('#marketList').innerHTML = '<div class="empty"><div class="big">🔍</div>没有匹配的连接器</div>'; return; }
+    var html = '<div class="grid">' + list.map(function (e) {
+      var supported = e.supported;
+      return '<div class="card">' +
+        '<div class="hd"><div class="icon" style="background:' + colorOf(e) + '">' + initial(e) + '</div>' +
+        '<div style="flex:1;min-width:0"><div class="nm">' + esc(e.name) + '</div>' +
+        '<div class="kind">' + esc(e.kind) + '</div></div></div>' +
+        '<div class="desc">' + esc(e.description) + '</div>' +
+        '<div class="badges"><span class="badge mode-' + esc(e.mcp_mode) + '">' + esc(e.mcp_mode) + '</span>' +
+        '<span class="badge">' + esc(e.category) + '</span>' +
+        '<span class="badge">' + esc(e.auth_kind) + '</span>' +
+        (supported ? '<span class="badge ok">可接入</span>' : '<span class="badge no">暂不支持</span>') +
+        '</div>' +
+        '<div class="ft">' +
+        (supported ? '<button class="btn primary" data-add="' + esc(e.kind) + '">+ 添加</button>' : '') +
+        (e.manual_url ? '<a class="a-link" href="' + esc(e.manual_url) + '" target="_blank" rel="noopener" style="align-self:center">获取凭据 ↗</a>' : '') +
+        '</div></div>';
+    }).join('') + '</div>';
+    $('#marketList').innerHTML = html;
+    document.querySelectorAll('[data-add]').forEach(function (b) {
+      b.onclick = function () { openModal(b.getAttribute('data-add'), null); };
+    });
+  }
+
+  // ── 我的连接器 ────────────────────────────────────────────
+  async function loadInstances() {
+    var res = await api('/instances');
+    var list = (res.data && res.data.instances) || [];
+    $('#instCount').textContent = list.length;
+    if (!list.length) {
+      $('#instList').innerHTML = '<div class="empty"><div class="big">📦</div>还没有连接器<br><span style="font-size:13px">去「连接器市场」添加一个吧</span></div>';
+      return;
+    }
+    $('#instList').innerHTML = '<div class="grid">' + list.map(function (i) {
+      var e = catalog.find(function (c) { return c.kind === i.kind; }) || { name: i.kind, color: '#666', kind: i.kind };
+      return '<div class="card inst">' +
+        '<div class="hd"><div class="icon" style="background:' + colorOf(e) + '">' + initial(e) + '</div>' +
+        '<div style="flex:1;min-width:0"><div class="nm">' + esc(i.name) + '</div>' +
+        '<div class="kind">' + esc(i.kind) + ' · ' + esc(i.instance_id) + '</div></div>' +
+        '<label class="switch"><input type="checkbox" data-toggle="' + esc(i.instance_id) + '"' + (i.enabled ? ' checked' : '') + '><span class="slider"></span></label></div>' +
+        '<div class="badges"><span class="badge ' + (i.enabled ? 'ok' : '') + '">' + (i.enabled ? '已启用' : '已停用') + '</span></div>' +
+        '<div class="ft"><button class="btn" data-test="' + esc(i.instance_id) + '">测试</button>' +
+        '<button class="btn" data-edit="' + esc(i.kind) + '" data-id="' + esc(i.instance_id) + '">编辑</button>' +
+        '<button class="btn danger" data-del="' + esc(i.instance_id) + '">删除</button></div></div>';
+    }).join('') + '</div>';
+    bindInstanceEvents();
+  }
+
+  function bindInstanceEvents() {
+    document.querySelectorAll('[data-toggle]').forEach(function (cb) {
+      cb.onchange = async function () {
+        var id = cb.getAttribute('data-toggle');
+        var r = await api('/instances/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: cb.checked }) });
+        toast(r.status ? (cb.checked ? '已启用' : '已停用') : (r.msg || '操作失败'), r.status ? 'ok' : 'err');
+        if (!r.status) cb.checked = !cb.checked;
+      };
+    });
+    document.querySelectorAll('[data-test]').forEach(function (b) {
+      b.onclick = async function () {
+        var id = b.getAttribute('data-test'); b.disabled = true; b.textContent = '测试中…';
+        var r = await api('/instances/' + id + '/test', { method: 'POST' });
+        b.disabled = false; b.textContent = '测试';
+        toast(r.status ? ('✅ 连接正常' + (r.data && r.data.tool_count ? '（' + r.data.tool_count + ' 个工具）' : '')) : ('❌ ' + (r.msg || '失败')), r.status ? 'ok' : 'err');
+      };
+    });
+    document.querySelectorAll('[data-edit]').forEach(function (b) {
+      b.onclick = function () { openModal(b.getAttribute('data-edit'), b.getAttribute('data-id')); };
+    });
+    document.querySelectorAll('[data-del]').forEach(function (b) {
+      b.onclick = async function () {
+        var id = b.getAttribute('data-del');
+        if (!confirm('确定删除该连接器实例？')) return;
+        var r = await api('/instances/' + id, { method: 'DELETE' });
+        toast(r.status ? '已删除' : (r.msg || '删除失败'), r.status ? 'ok' : 'err');
+        if (r.status) { loadInstances(); }
+      };
+    });
+  }
+
+  // ── 弹窗 ─────────────────────────────────────────────────
+  function openModal(kind, instanceId) {
+    var e = catalog.find(function (c) { return c.kind === kind; });
+    if (!e) return;
+    currentKind = kind; editingId = instanceId || null;
+    $('#mTitle').textContent = (instanceId ? '编辑' : '添加') + '：' + e.name;
+    $('#mIcon').style.background = colorOf(e);
+    $('#mIcon').textContent = initial(e);
+    var fields = e.credential_fields || [];
+    var body = '';
+    if (e.auth_hint) body += '<div class="hint" style="margin-bottom:14px;padding:10px;background:var(--bt-surface-2);border-radius:8px">💡 ' + esc(e.auth_hint) + '</div>';
+    body += '<div class="field"><label>实例名称</label><input id="f_name" placeholder="' + esc(e.name) + '" value="' + esc(e.name) + '"></div>';
+    if (!fields.length) {
+      // 无字段定义：给一个通用 token 输入
+      body += '<div class="field"><label>凭据 <span class="req">*</span></label><textarea id="f_creds" rows="2" placeholder="粘贴 Token / API Key"></textarea>' +
+        '<div class="hint">该连接器未定义凭据字段，请粘贴完整凭据</div></div>';
+    } else {
+      fields.forEach(function (f) {
+        body += '<div class="field"><label>' + esc(f.label) + (f.required ? ' <span class="req">*</span>' : '') + '</label>';
+        if (f.field_type === 'tags' || f.field_type === 'text' && f.help && /json|多行/i.test(f.help)) {
+          body += '<textarea id="cf_' + esc(f.key) + '" rows="2" placeholder="' + esc(f.placeholder || '') + '"></textarea>';
+        } else {
+          body += '<input id="cf_' + esc(f.key) + '" type="' + (f.secret ? 'password' : 'text') + '" placeholder="' + esc(f.placeholder || '') + '">';
+        }
+        if (f.help) body += '<div class="hint">' + esc(f.help) + '</div>';
+        body += '</div>';
+      });
+    }
+    $('#mBody').innerHTML = body;
+    $('#modalBg').classList.add('show');
+  }
+  function closeModal() { $('#modalBg').classList.remove('show'); currentKind = null; editingId = null; }
+
+  function collectCreds() {
+    var e = catalog.find(function (c) { return c.kind === currentKind; });
+    var creds = {};
+    var generic = $('#f_creds');
+    if (generic) { creds.token = generic.value.trim(); return creds; }
+    (e.credential_fields || []).forEach(function (f) {
+      var el = $('#cf_' + f.key);
+      if (el && el.value.trim()) creds[f.key] = el.value.trim();
+    });
+    // 无字段定义时兜底
+    if (!Object.keys(creds).length) {
+      var e2 = catalog.find(function (c) { return c.kind === currentKind; });
+      if (!(e2.credential_fields || []).length) { var g = $('#f_creds'); if (g) creds.token = g.value.trim(); }
+    }
+    return creds;
+  }
+
+  async function saveInstance() {
+    var name = ($('#f_name') || {}).value || currentKind;
+    var creds = collectCreds();
+    var r;
+    if (editingId) {
+      r = await api('/instances/' + editingId, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, credentials: creds }) });
+    } else {
+      r = await api('/instances', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: currentKind, name: name, credentials: creds }) });
+    }
+    if (r.status) { toast('已保存', 'ok'); closeModal(); loadInstances(); switchTab('instances'); }
+    else toast(r.msg || '保存失败', 'err');
+  }
+
+  async function testCreds() {
+    var creds = collectCreds();
+    toast('测试中…');
+    var r = await api('/test-credentials', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: currentKind, credentials: creds }) });
+    toast(r.status ? ('✅ 凭据可用' + (r.data && r.data.tool_count ? '（' + r.data.tool_count + ' 工具）' : '')) : ('❌ ' + (r.msg || '失败')), r.status ? 'ok' : 'err');
+  }
+
+  // ── Gateway 适配器 ────────────────────────────────────────
+  async function loadGateway() {
+    try {
+      var res = await api('/gateway/kinds');
+      var kinds = res.data.kinds || [], cli = res.data.external_cli || [];
+      var html = '<div class="grid">';
+      for (var i = 0; i < kinds.length; i++) {
+        var k = kinds[i];
+        var e = catalog.find(function (c) { return c.kind === k; }) || { name: k, color: '#666', kind: k };
+        var isCli = cli.indexOf(k) >= 0;
+        var tr = await api('/gateway/' + k + '/tools');
+        var count = (tr.data && tr.data.count) || 0;
+        html += '<div class="card"><div class="hd"><div class="icon" style="background:' + colorOf(e) + '">' + initial(e) + '</div>' +
+          '<div style="flex:1;min-width:0"><div class="nm">' + esc(e.name) + '</div><div class="kind">' + esc(k) + '</div></div></div>' +
+          '<div class="badges"><span class="badge mode-gateway">gateway</span><span class="badge ok">' + count + ' 个工具</span>' +
+          (isCli ? '<span class="badge no">需外部 CLI</span>' : '') + '</div>' +
+          (isCli ? '<div class="cli-warn">⚠️ 需主机安装对应 CLI 二进制</div>' : '') +
+          '</div>';
+      }
+      html += '</div>';
+      $('#gwList').innerHTML = html;
+    } catch (e) {
+      $('#gwList').innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>';
+    }
+  }
+
+  // ── Tab 切换 ──────────────────────────────────────────────
+  function switchTab(name) {
+    document.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t.getAttribute('data-tab') === name); });
+    document.querySelectorAll('.panel').forEach(function (p) { p.classList.toggle('active', p.id === 'panel-' + name); });
+    if (name === 'instances') loadInstances();
+    if (name === 'gateway' && $('#gwList').querySelector('.loading')) loadGateway();
+  }
+
+  // ── 绑定 ─────────────────────────────────────────────────
+  document.querySelectorAll('.tab').forEach(function (t) { t.onclick = function () { switchTab(t.getAttribute('data-tab')); }; });
+  $('#searchInput').oninput = renderMarket;
+  $('#catSelect').onchange = renderMarket;
+  $('#refreshBtn').onclick = function () { loadCatalog(); loadInstances(); toast('已刷新', 'ok'); };
+  $('#syncBtn').onclick = async function () {
+    var r = await api('/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (r.status) { var d = r.data; toast('已同步：+' + d.added.length + ' / -' + d.removed.length, 'ok'); }
+    else toast(r.msg || '同步失败', 'err');
+  };
+  $('#mClose').onclick = closeModal; $('#mCancel').onclick = closeModal;
+  $('#mSave').onclick = saveInstance; $('#mTest').onclick = testCreds;
+  $('#modalBg').onclick = function (e) { if (e.target === $('#modalBg')) closeModal(); };
+  $('#themeBtn').onclick = function () {
+    var cur = document.documentElement.getAttribute('data-theme');
+    var next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('bt_theme', next); } catch (e) {}
+  };
+  try { var th = localStorage.getItem('bt_theme'); if (th) document.documentElement.setAttribute('data-theme', th); } catch (e) {}
+
+  // 初始化
+  loadCatalog().then(loadInstances);
+})();
+</script>
+</body>
+</html>
