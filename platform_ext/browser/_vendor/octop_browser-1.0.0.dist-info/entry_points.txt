@@ -1,0 +1,2 @@
+[console_scripts]
+octop-browser = octop_browser.cli:main

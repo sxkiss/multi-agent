@@ -1135,6 +1135,7 @@ def TaskStop(task_id: str) -> str:
 # 导入所有工具以确保它们被注册
 from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注册副作用)
     agent_tools,
+    browser,
     edit,
     knowledge,
     market,

@@ -5109,6 +5109,26 @@ except Exception:  # noqa: BLE001
     logger.exception("[platform-ext] 平台扩展路由挂载失败（主服务继续运行）")
 
 
+# ── 浏览器基础设施（/api/v2/browser/* + WS 画面流，不破坏现有 /api/*）──
+try:
+    from platform_ext.browser import ensure_vendor_on_path
+    ensure_vendor_on_path()
+    from platform_ext.browser.api import subrouters as _browser_subrouters
+    for _r in _browser_subrouters:
+        app.include_router(_r, prefix="/api/v2")
+    logger.info("[platform-ext] 浏览器路由已挂载: /api/v2/browser/* + /browser-stream/ws")
+
+    @app.get("/browser")
+    async def _browser_page():
+        """浏览器控制台（实时画面 + 控制 + 录制回放，免鉴权页面，内部 XHR/WS 走 JWT）。"""
+        p = os.path.join(BASE_DIR, "static", "browser.html")
+        if os.path.exists(p):
+            return FileResponse(p, media_type="text/html")
+        return JSONResponse(public.returnMsg(False, "浏览器面板文件缺失"))
+except Exception:  # noqa: BLE001
+    logger.exception("[platform-ext] 浏览器路由挂载失败（主服务继续运行）")
+
+
 # Static files
 static_dir = os.path.join(BASE_DIR, "static")
 if os.path.exists(static_dir):
