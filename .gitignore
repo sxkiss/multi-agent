@@ -146,5 +146,5 @@ workspace/inbound/
 skills/_packages/
 security/tool_guard/
 
-# Octop Bridge：连接器凭据加密密钥（绝不入库）
-octop_bridge/.fernet_key
+# Connector Hub：连接器凭据加密密钥（绝不入库）
+connector_hub/.fernet_key

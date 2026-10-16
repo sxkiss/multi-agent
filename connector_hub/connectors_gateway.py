@@ -1,7 +1,7 @@
 """Gateway 适配器注册表 —— 移植自 Octop connectors.gateway.registry。
 
 kind -> adapter（list_tools / call_tool / probe_credentials）。
-adapter 实现位于 octop_bridge.gateway_adapters.*，为从 Octop 原样移植的
+adapter 实现位于 connector_hub.gateway_adapters.*，为从 Octop 原样移植的
 各厂商 MCP 适配器（纯 httpx 实现；*_cli 类需主机安装外部 CLI 二进制）。
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
-from octop_bridge.gateway_adapters import (
+from connector_hub.gateway_adapters import (
     agently_cli,
     baidu_map,
     ctrip_wendao,
@@ -28,7 +28,7 @@ from octop_bridge.gateway_adapters import (
     yuandian,
 )
 
-logger = logging.getLogger("octop-bridge-gateway")
+logger = logging.getLogger("connector-hub-gateway")
 
 
 class GatewayAdapter(Protocol):

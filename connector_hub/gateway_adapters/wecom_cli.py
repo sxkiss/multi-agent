@@ -8,13 +8,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from octop_bridge.gateway_adapters.local_shims import resolve_cli_config_key
-from octop_bridge.gateway_adapters.local_shims import resolve_binary, run_cli
-from octop_bridge.gateway_adapters.local_shims import (
+from connector_hub.gateway_adapters.local_shims import resolve_cli_config_key
+from connector_hub.gateway_adapters.local_shims import resolve_binary, run_cli
+from connector_hub.gateway_adapters.local_shims import (
     materialize_wecom_bot_config,
     read_mcp_items_count,
 )
-from octop_bridge.gateway_adapters.local_shims import PathLayout
+from connector_hub.gateway_adapters.local_shims import PathLayout
 
 _KIND = "wecom-cli"
 _CATEGORIES = ("doc", "schedule", "msg")
@@ -40,7 +40,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "doc",
         "description": (
-            "WeCom docs / smartsheet via Octop Connectors. "
+            "WeCom docs / smartsheet via Connector Hub. "
             "Pass method + optional args JSON. "
             f"{_DOC_METHODS_HINT} "
             "On setup/auth errors, tell the user to fix Bot credentials "
@@ -61,7 +61,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "schedule",
         "description": (
-            "WeCom schedule via Octop Connectors. "
+            "WeCom schedule via Connector Hub. "
             "Pass method + optional args. "
             "Enterprise may not authorize schedule for bots — surface that "
             "permission error to the user. Never run CLI in shell."
@@ -78,7 +78,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "msg",
         "description": (
-            "WeCom messaging via Octop Connectors. "
+            "WeCom messaging via Connector Hub. "
             "Pass method + optional args. "
             "On auth errors, fix Bot credentials in Connectors — never run CLI in shell."
         ),

@@ -18,9 +18,9 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from octop_bridge.gateway_adapters.local_shims import resolve_cli_config_key
-from octop_bridge.gateway_adapters.local_shims import resolve_binary, run_cli
-from octop_bridge.gateway_adapters.local_shims import PathLayout
+from connector_hub.gateway_adapters.local_shims import resolve_cli_config_key
+from connector_hub.gateway_adapters.local_shims import resolve_binary, run_cli
+from connector_hub.gateway_adapters.local_shims import PathLayout
 
 _KIND = "agently-cli"
 _MAX_FILE = 10 * 1024 * 1024
@@ -121,7 +121,7 @@ def writes_allowed() -> bool:
 
 
 def write_tool_names(mcp_server_name: str) -> list[str]:
-    from octop_bridge.gateway_adapters.local_shims import sanitize_plugin_tool_name
+    from connector_hub.gateway_adapters.local_shims import sanitize_plugin_tool_name
 
     used: set[str] = set()
     return [

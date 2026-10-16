@@ -1,4 +1,4 @@
-"""Octop 连接器适配层（自包含命名空间）。
+"""连接器中心（Connector Hub）—— 自包含命名空间。
 
 对齐 Tencent Octop 的 Connectors 体系，但完全不依赖 Octop 内部结构
 （无 DB/repos/OctopConfig），只依赖标准库 + fastapi + BT 现有模块。

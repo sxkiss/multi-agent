@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from octop_bridge.gateway_adapters.local_shims import (
+from connector_hub.gateway_adapters.local_shims import (
     OBSIDIAN_CLI_MISSING,
     OBSIDIAN_NOT_RUNNING,
     locate_obsidian_binary,
 )
-from octop_bridge.gateway_adapters.local_shims import resolve_binary, run_cli
+from connector_hub.gateway_adapters.local_shims import resolve_binary, run_cli
 
 _MAX_OUTPUT = 32_000
 _TIMEOUT_S = 30.0

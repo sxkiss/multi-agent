@@ -26,11 +26,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 import public
-from octop_bridge import connectors_catalog as cat
-from octop_bridge import connectors_gateway as gw
-from octop_bridge import connectors_service as svc
+from connector_hub import connectors_catalog as cat
+from connector_hub import connectors_gateway as gw
+from connector_hub import connectors_service as svc
 
-logger = logging.getLogger("octop-bridge-api")
+logger = logging.getLogger("connector-hub-api")
 
 router = APIRouter(prefix="/api/v2/connectors", tags=["connectors"])
 
@@ -148,7 +148,7 @@ async def api_test_credentials(request: Request):
         return _err(f"未知连接器: {kind}")
     try:
         if entry.mcp_mode == "remote":
-            from octop_bridge.http_mcp import amap_list_tools
+            from connector_hub.http_mcp import amap_list_tools
             url = svc._remote_url_for(kind, creds)
             token = creds.get("token") or creds.get("api_key")
             if not url:
@@ -181,7 +181,7 @@ async def api_gateway_tools(kind: str):
 @router.get("/cli/status")
 async def api_cli_status_all():
     """列出全部可自动安装的 CLI 连接器及其安装状态。"""
-    from octop_bridge.gateway_adapters import cli_install as ci
+    from connector_hub.gateway_adapters import cli_install as ci
     out = []
     for kind in ("feishu-cli", "wecom-cli", "agently-cli", "obsidian-cli"):
         try:
@@ -193,7 +193,7 @@ async def api_cli_status_all():
 
 @router.get("/cli/{kind}/status")
 async def api_cli_status(kind: str):
-    from octop_bridge.gateway_adapters import cli_install as ci
+    from connector_hub.gateway_adapters import cli_install as ci
     try:
         return _ok(ci.cli_install_status(kind))
     except ValueError as exc:
@@ -203,7 +203,7 @@ async def api_cli_status(kind: str):
 @router.post("/cli/{kind}/install")
 async def api_cli_install(kind: str):
     """安装指定连接器的 CLI（npm 自动安装 / Obsidian 注册）。"""
-    from octop_bridge.gateway_adapters import cli_install as ci
+    from connector_hub.gateway_adapters import cli_install as ci
     if ci.get_cli_install_spec(kind) is None:
         return _err(f"该连接器不支持 CLI 安装: {kind}")
     try:

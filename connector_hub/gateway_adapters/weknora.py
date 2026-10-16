@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
-from octop_bridge.gateway_adapters.local_shims import normalize_weknora_base_url
+from connector_hub.gateway_adapters.local_shims import normalize_weknora_base_url
 
 _MAX_RESULTS = 8
 _MAX_CHUNK_CHARS = 1200

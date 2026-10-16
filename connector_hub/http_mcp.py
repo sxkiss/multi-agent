@@ -21,7 +21,7 @@ from typing import Any
 
 import httpx
 
-logger = logging.getLogger("octop-bridge-http-mcp")
+logger = logging.getLogger("connector-hub-http-mcp")
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 _STREAMABLE_ACCEPT = "application/json, text/event-stream"
@@ -67,7 +67,7 @@ class HttpMcpClient:
     # ── 生命周期 ──────────────────────────────────────────────
     async def __aenter__(self) -> "HttpMcpClient":
         base = {
-            "User-Agent": "bt-octop-bridge/1.0",
+            "User-Agent": "bt-connector-hub/1.0",
             "Accept": _STREAMABLE_ACCEPT if self.transport == "streamable_http" else _SSE_ACCEPT,
         }
         if self._token:
@@ -131,7 +131,7 @@ class HttpMcpClient:
             {
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
-                "clientInfo": {"name": "bt-octop-bridge", "version": "1.0.0"},
+                "clientInfo": {"name": "bt-connector-hub", "version": "1.0.0"},
             },
             handshake=True,
         )

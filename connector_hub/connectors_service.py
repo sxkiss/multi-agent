@@ -2,7 +2,7 @@
 
 职责：
 1. 实例持久化（list/create/update/delete/test），存于 config.json 的
-   octop_bridge.connectors.instances 段（不引入数据库）。
+   connector_hub.connectors.instances 段（不引入数据库）。
 2. 凭据 Fernet 加密（复用 BT 已有的 cryptography 依赖）。
 3. 从实例生成 BT 兼容的 MCP server spec，写入 BT 的 mcp/config.json
    （remote/gateway/internal 三模式分别处理），让 BT 既有 MCP 体系能用上。
@@ -21,19 +21,19 @@ from typing import Any
 
 from cryptography.fernet import Fernet
 
-from octop_bridge import PROJECT_ROOT
-from octop_bridge.connectors_catalog import (
+from connector_hub import PROJECT_ROOT
+from connector_hub.connectors_catalog import (
     GATEWAY_KINDS,
     INTERNAL_KINDS,
     get_catalog_entry,
     is_gateway_kind,
 )
 
-logger = logging.getLogger("octop-bridge-connectors")
+logger = logging.getLogger("connector-hub-connectors")
 
 CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.json")
 MCP_CONFIG_FILE = os.path.join(PROJECT_ROOT, "mcp", "config.json")
-_FERNET_KEY_FILE = os.path.join(PROJECT_ROOT, "octop_bridge", ".fernet_key")
+_FERNET_KEY_FILE = os.path.join(PROJECT_ROOT, "connector_hub", ".fernet_key")
 
 # 自托管 internal MCP 端点（BT /mcp 已暴露工具集，这里复用为主服务端口）
 # 实际 URL 在 generate_spec 时按 config 的 bind 端口拼接。
@@ -88,14 +88,14 @@ def _write_config(cfg: dict[str, Any]) -> None:
 
 def _instances() -> list[dict[str, Any]]:
     cfg = _read_config()
-    br = cfg.setdefault("octop_bridge", {})
+    br = cfg.setdefault("connector_hub", {})
     conn = br.setdefault("connectors", {})
     return conn.setdefault("instances", [])
 
 
 def _save_instances(instances: list[dict[str, Any]]) -> None:
     cfg = _read_config()
-    cfg.setdefault("octop_bridge", {}).setdefault("connectors", {})["instances"] = instances
+    cfg.setdefault("connector_hub", {}).setdefault("connectors", {})["instances"] = instances
     _write_config(cfg)
 
 
@@ -159,13 +159,13 @@ def generate_mcp_spec(instance: dict[str, Any]) -> dict[str, Any] | None:
 
 # ── 同步 mcp/config.json ───────────────────────────────────
 def _server_name(instance: dict[str, Any]) -> str:
-    return f"octop__{instance['kind']}__{instance['instance_id']}"
+    return f"chub__{instance['kind']}__{instance['instance_id']}"
 
 
 def sync_to_mcp_config(dry_run: bool = False) -> dict[str, Any]:
     """把 enabled 的连接器实例同步进 BT mcp/config.json。
 
-    只增删本桥管理的 octop__ 前缀条目，不动其它条目。
+    只增删本桥管理的 chub__ 前缀条目，不动其它条目。
     返回 {added, removed, kept} 统计。
     """
     instances = _instances()
@@ -187,10 +187,10 @@ def sync_to_mcp_config(dry_run: bool = False) -> dict[str, Any]:
             continue
         desired[_server_name(inst)] = spec
 
-    existing_octop = {k: v for k, v in servers.items() if k.startswith("octop__")}
-    added = [k for k in desired if k not in existing_octop]
-    removed = [k for k in existing_octop if k not in desired]
-    kept = [k for k in desired if k in existing_octop]
+    existing_hub = {k: v for k, v in servers.items() if k.startswith("chub__")}
+    added = [k for k in desired if k not in existing_hub]
+    removed = [k for k in existing_hub if k not in desired]
+    kept = [k for k in desired if k in existing_hub]
 
     if not dry_run:
         for k in removed:
@@ -282,14 +282,14 @@ def test_instance(instance_id: str) -> dict[str, Any]:
     entry = get_catalog_entry(kind)
     try:
         if entry and entry.mcp_mode == "remote":
-            from octop_bridge.http_mcp import amap_list_tools
+            from connector_hub.http_mcp import amap_list_tools
             import asyncio
             url = _remote_url_for(kind, creds)
             token = creds.get("token") or creds.get("api_key")
             tools = asyncio.run(amap_list_tools(url, token, entry.remote_transport))
             return {"ok": True, "tool_count": len(tools)}
         if kind in GATEWAY_KINDS:
-            from octop_bridge.connectors_gateway import probe_gateway_credentials
+            from connector_hub.connectors_gateway import probe_gateway_credentials
             probe_gateway_credentials(kind, creds)
             return {"ok": True}
         return {"ok": False, "error": f"unsupported mcp_mode for probe: {entry.mcp_mode if entry else '?'}"}

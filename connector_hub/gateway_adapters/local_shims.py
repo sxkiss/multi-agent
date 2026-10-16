@@ -112,7 +112,7 @@ def resolve_binary(name: str) -> str:
     # 先确保用户级 npm 全局 bin（~/.npm-global/bin）与 ~/.local/bin 在 PATH 中，
     # 否则自动安装到用户级目录后 shutil.which 仍找不到（与 Octop 行为一致）。
     try:
-        from octop_bridge.gateway_adapters.cli_install import ensure_cli_path
+        from connector_hub.gateway_adapters.cli_install import ensure_cli_path
         ensure_cli_path()
     except Exception:  # noqa: BLE001
         pass
@@ -192,4 +192,4 @@ class PathLayout:
 
     def connector_cli_instance_dir(self, kind: str, key: str):
         import pathlib
-        return pathlib.Path.home() / ".bt-octop-bridge" / "connector-cli" / kind / key
+        return pathlib.Path.home() / ".bt-connector-hub" / "connector-cli" / kind / key

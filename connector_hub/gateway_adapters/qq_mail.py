@@ -11,7 +11,7 @@ from email import policy
 from email.mime.text import MIMEText
 from typing import Any
 
-from octop_bridge.gateway_adapters.local_shims import (
+from connector_hub.gateway_adapters.local_shims import (
     IMAP_CONNECT_TIMEOUT,
     NETEASE_IMAP_HOSTS,
     resolve_mail_servers,
