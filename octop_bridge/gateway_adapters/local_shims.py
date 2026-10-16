@@ -103,16 +103,24 @@ def normalize_weknora_base_url(raw: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-# ── cli_runner / cli_dirs 占位（需外部 CLI 二进制，BT 不内置）──
+# ── cli_runner / cli_dirs（委托真实 cli_install，支持自动安装）──
 class _ExternalCliRequired(RuntimeError):
     """标记该连接器需要主机安装对应 CLI 二进制（feishu/wecom/agently/obsidian）。"""
 
 
 def resolve_binary(name: str) -> str:
+    # 先确保用户级 npm 全局 bin（~/.npm-global/bin）与 ~/.local/bin 在 PATH 中，
+    # 否则自动安装到用户级目录后 shutil.which 仍找不到（与 Octop 行为一致）。
+    try:
+        from octop_bridge.gateway_adapters.cli_install import ensure_cli_path
+        ensure_cli_path()
+    except Exception:  # noqa: BLE001
+        pass
     path = shutil.which(name)
     if not path:
         raise _ExternalCliRequired(
-            f"未找到主机命令 {name!r}。该连接器需在主机 PATH 中安装 {name} 后才能使用。"
+            f"未找到主机命令 {name!r}。请在「连接器」面板点击「安装 CLI」，"
+            f"或在主机执行对应的 npm install 命令后重试。"
         )
     return path
 
@@ -152,11 +160,15 @@ def sanitize_plugin_tool_name(name: str) -> str:
 
 
 def prepare_feishu_cli_env(*args: Any, **kwargs: Any):
-    raise _ExternalCliRequired("feishu-cli 二进制未安装")
+    raise _ExternalCliRequired(
+        "feishu-cli（lark-cli）尚未就绪。请先在「连接器」面板安装 CLI，再完成飞书登录授权。"
+    )
 
 
 def materialize_wecom_bot_config(*args: Any, **kwargs: Any):
-    raise _ExternalCliRequired("wecom-cli 二进制未安装")
+    raise _ExternalCliRequired(
+        "wecom-cli 尚未就绪。请先在「连接器」面板安装 CLI。"
+    )
 
 
 def read_mcp_items_count(*args: Any, **kwargs: Any) -> int:

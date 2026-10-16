@@ -177,6 +177,43 @@ async def api_gateway_tools(kind: str):
     return _ok({"kind": kind, "tools": tools, "count": len(tools)})
 
 
+# ── CLI 安装（飞书/企微/Agently/Obsidian）────────────────────
+@router.get("/cli/status")
+async def api_cli_status_all():
+    """列出全部可自动安装的 CLI 连接器及其安装状态。"""
+    from octop_bridge.gateway_adapters import cli_install as ci
+    out = []
+    for kind in ("feishu-cli", "wecom-cli", "agently-cli", "obsidian-cli"):
+        try:
+            out.append(ci.cli_install_status(kind))
+        except Exception as exc:  # noqa: BLE001
+            out.append({"kind": kind, "error": str(exc)})
+    return _ok({"clis": out})
+
+
+@router.get("/cli/{kind}/status")
+async def api_cli_status(kind: str):
+    from octop_bridge.gateway_adapters import cli_install as ci
+    try:
+        return _ok(ci.cli_install_status(kind))
+    except ValueError as exc:
+        return _err(str(exc))
+
+
+@router.post("/cli/{kind}/install")
+async def api_cli_install(kind: str):
+    """安装指定连接器的 CLI（npm 自动安装 / Obsidian 注册）。"""
+    from octop_bridge.gateway_adapters import cli_install as ci
+    if ci.get_cli_install_spec(kind) is None:
+        return _err(f"该连接器不支持 CLI 安装: {kind}")
+    try:
+        res = ci.install_connector_cli(kind)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("cli install failed for %s", kind)
+        return _err(f"安装失败: {exc}")
+    return _ok(res, "已安装" if res.get("ok") else "安装失败") if res.get("ok") else _err(res.get("error", "安装失败"))
+
+
 # ── 同步到 mcp/config.json ──────────────────────────────────
 @router.post("/sync")
 async def api_sync(request: Request):

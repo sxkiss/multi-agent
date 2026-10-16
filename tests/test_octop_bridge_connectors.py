@@ -185,3 +185,61 @@ class TestHttpMcpHelpers:
         from octop_bridge.http_mcp import _last_sse_data
         sse = "event: message\ndata: {\"a\":1}\n\nevent: message\ndata: {\"b\":2}\n"
         assert _last_sse_data(sse) == '{"b":2}'
+
+
+# ── CLI 安装器 ─────────────────────────────────────────────
+class TestCliInstall:
+    def test_specs_defined(self):
+        from octop_bridge.gateway_adapters import cli_install as ci
+        for kind in ("feishu-cli", "wecom-cli", "agently-cli", "obsidian-cli"):
+            spec = ci.get_cli_install_spec(kind)
+            assert spec is not None
+            assert spec.binary
+
+    def test_feishu_npm_package(self):
+        from octop_bridge.gateway_adapters import cli_install as ci
+        spec = ci.get_cli_install_spec("feishu-cli")
+        assert spec.npm_package == "@larksuite/cli"
+        assert spec.binary == "lark-cli"
+        assert spec.install_command == "npm install -g @larksuite/cli"
+
+    def test_wecom_npm_package(self):
+        from octop_bridge.gateway_adapters import cli_install as ci
+        assert ci.get_cli_install_spec("wecom-cli").npm_package == "@wecom/cli"
+
+    def test_agently_pinned_version(self):
+        from octop_bridge.gateway_adapters import cli_install as ci
+        assert ci.get_cli_install_spec("agently-cli").npm_package == "@tencent-qqmail/agently-cli@1.0.18"
+
+    def test_obsidian_no_npm(self):
+        from octop_bridge.gateway_adapters import cli_install as ci
+        assert ci.get_cli_install_spec("obsidian-cli").npm_package is None
+
+    def test_status_shape(self):
+        from octop_bridge.gateway_adapters import cli_install as ci
+        s = ci.cli_install_status("feishu-cli")
+        for k in ("kind", "binary", "npm_package", "install_command", "installed", "doc_url"):
+            assert k in s
+        assert s["kind"] == "feishu-cli"
+        assert isinstance(s["installed"], bool)
+
+    def test_status_unknown_kind_raises(self):
+        from octop_bridge.gateway_adapters import cli_install as ci
+        with pytest.raises(ValueError):
+            ci.cli_install_status("no-such-cli")
+
+    def test_ensure_cli_path_returns_str(self):
+        from octop_bridge.gateway_adapters import cli_install as ci
+        assert isinstance(ci.ensure_cli_path(), str)
+
+    def test_install_unknown_kind_returns_fail(self):
+        from octop_bridge.gateway_adapters import cli_install as ci
+        # 未知 kind 不抛异常（cli_install_status 会抛，但 install_connector_cli 先取 spec）
+        with pytest.raises(ValueError):
+            ci.install_connector_cli("no-such-cli")
+
+    def test_external_cli_kinds_registered(self):
+        from octop_bridge import connectors_gateway as gw
+        for k in ("feishu-cli", "wecom-cli", "agently-cli", "obsidian-cli"):
+            assert k in gw.EXTERNAL_CLI_KINDS
+            assert gw.get_gateway_adapter(k) is not None

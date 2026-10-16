@@ -410,22 +410,58 @@
     try {
       var res = await api('/gateway/kinds');
       var kinds = res.data.kinds || [], cli = res.data.external_cli || [];
-      var html = '<div class="grid">';
+      // 拉取 CLI 安装状态（飞书/企微/Agently/Obsidian）
+      var cliStatus = {};
+      try {
+        var cs = await api('/cli/status');
+        (cs.data.clis || []).forEach(function (c) { cliStatus[c.kind] = c; });
+      } catch (e) {}
+      var html = '';
+      // CLI 安装区
+      if (Object.keys(cliStatus).length) {
+        html += '<h3 style="margin:6px 0 12px;font-size:15px">🛠 命令行工具（CLI）</h3><div class="grid">';
+        for (var ci in cliStatus) {
+          var s = cliStatus[ci];
+          var e0 = catalog.find(function (c) { return c.kind === ci; }) || { name: ci, color: '#666', kind: ci };
+          html += '<div class="card"><div class="hd"><div class="icon" style="background:' + colorOf(e0) + '">' + initial(e0) + '</div>' +
+            '<div style="flex:1;min-width:0"><div class="nm">' + esc(e0.name) + '</div><div class="kind">' + esc(s.binary || ci) + '</div></div></div>' +
+            '<div class="badges">' + (s.installed ? '<span class="badge ok">已安装 ' + esc(s.version || '') + '</span>' : '<span class="badge no">未安装</span>') + '</div>' +
+            (s.installed ? '' : '<div class="hint" style="font-size:12px;color:var(--bt-text-3);word-break:break-all">' + esc(s.install_command || '') + '</div>') +
+            '<div class="ft"><button class="btn ' + (s.installed ? '' : 'primary') + '" data-cli-install="' + esc(ci) + '">' + (s.installed ? '重装/更新' : '安装 CLI') + '</button>' +
+            (s.doc_url ? '<a class="a-link" href="' + esc(s.doc_url) + '" target="_blank" rel="noopener" style="align-self:center">文档 ↗</a>' : '') +
+            '</div></div>';
+        }
+        html += '</div><h3 style="margin:22px 0 12px;font-size:15px">⚙️ Gateway 适配器</h3>';
+      }
+      html += '<div class="grid">';
       for (var i = 0; i < kinds.length; i++) {
         var k = kinds[i];
         var e = catalog.find(function (c) { return c.kind === k; }) || { name: k, color: '#666', kind: k };
         var isCli = cli.indexOf(k) >= 0;
+        var st = cliStatus[k];
         var tr = await api('/gateway/' + k + '/tools');
         var count = (tr.data && tr.data.count) || 0;
+        var cliBadge = '';
+        if (isCli) {
+          cliBadge = (st && st.installed) ? '<span class="badge ok">CLI 就绪</span>' : '<span class="badge no">需装 CLI</span>';
+        }
         html += '<div class="card"><div class="hd"><div class="icon" style="background:' + colorOf(e) + '">' + initial(e) + '</div>' +
           '<div style="flex:1;min-width:0"><div class="nm">' + esc(e.name) + '</div><div class="kind">' + esc(k) + '</div></div></div>' +
           '<div class="badges"><span class="badge mode-gateway">gateway</span><span class="badge ok">' + count + ' 个工具</span>' +
-          (isCli ? '<span class="badge no">需外部 CLI</span>' : '') + '</div>' +
-          (isCli ? '<div class="cli-warn">⚠️ 需主机安装对应 CLI 二进制</div>' : '') +
+          cliBadge + '</div>' +
           '</div>';
       }
       html += '</div>';
       $('#gwList').innerHTML = html;
+      document.querySelectorAll('[data-cli-install]').forEach(function (b) {
+        b.onclick = async function () {
+          var kind = b.getAttribute('data-cli-install');
+          b.disabled = true; b.textContent = '安装中…（可能需要 1-2 分钟）';
+          var r = await api('/cli/' + kind + '/install', { method: 'POST' });
+          toast(r.status ? ('✅ 安装成功' + (r.data && r.data.version ? ' v' + r.data.version : '')) : ('❌ ' + (r.msg || '安装失败')), r.status ? 'ok' : 'err');
+          loadGateway();
+        };
+      });
     } catch (e) {
       $('#gwList').innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>';
     }
