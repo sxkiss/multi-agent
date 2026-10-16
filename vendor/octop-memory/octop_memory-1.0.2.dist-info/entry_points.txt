@@ -1,0 +1,3 @@
+[console_scripts]
+octop-memory = octop_memory.adapters.cli:main
+octopmemory-bridge = octop_memory.adapters.bridge.server:main

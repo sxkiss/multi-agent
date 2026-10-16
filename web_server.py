@@ -5100,13 +5100,17 @@ except Exception:  # noqa: BLE001
     logger.exception("[connector-hub] 连接器路由挂载失败（主服务继续运行）")
 
 
-# ── 平台扩展层（/api/v2/{teams,channels,storage,usage}/*，不破坏现有 /api/*）──
+# ── 平台扩展层（/api/v2/{teams,channels,storage,usage,gateway,memory}/*，不破坏现有 /api/*）──
 try:
     from platform_ext.api import router as _platform_ext_router
     app.include_router(_platform_ext_router)
     from platform_ext.usage import router as _usage_router
     app.include_router(_usage_router, prefix="/api/v2")
-    logger.info("[platform-ext] 平台扩展路由已挂载: /api/v2/{teams,channels,storage,usage}/*")
+    from platform_ext.gateway import router as _gateway_router
+    app.include_router(_gateway_router, prefix="/api/v2")
+    from platform_ext.memory_octop import router as _memory_router
+    app.include_router(_memory_router, prefix="/api/v2")
+    logger.info("[platform-ext] 平台扩展路由已挂载: /api/v2/{teams,channels,storage,usage,gateway,memory}/*")
 except Exception:  # noqa: BLE001
     logger.exception("[platform-ext] 平台扩展路由挂载失败（主服务继续运行）")
 

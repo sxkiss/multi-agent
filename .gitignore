@@ -154,3 +154,6 @@ connector_hub/.fernet_key
 
 # 用量统计 ledger（运行时数据）
 usage_ledger.jsonl
+
+# octop-memory 增强记忆 sqlite（运行时数据）
+memory_octop.sqlite
