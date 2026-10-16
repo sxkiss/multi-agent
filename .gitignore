@@ -151,3 +151,6 @@ connector_hub/.fernet_key
 
 # octop-browser 运行时数据目录（浏览器 profile / 录制 / 截图）
 .octop-browser/
+
+# 用量统计 ledger（运行时数据）
+usage_ledger.jsonl

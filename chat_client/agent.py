@@ -1279,6 +1279,20 @@ Here is some useful information about the environment you are running in:
                     except Exception:
                         logger.warning("[Background] 等待后台任务失败", exc_info=True)
 
+                    # 用量统计：把本轮 token 用量追加到 usage ledger（失败静默）
+                    try:
+                        from platform_ext.usage import record_usage  # noqa: PLC0415
+                        record_usage(
+                            session_id=self.session_id or "",
+                            model=getattr(self, "model", "") or "",
+                            input_tokens=int(total_usage.get("input_tokens") or 0),
+                            output_tokens=int(total_usage.get("output_tokens") or 0),
+                            total_tokens=int(total_usage.get("total_tokens") or 0),
+                            source="chat",
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+
                     yield {
                         "type": "stop",
                         "usage": total_usage,
