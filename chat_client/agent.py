@@ -1340,7 +1340,12 @@ Here is some useful information about the environment you are running in:
                 if current_reasoning_content:
                     assistant_msg_kwargs["reasoning_content"] = current_reasoning_content
 
-                self.memory.add_message("assistant", current_response_content,id=ai_msg_id, **assistant_msg_kwargs)
+                # 源头防污染（2026-10-17）：保存历史前剥离 <invoke> 文本。
+                # 旧实现只在「发送前」清洗内存副本，memory 里仍残留 <invoke>，
+                # 后续请求（尤其续聊/恢复会话）会再次看到并持续模仿。
+                # 这里对字符串/list 内容统一剥离，从源头阻断污染循环。
+                _saved_content = Agent._strip_invoke_blocks(current_response_content)
+                self.memory.add_message("assistant", _saved_content, id=ai_msg_id, **assistant_msg_kwargs)
 
                 messages.append({
                     "role": "assistant",
@@ -1593,7 +1598,13 @@ Here is some useful information about the environment you are running in:
                      kwargs["reasoning_content"] = full_reasoning_content
                  
                  # 使用预生成的 ai_msg_id
-                 ai_msg = self.memory.add_message("assistant", full_response_content, id=ai_msg_id, **kwargs)
+                 # 源头防污染：保存历史前剥离 <invoke> 文本（同上）
+                 ai_msg = self.memory.add_message(
+                     "assistant",
+                     Agent._strip_invoke_blocks(full_response_content),
+                     id=ai_msg_id,
+                     **kwargs,
+                 )
                  
                  # 发送 meta_info 包含 ID
                  yield {
@@ -1679,54 +1690,117 @@ Here is some useful information about the environment you are running in:
     #      阻止模型自模仿（发给上游前调用）。
     #   2. _parse_invoke_tool_calls：当模型输出正文里出现 <invoke> 时，
     #      解析为真实工具调用并执行（兜底，避免工具静默失效）。
-    _INVOKE_RE = re.compile(r"<invoke\b[^>]*>.*?</invoke>", re.DOTALL)
+    # 容错正则（2026-10-17 修复）：同时匹配「闭合」与「不闭合」的 <invoke> 块。
+    # 旧版 `.*?</invoke>` 要求闭合标签，但模型模仿历史时会输出畸形标签：
+    #   - 标准闭合：<invoke ...>...</invoke>
+    #   - 畸形闭合（带特殊 token 前缀）：<invoke ...>...</｜U2｜invoke>
+    #   - 完全不闭合（漏 </invoke>）
+    # 任一种都要求框架能：1) 解析出工具调用；2) 剥离文本防污染。
+    # 兼容策略：标签名前面允许插入 `｜...｜` 这类特殊 token（模型退化产物，
+    # 形如 `<｜U2｜parameter ...>` / `</｜U2｜parameter>` / `</｜U2｜invoke>`）。
+    _TAG_PREFIX = r"(?:\｜[^\s\>]*?)?"
+    _INVOKE_RE = re.compile(r"<invoke\b[^>]*>.*?</invoke" + _TAG_PREFIX + r">", re.DOTALL)
+    _INVOKE_OPEN_RE = re.compile(
+        r'<invoke\b[^>]*>(?:(?!<invoke\b).)*',
+        re.DOTALL,
+    )
     _INVOKE_NAME_RE = re.compile(r'<invoke\b[^>]*\bname\s*=\s*"([^"]+)"', re.DOTALL)
-    _PARAM_RE = re.compile(r'<parameter\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</parameter>', re.DOTALL)
+    # 参数：标准闭合 + 畸形闭合（标签名前可穿插特殊 token）
+    _PARAM_RE = re.compile(
+        r'<parameter' + _TAG_PREFIX + r'\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</parameter' + _TAG_PREFIX + r'>',
+        re.DOTALL,
+    )
+    # 不闭合的 <invoke> 块里，<parameter> 可能也漏掉闭合标签（模型模仿退化）。
+    # 此时退化为「<parameter name="x"> 之后到下一个 <parameter / <invoke / 文本结尾」。
+    _PARAM_OPEN_RE = re.compile(
+        r'<parameter' + _TAG_PREFIX + r'\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(?:(?!</parameter|<parameter\b|<invoke\b).)*',
+        re.DOTALL,
+    )
 
     @staticmethod
     def _strip_invoke_blocks(content: Any) -> Any:
-        """从文本/消息 content 中剥离 <invoke>...</invoke> 伪工具调用块。
+        """从文本/消息 content 中剥离 <invoke> 伪工具调用块。
 
         只处理字符串 content 与 list[text 块]；其余原样返回。剥离后保留正文，
         避免模型在历史里继续看到/模仿 <invoke> 文本格式。
+
+        兼容不闭合的 <invoke> 块（模型模仿退化漏掉 </invoke>）：闭合块优先，
+        未闭合的用 _INVOKE_OPEN_RE 匹配到「下一个 <invoke / 文本结尾」。
         """
+        def _strip(text: str) -> str:
+            # 先剥离闭合块
+            out = Agent._INVOKE_RE.sub("", text)
+            # 再剥离不闭合块
+            out = Agent._INVOKE_OPEN_RE.sub("", out)
+            return out
+
         if isinstance(content, str):
-            return Agent._INVOKE_RE.sub("", content)
+            return _strip(content)
         if isinstance(content, list):
             out = []
             for p in content:
                 if isinstance(p, dict):
                     p = dict(p)
                     if p.get("type") in ("text", "output_text", "input_text") and isinstance(p.get("text"), str):
-                        p["text"] = Agent._INVOKE_RE.sub("", p["text"])
+                        p["text"] = _strip(p["text"])
                 out.append(p)
             return out
         return content
 
     @staticmethod
     def _parse_invoke_tool_calls(content: str) -> list[tuple[str, dict[str, Any]]]:
-        """解析正文中混入的 <invoke name="X"><parameter name="y">v</parameter>...</invoke>。
+        """解析正文中混入的 <invoke name="X"> 文本工具调用。
 
         返回 [(工具名, 参数字典), ...]；无 <invoke> 时返回空列表。
         参数值会做 HTML 实体反转义（模型可能输出 &quot; &amp; 等）。
+
+        兼容「不闭合」的 <invoke> 块（模型模仿历史时漏掉 </invoke>）：
+        - <parameter name="x">v</parameter> 标准闭合形式
+        - <parameter name="x">v 后直接结束/遇到下一个标签（不闭合退化形式）
         """
         import html as _html
-        blocks = Agent._INVOKE_RE.findall(content or "")
         parsed: list[tuple[str, dict[str, Any]]] = []
-        for blk in blocks:
+        seen_ranges: list[tuple[int, int]] = []
+
+        def _parse_block(blk: str) -> None:
             name_m = Agent._INVOKE_NAME_RE.search(blk)
             if not name_m:
-                continue
+                return
             name = _html.unescape(name_m.group(1).strip())
             if not name:
-                continue
+                return
             args: dict[str, Any] = {}
+            # 标准闭合 <parameter> 优先
             for pm in Agent._PARAM_RE.finditer(blk):
                 pname = _html.unescape(pm.group(1).strip())
                 pval = _html.unescape(pm.group(2).strip())
                 if pname:
                     args[pname] = pval
+            # 若一个闭合参数都没有，尝试不闭合退化形式
+            if not args:
+                for pm in Agent._PARAM_OPEN_RE.finditer(blk):
+                    pname = _html.unescape(pm.group(1).strip())
+                    pval = _html.unescape(pm.group(2).strip())
+                    if pname:
+                        args[pname] = pval
             parsed.append((name, args))
+
+        # 闭合块优先（非贪婪，不吞正文）
+        for m in Agent._INVOKE_RE.finditer(content or ""):
+            _parse_block(m.group(0))
+            seen_ranges.append(m.span())
+
+        # 不闭合块：跳过已被闭合块覆盖的区间
+        for m in Agent._INVOKE_OPEN_RE.finditer(content or ""):
+            start, end = m.span()
+            if any(s <= start and end <= e for s, e in seen_ranges):
+                continue
+            # 若与闭合块部分重叠（如不闭合块尾部被闭合块包含），跳过
+            if any(start < e and s < end for s, e in seen_ranges):
+                continue
+            _parse_block(m.group(0))
+            seen_ranges.append((start, end))
+
         return parsed
 
     @staticmethod
