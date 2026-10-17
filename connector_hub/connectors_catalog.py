@@ -31,7 +31,7 @@ GATEWAY_KINDS = frozenset({
     "feishu-cli", "wecom-cli", "obsidian-cli", "weknora",
 })
 
-# internal 模式（Octop 自托管 HTTP MCP）；BT 暂无对应自托管服务，标记但走 gateway 协议兜底
+# internal 模式（自托管 HTTP MCP）；BT 暂无对应自托管服务，标记但走 gateway 协议兜底
 INTERNAL_KINDS = frozenset({"qcc"})
 
 

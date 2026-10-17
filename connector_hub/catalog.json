@@ -370,7 +370,7 @@
       "guide_url": "https://agent.qcc.com/guide",
       "manual_url": "https://agent.qcc.com/",
       "auth_hint": {
-        "en": "Use one-click OAuth when Octop has public HTTPS or localhost; otherwise open the authorization page, copy the API Key, and paste it. Query scope follows your account permissions.",
+        "en": "Use one-click OAuth when the connector has public HTTPS or localhost; otherwise open the authorization page, copy the API Key, and paste it. Query scope follows your account permissions.",
         "zh": "有公网 HTTPS 或本机 localhost 时可用一键 OAuth；否则打开授权页获取 API Key 后粘贴。查询范围以账户权限为准。"
       },
       "oauth_issuer": "https://agent.qcc.com",
@@ -577,8 +577,8 @@
       "guide_url": "https://obsidian.md/zh/cli",
       "manual_url": "https://obsidian.md/zh/cli",
       "auth_hint": {
-        "en": "Enter the vault name shown in the Obsidian sidebar. Octop and Obsidian must run on the same host, with Command line interface enabled.",
-        "zh": "填写 Obsidian 侧边栏中的库名。Octop 与 Obsidian 需在同一台主机，并已启用 Command line interface。"
+        "en": "Enter the vault name shown in the Obsidian sidebar. The connector and Obsidian must run on the same host, with Command line interface enabled.",
+        "zh": "填写 Obsidian 侧边栏中的库名。连接器与 Obsidian 需在同一台主机，并已启用 Command line interface。"
       },
       "credential_fields": [
         {
@@ -631,7 +631,7 @@
             "zh": "http://127.0.0.1:8080 或 https://weknora.example.com"
           },
           "help": {
-            "en": "Octop appends /api/v1 when the URL does not already include it",
+            "en": "The /api/v1 suffix is appended when the URL does not already include it",
             "zh": "未包含 /api/v1 时会自动补齐"
           }
         },

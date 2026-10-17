@@ -100,8 +100,7 @@ def _save_instances(instances: list[dict[str, Any]]) -> None:
 
 
 # ── spec 生成（remote / gateway / internal）────────────────
-# 严格对齐 Octop src/octop/infra/connectors/builder.py 的 _build_remote_spec：
-# 地址、传输方式、认证头都按上游实现，不再把 token 拼进 URL query。
+# 地址、传输方式、认证头按各厂商官方 MCP 实现，不再把 token 拼进 URL query。
 _MCP_STREAMABLE_HTTP_ACCEPT = "application/json, text/event-stream"
 
 
@@ -120,7 +119,7 @@ def _normalize_transport(raw: Any) -> str:
 
 
 def normalize_weiyun_mcp_token(raw: str) -> str:
-    """从粘贴的 env/WyHeader 片段中提取微云 MCP token（对齐 Octop）。"""
+    """从粘贴的 env/WyHeader 片段中提取微云 MCP token。"""
     import re
 
     text = (raw or "").strip().strip('"').strip("'")
@@ -138,10 +137,7 @@ def normalize_weiyun_mcp_token(raw: str) -> str:
 def _remote_spec_for(
     kind: str, creds: dict[str, Any], entry: Any = None
 ) -> tuple[str, dict[str, str], str] | None:
-    """返回 (url, headers, transport)；None 表示无法构建。
-
-    与 Octop builder._build_remote_spec 保持一一对应。
-    """
+    """返回 (url, headers, transport)；None 表示无法构建。"""
     from urllib.parse import quote
 
     if kind == "tencent-docs":
@@ -325,7 +321,7 @@ def get_instance(instance_id: str, include_secrets: bool = False) -> dict[str, A
 def normalize_credentials(kind: str, entry: Any, creds: dict[str, Any]) -> dict[str, Any]:
     """按 auth_kind 归一化并校验凭据字段。
 
-    对齐 Octop builder.validate_create_credentials：不同连接器的凭据键名
+    不同连接器的凭据键名
     不同（token / api_key / email+password），前端在无 credential_fields
     时可能只提交 ``token``，这里统一映射成各适配器实际读取的键名。
     """
