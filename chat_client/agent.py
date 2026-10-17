@@ -1,6 +1,6 @@
 """
 @input: openai, httpx2, chat_client.memory, chat_client.retrieval, chat_client.tools.registry
-@output: Agent 主循环（流式/重试/续写）、ChatJob、事件生成
+@output: Agent 主循环（流式/重试）、ChatJob、事件生成
 @position: Core agent runtime — 所有对话模式的执行引擎
 @auto-doc: Update header and folder INDEX.md when this file changes
 """
@@ -1097,7 +1097,8 @@ Here is some useful information about the environment you are running in:
 
                 # ---- 带自动重试的流式请求：断流 / 429 / 5xx 后重新请求 ----
                 # OpenAI SDK 的 max_retries 只覆盖建连阶段，不覆盖流式中途断开；
-                # 这里在应用层重试：无可见输出时完全重来；已有输出时切换"续写模式"避免重复内容。
+                # 这里在应用层重试：每次尝试独立，无可见输出时完全重新请求（不携带任何已输出正文）；
+                # 已有输出时断流直接结束本轮，不续写。
                 api_max_retry = max(0, int(self.config.get("api_max_retry", 3)))
                 api_retry_base_wait = float(self.config.get("api_retry_base_wait", 1))
                 api_retry_max_wait = float(self.config.get("api_retry_max_wait", 10))
@@ -1206,10 +1207,8 @@ Here is some useful information about the environment you are running in:
                                         "id": tool_call_chunks[idx0]["id"],
                                     }
 
-                        # 本轮成功结束：若发生过重试（续写模式），此前中断尝试的正文已在
-                        # yielded_content 中实时推送给前端，最终完整文本即为全部已推送内容
-                        if attempt > 1:
-                            current_response_content = yielded_content
+                        # 本轮成功结束：每次尝试结果独立，不再拼接/续写已推送内容
+                        # （断流有输出 → 直接结束本轮；无输出 → 完全重新请求，不携带任何正文）
 
                         # 空回复检测：API 返回 200 但无内容且无工具调用 → 重试
                         if not current_response_content and not tool_call_chunks:
