@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import re
 import threading
 import time
 import traceback
@@ -1225,6 +1226,31 @@ Here is some useful information about the environment you are running in:
                 if current_reasoning_content:
                     full_reasoning_content = current_reasoning_content
 
+                # 兜底解析（2026-10-17）：模型未走标准 function_call，而是把工具调用
+                # 写成 <invoke> 文本（Claude Code 风格）时，解析为真实工具调用执行，
+                # 避免"只回文本不调工具"。同时剥离正文中的 <invoke> 块，防止历史污染。
+                if not tool_call_chunks and current_response_content:
+                    try:
+                        _invoke_tcs = self._parse_invoke_tool_calls(current_response_content)
+                    except Exception:
+                        _invoke_tcs = []
+                    if _invoke_tcs:
+                        logger.warning(
+                            "[ToolInvoke] 检测到 %d 个 <invoke> 文本工具调用，已转标准工具执行: %s",
+                            len(_invoke_tcs), [t[0] for t in _invoke_tcs],
+                        )
+                        current_response_content = self._strip_invoke_blocks(current_response_content)
+                        full_response_content = current_response_content
+                        tool_call_chunks = {}
+                        for _i, (_nm, _args) in enumerate(_invoke_tcs):
+                            tool_call_chunks[_i] = {
+                                "id": f"invoke_{_i}",
+                                "function": {
+                                    "name": _nm,
+                                    "arguments": json.dumps(_args, ensure_ascii=False),
+                                },
+                            }
+
                 # 如果没有工具调用，结束循环
                 if not tool_call_chunks:
                     # 结束前先等后台任务：工具转后台后模型往往"无话可说"直接结束，
@@ -1643,6 +1669,66 @@ Here is some useful information about the environment you are running in:
                 "content": content_structure,
             })
 
+    # ── 防伪工具调用污染（2026-10-17）────────────────────────────
+    # 现象：模型（尤其 GLM/自研系）在长会话/特定任务下会偶尔把工具调用写成
+    # Claude Code 风格的 <invoke name="..."> 文本而非标准 function_call。
+    # BT 不解析 <invoke> 文本，导致工具"只回文本不调用"；且历史里的 <invoke>
+    # 会诱导模型持续模仿，形成污染循环。
+    # 对策：
+    #   1. _strip_invoke_blocks：清洗历史里混入的 <invoke> 伪工具调用文本，
+    #      阻止模型自模仿（发给上游前调用）。
+    #   2. _parse_invoke_tool_calls：当模型输出正文里出现 <invoke> 时，
+    #      解析为真实工具调用并执行（兜底，避免工具静默失效）。
+    _INVOKE_RE = re.compile(r"<invoke\b[^>]*>.*?</invoke>", re.DOTALL)
+    _INVOKE_NAME_RE = re.compile(r'<invoke\b[^>]*\bname\s*=\s*"([^"]+)"', re.DOTALL)
+    _PARAM_RE = re.compile(r'<parameter\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</parameter>', re.DOTALL)
+
+    @staticmethod
+    def _strip_invoke_blocks(content: Any) -> Any:
+        """从文本/消息 content 中剥离 <invoke>...</invoke> 伪工具调用块。
+
+        只处理字符串 content 与 list[text 块]；其余原样返回。剥离后保留正文，
+        避免模型在历史里继续看到/模仿 <invoke> 文本格式。
+        """
+        if isinstance(content, str):
+            return Agent._INVOKE_RE.sub("", content)
+        if isinstance(content, list):
+            out = []
+            for p in content:
+                if isinstance(p, dict):
+                    p = dict(p)
+                    if p.get("type") in ("text", "output_text", "input_text") and isinstance(p.get("text"), str):
+                        p["text"] = Agent._INVOKE_RE.sub("", p["text"])
+                out.append(p)
+            return out
+        return content
+
+    @staticmethod
+    def _parse_invoke_tool_calls(content: str) -> list[tuple[str, dict[str, Any]]]:
+        """解析正文中混入的 <invoke name="X"><parameter name="y">v</parameter>...</invoke>。
+
+        返回 [(工具名, 参数字典), ...]；无 <invoke> 时返回空列表。
+        参数值会做 HTML 实体反转义（模型可能输出 &quot; &amp; 等）。
+        """
+        import html as _html
+        blocks = Agent._INVOKE_RE.findall(content or "")
+        parsed: list[tuple[str, dict[str, Any]]] = []
+        for blk in blocks:
+            name_m = Agent._INVOKE_NAME_RE.search(blk)
+            if not name_m:
+                continue
+            name = _html.unescape(name_m.group(1).strip())
+            if not name:
+                continue
+            args: dict[str, Any] = {}
+            for pm in Agent._PARAM_RE.finditer(blk):
+                pname = _html.unescape(pm.group(1).strip())
+                pval = _html.unescape(pm.group(2).strip())
+                if pname:
+                    args[pname] = pval
+            parsed.append((name, args))
+        return parsed
+
     @staticmethod
     def _sanitize_messages_for_api(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """清理消息列表中非法的 tool_calls，防止 API 返回 400 错误。
@@ -1668,6 +1754,12 @@ Here is some useful information about the environment you are running in:
 
         for msg in messages:
             msg = dict(msg)
+
+            # 历史污染清洗（2026-10-17）：剥离 assistant 正文里混入的
+            # <invoke> 伪工具调用文本，阻止模型在历史中持续模仿该格式。
+            # 只处理 assistant 的正文；tool 消息（工具结果 XML）不动。
+            if msg.get("role") == "assistant" and msg.get("content"):
+                msg["content"] = Agent._strip_invoke_blocks(msg["content"])
 
             if "tool_calls" in msg:
                 clean_tcs = []
