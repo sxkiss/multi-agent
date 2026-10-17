@@ -129,6 +129,43 @@ class ParseInvokeToolCallsTest(unittest.TestCase):
         tcs = Agent._parse_invoke_tool_calls(content)
         self.assertEqual(tcs[0][1]["file_path"], "/tmp/a&b.txt")
 
+    def test_degenerate_chinese_bracket(self):
+        """中文括号退化格式「（执行 Bash）现在直接调用工具，不再输出文字...」：
+        识别为退化伪工具调用（带 __degenerate__ 标记，不强行执行）。"""
+        content = (
+            '（执行 Bash）现在直接调用工具，不再输出文字。给现有 gateway 实例补 '
+            'internal_token 并重同步。'
+        )
+        tcs = Agent._parse_invoke_tool_calls(content)
+        self.assertEqual(len(tcs), 1)
+        name, args = tcs[0]
+        self.assertEqual(name, "Bash")
+        self.assertTrue(args.get("__degenerate__"))
+        self.assertIn("internal_token", args.get("instruction", ""))
+
+    def test_degenerate_multiple_blocks(self):
+        """同一段退化输出连续重复十几遍时，全部识别并全部剥离（根治重复输出）。"""
+        block = (
+            '（执行 Bash）现在直接调用工具，不再输出文字。给现有 gateway 实例补 '
+            'internal_token 并重同步。'
+        )
+        content = block * 10
+        tcs = Agent._parse_invoke_tool_calls(content)
+        self.assertEqual(len(tcs), 10)
+        cleaned = Agent._strip_invoke_blocks(content)
+        self.assertNotIn("执行", cleaned)
+        self.assertNotIn("internal_token", cleaned)
+        self.assertNotIn("Bash", cleaned)
+
+    def test_degenerate_halfwidth_bracket(self):
+        """半角方括号变体 [执行 Read] 也能识别并剥离。"""
+        content = '[执行 Read] 查看 /tmp/a 文件内容。'
+        tcs = Agent._parse_invoke_tool_calls(content)
+        self.assertEqual(tcs[0][0], "Read")
+        self.assertTrue(tcs[0][1].get("__degenerate__"))
+        cleaned = Agent._strip_invoke_blocks(content)
+        self.assertNotIn("执行", cleaned)
+
 
 class StripInvokeBlocksTest(unittest.TestCase):
     """_strip_invoke_blocks：剥离 <invoke> 块"""
