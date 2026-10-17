@@ -1297,7 +1297,9 @@ Here is some useful information about the environment you are running in:
                             pass
                         elif _bg.pending_count(self.session_id) > 0:
                             _bg_wait_used = True
-                            _wait_budget = float(self.config.get("background_wait_seconds", 120))
+                            # 默认不阻塞收尾：子代理异步运行，结果完成后自动回灌。
+                            # 如需收尾前短暂等待，可在 config 设置 background_wait_seconds。
+                            _wait_budget = float(self.config.get("background_wait_seconds", 0))
                             _poll_interval = 2.0
                             _waited = 0.0
                             while (_waited < _wait_budget
@@ -1322,13 +1324,23 @@ Here is some useful information about the environment you are running in:
                                     logger.info("[Background] 等待后注入结果 task=%s", _t['task_id'])
                             # 还有未完成的：明确告知，让模型如实汇报而非假装完成
                             if _bg.pending_count(self.session_id) > 0:
+                                _n_pending = _bg.pending_count(self.session_id)
+                                if _wait_budget > 0:
+                                    _pending_detail = (
+                                        f"仍有 {_n_pending} 个后台任务在运行且已超过等待上限"
+                                        f"（{_wait_budget:g} 秒）。"
+                                    )
+                                else:
+                                    _pending_detail = (
+                                        f"仍有 {_n_pending} 个后台任务在后台运行。"
+                                        f"完成后结果会自动回灌到对话上下文。"
+                                    )
                                 messages.append({
                                     "role": "system",
                                     "content": (
                                         f"<background_task_pending>\n"
-                                        f"仍有 {_bg.pending_count(self.session_id)} 个后台任务在运行且已超过等待上限"
-                                        f"（{self.config.get('background_wait_seconds', 120)} 秒）。\n"
-                                        f"请如实告知用户任务仍在进行、稍后可用 TaskStatus 查询结果，"
+                                        f"{_pending_detail}\n"
+                                        f"请如实告知用户任务仍在进行、稍后会自动返回结果，"
                                         f"不要声称任务已完成，也不要重复发起同一工具调用。\n"
                                         f"</background_task_pending>"
                                     ),

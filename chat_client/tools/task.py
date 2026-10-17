@@ -1,13 +1,17 @@
 import json
+import logging
 import os
 import re
 import threading
 import uuid
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any
 
 from . import PROJECT_ROOT, emit_progress, register_tool
 from .base import _xml_response
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -179,9 +183,10 @@ When NOT to use the Task tool:
 
 
 Usage notes:
-1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
-2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result. The output includes a task_id you can reuse later to continue the same subagent session.
+1. This tool is ASYNCHRONOUS: it starts the sub-agent in the background and returns immediately with a task_id. It does NOT block the main conversation. Launch multiple agents concurrently whenever possible — either in one message with multiple tool uses, or by calling Task repeatedly in successive turns.
+2. The sub-agent result is delivered automatically as a <background_task_done> system message once it finishes. Do NOT poll with TaskStatus and do NOT call Task again with the same parameters — the task is already running. When the result arrives, summarize it back to the user.
 3. Each agent invocation starts with a fresh context unless you provide task_id to resume the same subagent session (which continues with its previous messages and tool outputs). When starting fresh, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.
+4. The returned task_id is the background task id (use with TaskStatus). The returned subagent_session_id can be passed as task_id later to continue the same sub-agent session.
 4. The agent's outputs should generally be trusted
 5. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent. Tell it how to verify its work if possible (e.g., relevant test commands).
 6. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
@@ -291,44 +296,99 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
 
     # 4. Initialize Agent
     agent = Agent(session_id=session_id, config=config)
-    
-    try:
-        # 5. Execute Agent Loop
-        # Agent.chat is a generator. We need to consume it to let the agent run.
-        # We collect the final response content.
-        
-        full_response = ""
-        
-        # Add a clear instruction to the prompt
-        full_prompt = f"Task: {description}\n\nInstructions:\n{prompt}"
-        if expected_output:
-            full_prompt += f"\n\n[Expected Output] {expected_output.strip()}"
-        
-        generator = agent.chat(full_prompt)
-        
-        for chunk in generator:
-            if chunk.get("type") == "content":
-                full_response += chunk.get("response", "")
-            elif chunk.get("type") == "error":
-                return _xml_response("error", f"Agent error: {chunk.get('data')}")
-                
-        # 6. Return Result
-        output = [
-            f"task_id: {session_id}",
-            "",
-            "<task_result>",
-            full_response,
-            "</task_result>"
-        ]
-        
-        return _xml_response("done", "\n".join(output))
 
-    except Exception as e:
-        return _xml_response("error", f"Task execution failed: {e!s}")
-    finally:
-        # Clean up agent resources
-        if hasattr(agent, "close"):
-            agent.close()
+    # 5. 异步执行：立即返回，子代理在后台线程跑，不阻塞主会话。
+    #    结果通过 BackgroundTaskManager 回灌到父会话上下文（主循环每轮
+    #    drain_finished 注入），模型无需轮询。
+    full_prompt = f"Task: {description}\n\nInstructions:\n{prompt}"
+    if expected_output:
+        full_prompt += f"\n\n[Expected Output] {expected_output.strip()}"
+
+    bg_task_id = str(uuid.uuid4())
+    fut: Future = Future()
+
+    try:
+        from . import get_current_job, get_background_manager, _restore_job_ctx
+        parent_job = get_current_job()
+        bg_manager = get_background_manager()
+    except Exception:
+        parent_job = None
+        bg_manager = None
+
+    # 先注册再启动：避免子代理瞬间完成时 notify 早于 register 而丢结果
+    if bg_manager is not None:
+        bg_manager.register(
+            bg_task_id, "Task", (description,), fut, parent_session_id or ""
+        )
+
+    def _on_subagent_done(f: Future):
+        if bg_manager is None:
+            return
+        try:
+            if f.cancelled():
+                return
+            exc = f.exception()
+            if exc is None:
+                bg_manager.notify_done(bg_task_id, f.result())
+            else:
+                bg_manager.notify_failed(bg_task_id, str(exc))
+        except Exception:
+            logger.warning("子代理完成回调失败 bg_task=%s", bg_task_id, exc_info=True)
+
+    fut.add_done_callback(_on_subagent_done)
+
+    def _run_subagent():
+        # 继承父会话的 job 上下文：子代理的工具进度/取消检查跟随父会话
+        if parent_job is not None:
+            try:
+                _restore_job_ctx(parent_job)
+            except Exception:
+                pass
+        try:
+            full_response = ""
+            for chunk in agent.chat(full_prompt):
+                if chunk.get("type") == "content":
+                    full_response += chunk.get("response", "")
+                elif chunk.get("type") == "error":
+                    raise RuntimeError(chunk.get("data") or "子代理执行出错")
+            output = [
+                f"subagent_session_id: {session_id}",
+                "",
+                "<task_result>",
+                full_response,
+                "</task_result>",
+            ]
+            fut.set_result(_xml_response("done", "\n".join(output)))
+        except Exception as e:
+            fut.set_exception(e)
+        finally:
+            if hasattr(agent, "close"):
+                try:
+                    agent.close()
+                except Exception:
+                    logger.warning("子代理资源清理失败", exc_info=True)
+
+    threading.Thread(
+        target=_run_subagent,
+        daemon=True,
+        name=f"subagent-{subagent_type}-{bg_task_id[:8]}",
+    ).start()
+
+    # 6. 立即返回：主会话可以继续派发其他子代理或处理其他工作
+    return _xml_response(
+        "running",
+        f"子代理已启动并在后台运行（不阻塞主会话）。\n"
+        f"<task_id>{bg_task_id}</task_id>\n"
+        f"<subagent_session_id>{session_id}</subagent_session_id>\n"
+        f"<subagent_type>{subagent_type}</subagent_type>\n"
+        f"<description>{description}</description>\n\n"
+        f"【重要】\n"
+        f"1. 不要用相同参数重复调用 Task——子代理已在运行。\n"
+        f"2. 结果完成后会自动回灌到对话上下文，无需轮询 TaskStatus。\n"
+        f"3. 主动查询用 TaskStatus(task_id=\"{bg_task_id}\")；"
+        f"续聊同一子代理时把 task_id 设为 \"{session_id}\"。\n"
+        f"4. 你可以继续派发其他子代理或处理其他工作。"
+    )
 
 
 # ============================================================

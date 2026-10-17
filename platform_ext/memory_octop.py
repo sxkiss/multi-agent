@@ -51,7 +51,9 @@ def _get_memory():
     if _memory is not None:
         return _memory
     from octop_memory import Memory
-    _memory = Memory(namespace=NAMESPACE, backend="sqlite", backend_config={"path": SQLITE_PATH})
+    # 注意参数名是 db_path：octop-memory 的 sqlite 后端只认 db_path，
+    # 传 path 会被忽略并回退到 ~/.octop-memory/session.sqlite 默认库。
+    _memory = Memory(namespace=NAMESPACE, backend="sqlite", backend_config={"db_path": SQLITE_PATH})
     return _memory
 
 
