@@ -357,7 +357,39 @@ class Agent:
         ).strip().lower()
         self.thinking = self.config.get("thinking", _agent_cfg.get("thinking", False))
         self.web_search = self.config.get("web_search", _agent_cfg.get("web_search", False))
-        
+
+        # ── 失控防护：单次输出有硬上限、拒绝死循环 ──
+        # 单次响应最大输出 token（含思考 token）。0 = 不限制（不推荐）。
+        # 此前完全不传 max_tokens，模型一旦退化会一直流式输出/思考到上游上限。
+        try:
+            self.max_output_tokens = int(
+                self.config.get("max_output_tokens")
+                or _agent_cfg.get("max_output_tokens", 32768)
+            )
+        except (TypeError, ValueError):
+            self.max_output_tokens = 32768
+        # 单次模型响应墙钟上限（秒）。防止"边想边流"永远不结束。0 = 不限制。
+        try:
+            self.response_timeout_seconds = float(
+                self.config.get("response_timeout_seconds")
+                or _agent_cfg.get("response_timeout_seconds", 600)
+            )
+        except (TypeError, ValueError):
+            self.response_timeout_seconds = 600
+        # 重复熔断：连续 N 轮输出完全相同的内容 / 完全相同的工具调用 → 判定为幻觉死循环
+        try:
+            self.repeat_limit = max(2, int(
+                self.config.get("repeat_limit") or _agent_cfg.get("repeat_limit", 3)
+            ))
+        except (TypeError, ValueError):
+            self.repeat_limit = 3
+        self._repeat_content = None
+        self._repeat_content_streak = 0
+        self._repeat_tool_sig = None
+        self._repeat_tool_streak = 0
+        # 轮询类工具允许同参数连续调用，不参与重复熔断
+        self._repeat_exempt_tools = {"TaskStatus", "TaskList", "CheckCommandStatus"}
+
         # 官网知识库
         self.use_external_kb = self.config.get("use_external_kb", False)
         self.external_kb_appid = self.config.get("external_kb_appid", "app_002")
@@ -823,9 +855,14 @@ Here is some useful information about the environment you are running in:
             "stream_options": {"include_usage": True},
             "temperature": self.temperature,
             "top_p": self.top_p,
-            "reasoning_effort": self.reasoning_effort,
             "extra_body": {}
         }
+        # 只在显式配置时才传 reasoning_effort，避免对所有模型强制最大思考深度
+        if self.reasoning_effort:
+            params["reasoning_effort"] = self.reasoning_effort
+        # 单次输出硬上限：防止模型退化后无限输出/无限思考
+        if self.max_output_tokens and self.max_output_tokens > 0:
+            params["max_tokens"] = self.max_output_tokens
 
         thinking = self.thinking
 
@@ -870,7 +907,8 @@ Here is some useful information about the environment you are running in:
                 self.model_name,
                 temperature=self.temperature,
                 top_p=self.top_p,
-                reasoning_effort=self.reasoning_effort,
+                reasoning_effort=self.reasoning_effort or None,
+                max_output_tokens=self.max_output_tokens or None,
             )
             return iter_chat_chunks(self.client, payload)
 
@@ -1049,7 +1087,7 @@ Here is some useful information about the environment you are running in:
                         iter_msg += "WARNING: You are approaching the tool execution limit. If the task is not finished, STOP NOW and ask the user to continue in the next turn to reset the counter. Do NOT try to rush."
                     else:
                         iter_msg += "Proceed efficiently."
-                    iter_msg += "<system-reminder>"
+                    iter_msg += "</system-reminder>"
                     
                     # Append as a temporary system message for this request only
                     request_messages.append({"role": "system", "content": iter_msg})
@@ -1075,6 +1113,7 @@ Here is some useful information about the environment you are running in:
                     try:
                         # 防御：清理可能含非法 JSON 的 tool_calls
                         request_messages = self._sanitize_messages_for_api(request_messages)
+                        _resp_started = time.monotonic()
                         response_stream = self._create_completion_stream(request_messages, iter_tools)
 
                         for chunk in response_stream:
@@ -1082,6 +1121,30 @@ Here is some useful information about the environment you are running in:
                             # 停止检查：chat_stop 置位后立即断开，不再消费流
                             if _is_cancelled():
                                 _close_stream(response_stream)
+                                return
+
+                            # 单次响应墙钟上限：防止模型"边想边流"永远不结束
+                            if (self.response_timeout_seconds > 0
+                                    and (time.monotonic() - _resp_started) > self.response_timeout_seconds):
+                                _close_stream(response_stream)
+                                logger.error(
+                                    "[AI-Timeout] 单次响应超过 %.0fs，强制结束本轮（已输出 %d 字符）",
+                                    self.response_timeout_seconds, len(current_response_content),
+                                )
+                                if current_response_content:
+                                    try:
+                                        self.memory.add_message(
+                                            "assistant", current_response_content, id=ai_msg_id
+                                        )
+                                    except Exception:
+                                        logger.warning("[AI-Timeout] 保存部分输出失败", exc_info=True)
+                                yield {
+                                    "type": "warning",
+                                    "data": (
+                                        f"模型单次响应超过 {int(self.response_timeout_seconds)} 秒，"
+                                        f"已强制结束本轮以避免无限思考/输出。"
+                                    ),
+                                }
                                 return
 
                             # 结束判断
@@ -1204,6 +1267,28 @@ Here is some useful information about the environment you are running in:
                 if current_reasoning_content:
                     full_reasoning_content = current_reasoning_content
 
+                # 重复内容熔断：有工具调用的轮次里连续输出完全相同的内容 → 幻觉死循环
+                _content_sig = (current_response_content or "").strip()
+                if tool_call_chunks and _content_sig and len(_content_sig) >= 80:
+                    if _content_sig == self._repeat_content:
+                        self._repeat_content_streak += 1
+                    else:
+                        self._repeat_content = _content_sig
+                        self._repeat_content_streak = 1
+                    if self._repeat_content_streak >= self.repeat_limit:
+                        logger.error(
+                            "[AI-Loop] 连续 %d 轮输出完全相同内容，熔断结束本轮",
+                            self._repeat_content_streak,
+                        )
+                        yield {
+                            "type": "warning",
+                            "data": "检测到模型连续多轮重复相同内容，已停止以避免无限循环。",
+                        }
+                        return
+                else:
+                    self._repeat_content = None
+                    self._repeat_content_streak = 0
+
                 # 如果没有工具调用，结束循环
                 if not tool_call_chunks:
                     # 结束前先等后台任务：工具转后台后模型往往"无话可说"直接结束，
@@ -1289,6 +1374,31 @@ Here is some useful information about the environment you are running in:
                         "function": tc["function"]
                     })
                 
+                # 重复工具调用熔断：连续多轮发起完全相同的调用 → 幻觉死循环
+                _tool_sig = tuple(sorted(
+                    (tc["function"].get("name", ""), tc["function"].get("arguments", ""))
+                    for tc in assistant_msg_kwargs["tool_calls"]
+                ))
+                _tool_names = {tc["function"].get("name", "") for tc in assistant_msg_kwargs["tool_calls"]}
+                if _tool_names & self._repeat_exempt_tools:
+                    _tool_sig = ()
+                if _tool_sig and _tool_sig == self._repeat_tool_sig:
+                    self._repeat_tool_streak += 1
+                else:
+                    self._repeat_tool_sig = _tool_sig or None
+                    self._repeat_tool_streak = 1 if _tool_sig else 0
+                if _tool_sig and self._repeat_tool_streak >= self.repeat_limit:
+                    logger.error(
+                        "[AI-Loop] 连续 %d 轮完全相同的工具调用，熔断结束本轮: %s",
+                        self._repeat_tool_streak,
+                        ", ".join(tc["function"].get("name", "") for tc in assistant_msg_kwargs["tool_calls"]),
+                    )
+                    yield {
+                        "type": "warning",
+                        "data": "检测到模型连续多轮发起完全相同的工具调用，已停止以避免无限循环。",
+                    }
+                    return
+
                 # 保存助手工具调用消息
                 if current_reasoning_content:
                     assistant_msg_kwargs["reasoning_content"] = current_reasoning_content
