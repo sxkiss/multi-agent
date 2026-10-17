@@ -1696,24 +1696,32 @@ Here is some useful information about the environment you are running in:
     #   - 畸形闭合（带特殊 token 前缀）：<invoke ...>...</｜U2｜invoke>
     #   - 完全不闭合（漏 </invoke>）
     # 任一种都要求框架能：1) 解析出工具调用；2) 剥离文本防污染。
-    # 兼容策略：标签名前面允许插入 `｜...｜` 这类特殊 token（模型退化产物，
-    # 形如 `<｜U2｜parameter ...>` / `</｜U2｜parameter>` / `</｜U2｜invoke>`）。
-    _TAG_PREFIX = r"(?:\｜[^\s\>]*?)?"
-    _INVOKE_RE = re.compile(r"<invoke\b[^>]*>.*?</invoke" + _TAG_PREFIX + r">", re.DOTALL)
+    # 容错正则（2026-10-17 修复）：模型（尤其 GLM/自研系）在长会话中会把工具调用
+    # 写成 Claude Code 风格的 invoke 文本而非标准 function_call。不同上游/模型注入的
+    # 工具调用 token 前缀不固定（如标准 `<invoke>`、agnes 的 `｜U2｜invoke`、甚至裸
+    # `invoke`），**不能硬编码前缀**——这里按「标签名」匹配而非「前缀」匹配：
+    #   - 开标签：任意字符（含空/特殊 token）后跟 `invoke` / `tool_calls`
+    #   - 参数标签：任意前缀后跟 `parameter` + name 属性
+    #   - 闭合标签：任意前缀后跟 `/invoke` / `/parameter`
+    # 这样既兼容 `｜U2｜invoke` 也兼容未来任何前缀变体，换模型/网关不会失效。
+    # 标签名边界用 [^\s\>\/] 限制，避免把正文里的 invoke 单词误判（需带 > 或空白后跟属性）。
+    _OPEN_TAG = r"(?:<)?(?:[^\s<>]*?)(?:invoke|tool_calls)\b"
+    _PARAM_OPEN_TAG = r"(?:<)?(?:[^\s<>]*?)parameter\b"
+    _INVOKE_RE = re.compile(r"[<]?[^\s<>/]*?invoke\b[^>]*>.*?<\/[^\s<>]*?invoke\b[^>]*>", re.DOTALL)
     _INVOKE_OPEN_RE = re.compile(
-        r'<invoke\b[^>]*>(?:(?!<invoke\b).)*',
+        r"[^\s<>]*?invoke\b[^>]*>(?:(?![^\s<>]*?invoke\b).)*",
         re.DOTALL,
     )
-    _INVOKE_NAME_RE = re.compile(r'<invoke\b[^>]*\bname\s*=\s*"([^"]+)"', re.DOTALL)
-    # 参数：标准闭合 + 畸形闭合（标签名前可穿插特殊 token）
+    _INVOKE_NAME_RE = re.compile(r"[^\s<>]*?invoke\b[^>]*\bname\s*=\s*\"([^\"]+)\"", re.DOTALL)
+    # 参数：开标签任意前缀 + `parameter` + name；闭合标签任意前缀 + `/parameter`
     _PARAM_RE = re.compile(
-        r'<parameter' + _TAG_PREFIX + r'\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</parameter' + _TAG_PREFIX + r'>',
+        r"[^\s<>]*?parameter\b[^>]*\bname\s*=\s*\"([^\"]+)\"[^>]*>(.*?)<\/?[^\s<>]*?parameter\b[^>]*>",
         re.DOTALL,
     )
     # 不闭合的 <invoke> 块里，<parameter> 可能也漏掉闭合标签（模型模仿退化）。
-    # 此时退化为「<parameter name="x"> 之后到下一个 <parameter / <invoke / 文本结尾」。
+    # 退化为「parameter name="x"> 之后到下一个 parameter / invoke / 文本结尾」。
     _PARAM_OPEN_RE = re.compile(
-        r'<parameter' + _TAG_PREFIX + r'\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(?:(?!</parameter|<parameter\b|<invoke\b).)*',
+        r"[^\s<>]*?parameter\b[^>]*\bname\s*=\s*\"([^\"]+)\"[^>]*>(?:(?!<\/?[^\s<>]*?parameter\b|<[^\s<>]*?invoke\b).)*",
         re.DOTALL,
     )
 
@@ -1732,6 +1740,8 @@ Here is some useful information about the environment you are running in:
             out = Agent._INVOKE_RE.sub("", text)
             # 再剥离不闭合块
             out = Agent._INVOKE_OPEN_RE.sub("", out)
+            # 清除残留的孤立容器标签（如 ｜U2｜tool_calls> 包裹层，无实际调用块）
+            out = re.sub(r"[^\s<>]*?tool_calls\b[^>]*>\s*", "", out)
             return out
 
         if isinstance(content, str):

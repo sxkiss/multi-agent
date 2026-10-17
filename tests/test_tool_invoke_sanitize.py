@@ -60,6 +60,35 @@ class ParseInvokeToolCallsTest(unittest.TestCase):
     def test_no_invoke(self):
         self.assertEqual(Agent._parse_invoke_tool_calls("普通文本，无工具调用"), [])
 
+    def test_arbitrary_prefix_invoke(self):
+        """不硬编码任何前缀：模型学来的任意前缀（｜U2｜ / 裸 / 标准）都能解析。
+        验证框架对上游 token 前缀变化鲁棒（换模型/网关不失效）。"""
+        # agnes 风格前缀
+        u2 = (
+            '｜U2｜invoke name="Bash">\n'
+            '｜U2｜parameter name="command" string="true">echo hi</｜U2｜parameter>\n'
+            '</｜U2｜invoke>'
+        )
+        self.assertEqual(Agent._parse_invoke_tool_calls(u2), [("Bash", {"command": "echo hi"})])
+        # 裸前缀（无尖括号、无特殊 token）
+        bare = 'invoke name="Read">\nparameter name="file_path">/tmp/x</parameter>'
+        tcs = Agent._parse_invoke_tool_calls(bare)
+        self.assertEqual(tcs[0][0], "Read")
+        self.assertEqual(tcs[0][1].get("file_path"), "/tmp/x")
+
+    def test_strip_arbitrary_prefix(self):
+        """任意前缀的 <invoke> 文本都能被剥离（防污染）。"""
+        u2 = (
+            '让我执行命令。\n'
+            '｜U2｜invoke name="Bash">\n'
+            '｜U2｜parameter name="command" string="true">echo hi</｜U2｜parameter>\n'
+            '</｜U2｜invoke>\n收尾'
+        )
+        cleaned = Agent._strip_invoke_blocks(u2)
+        self.assertNotIn("invoke", cleaned)
+        self.assertIn("让我执行命令。", cleaned)
+        self.assertIn("收尾", cleaned)
+
     def test_unclosed_invoke(self):
         """不闭合的 <invoke> 块（模型模仿退化，漏掉 </invoke>）也能解析。"""
         content = (
