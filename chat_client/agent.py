@@ -1906,7 +1906,6 @@ Here is some useful information about the environment you are running in:
         # 限制单条消息的最大长度，防止上下文爆炸(413 错误)
         MAX_CONTENT_LEN = 50000  # 单条消息最大字符数
         TOOL_OUTPUT_MAX_LEN = 2000  # 工具输出最大字符数（参考 opencode）
-        KEEP_RECENT_TURNS = 4  # 保留最近的消息数量
 
         def _truncate_content(content):
             """截断过长的消息内容，避免 413 Payload Too Large"""
@@ -1988,14 +1987,14 @@ Here is some useful information about the environment you are running in:
                         f"(window {window_tokens} / budget {budget_tokens} tokens，"
                         f"完整历史 {full_history_tokens}，第 {self._compress_round + 1} 轮)，执行自动压缩..."
                     )
-                    # 安全切割：cut 点对齐到 user 轮次边界，保证工具调用序列完整
-                    if len(full_history) > KEEP_RECENT_TURNS:
-                        safe_cut = len(full_history) - KEEP_RECENT_TURNS
-                        cut_idx = 0
-                        for i in range(safe_cut, -1, -1):
-                            if full_history[i].get("role") == "user":
-                                cut_idx = i
-                                break
+                    # 切割点 = 当前 user 消息之前。
+                    # 当前 user 消息是本轮问题，必须保留给模型；其余历史全部进摘要。
+                    cut_idx = 0
+                    for i in range(len(full_history) - 1, -1, -1):
+                        if full_history[i].get("role") == "user":
+                            cut_idx = i
+                            break
+                    if cut_idx > 0:
                         # 核心修正：压缩起点 = 最后一个摘要之后，而不是历史开头！
                         # 旧代码 full_history[:cut_idx] 会把已压缩过的旧部分
                         # （连同旧摘要本身）反复塞进新一轮摘要输入，
@@ -2020,7 +2019,7 @@ Here is some useful information about the environment you are running in:
                             # 排查时无法区分"压缩了但没记"和"压根没压"。
                             logger.info(
                                 f"跳过压缩：无可压缩增量（start_idx={start_idx} == cut_idx={cut_idx}），"
-                                f"最近 {KEEP_RECENT_TURNS} 条内无新 user 轮次"
+                                f"当前 user 消息之前没有新内容"
                             )
                         else:
                             # 构建摘要输入（工具输出截断，总量限制）
@@ -2051,39 +2050,44 @@ Here is some useful information about the environment you are running in:
                                 early_text.append(f"{role}: {content}")
 
                             joined_text = chr(10).join(early_text)
-                            SUMMARY_SRC_LEN = 8000
-                            if len(joined_text) > SUMMARY_SRC_LEN:
-                                # 最新对话优先：超过上限时保尾（最新），头部保留一点点背景
-                                joined_keep = (
-                                    joined_text[:1200]
-                                    + f"\n\n……[中间 {len(joined_text)-SUMMARY_SRC_LEN} 字符已省略，优先保留最新对话]……\n\n"
-                                    + joined_text[-(SUMMARY_SRC_LEN - 1200):]
-                                )
-                            else:
-                                joined_keep = joined_text
 
-                            summary_prompt = (
-                                "请基于【上一轮摘要】与【本轮新增对话】，生成一份合并后的最新摘要（承接旧摘要，融合新进展），帮助继续后续对话。\n"
-                                "重点关注以下信息：\n"
-                                "- 已完成的工作（含上轮摘要中尚未完成、现已完成的）\n"
-                                "- 当前正在进行的工作（**必须包含最新对话中正在做的事**）\n"
-                                "- 涉及的文件和代码\n"
-                                "- 下一步计划\n"
-                                "- 已确认的事实和决策\n"
-                                "- 未完成的任务\n\n"
-                                "注意：只需返回合并后的最新摘要内容，不要任何寒暄或前缀；若没有上轮摘要就只概括本轮对话。\n\n"
-                                f"{('【上轮摘要】\n' + prev_summary_text + '\n\n') if prev_summary_text else ''}"
-                                f"【本轮新增对话】\n{joined_keep}"
-                            )
-                            
-                            try:
-                                summary_resp = self.client.chat.completions.create(
+                            def _build_summary_prompt(src_text: str) -> str:
+                                return (
+                                    "请基于【上一轮摘要】与【本轮新增对话】，生成一份合并后的最新摘要（承接旧摘要，融合新进展），帮助继续后续对话。\n"
+                                    "重点关注以下信息：\n"
+                                    "- 已完成的工作（含上轮摘要中尚未完成、现已完成的）\n"
+                                    "- 当前正在进行的工作（**必须包含最新对话中正在做的事**）\n"
+                                    "- 涉及的文件和代码\n"
+                                    "- 下一步计划\n"
+                                    "- 已确认的事实和决策\n"
+                                    "- 未完成的任务\n\n"
+                                    "注意：只需返回合并后的最新摘要内容，不要任何寒暄或前缀；若没有上轮摘要就只概括本轮对话。\n\n"
+                                    f"{('【上轮摘要】\n' + prev_summary_text + '\n\n') if prev_summary_text else ''}"
+                                    f"【本轮新增对话】\n{src_text}"
+                                )
+
+                            def _request_summary(src_text: str):
+                                return self.client.chat.completions.create(
                                     model=self.model_name,
-                                    messages=[{"role": "user", "content": summary_prompt}],
+                                    messages=[{"role": "user", "content": _build_summary_prompt(src_text)}],
                                     temperature=0.3,
                                     max_tokens=1000,
-                                    timeout=30  # 压缩是旁路调用：最多等 30s，失败即跳过，不让主请求陪等
+                                    # 全量输入可能较大，给足时间；可用 compress_timeout 覆盖
+                                    timeout=float(self.config.get("compress_timeout", 60))
                                 )
+
+                            def _is_context_overflow(err: Exception) -> bool:
+                                text = str(err).lower()
+                                return any(k in text for k in (
+                                    "context_length_exceeded", "maximum context length",
+                                    "prompt is too long", "input tokens exceed",
+                                    "too many tokens", "error code: 413",
+                                ))
+
+                            try:
+                                # 全量喂入：增量是上一轮滑动窗口的子集，上一轮主请求已成功，
+                                # 说明它必然在模型上下文内。仅当上游仍报超限时才降级截断重试。
+                                summary_resp = _request_summary(joined_text)
                                 _msg = summary_resp.choices[0].message
                                 summary_content = (_msg.content or "").strip()
                                 # thinking 模型常把全部输出放进 reasoning_content，content 为 None。
@@ -2094,8 +2098,32 @@ Here is some useful information about the environment you are running in:
                                         getattr(_msg, "reasoning_content", None) or ""
                                     ).strip()
                             except Exception as e:
-                                logger.warning(f"AI 摘要请求异常: {e}")
-                                summary_content = ""
+                                if _is_context_overflow(e) and len(joined_text) > 8000:
+                                    # 异常降级：上游仍报上下文超限时，保尾截断后重试一次。
+                                    # 正常路径不截断，避免丢信息。
+                                    logger.warning(
+                                        f"AI 摘要输入超上下文（{len(joined_text)} 字符），"
+                                        f"降级截断后重试一次"
+                                    )
+                                    joined_keep = (
+                                        joined_text[:1200]
+                                        + f"\n\n……[中间 {len(joined_text) - 8000} 字符已省略，优先保留最新对话]……\n\n"
+                                        + joined_text[-(8000 - 1200):]
+                                    )
+                                    try:
+                                        summary_resp = _request_summary(joined_keep)
+                                        _msg = summary_resp.choices[0].message
+                                        summary_content = (_msg.content or "").strip()
+                                        if not summary_content:
+                                            summary_content = (
+                                                getattr(_msg, "reasoning_content", None) or ""
+                                            ).strip()
+                                    except Exception as e2:
+                                        logger.warning(f"AI 摘要降级请求仍失败: {e2}")
+                                        summary_content = ""
+                                else:
+                                    logger.warning(f"AI 摘要请求异常: {e}")
+                                    summary_content = ""
                             
                             # 失败时直接跳过，不插入任何摘要标签
                             if not summary_content.strip():
