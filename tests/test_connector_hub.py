@@ -243,3 +243,195 @@ class TestCliInstall:
         for k in ("feishu-cli", "wecom-cli", "agently-cli", "obsidian-cli"):
             assert k in gw.EXTERNAL_CLI_KINDS
             assert gw.get_gateway_adapter(k) is not None
+
+
+# ── 回归：对齐 Octop builder 的 remote spec / 凭据归一化 ──────
+class TestOctopAlignment:
+    """本次修复的回归用例（此前 4 个真实缺陷）。"""
+
+    def test_remote_spec_tencent_docs_uses_openapi_path_and_auth_header(self):
+        """腾讯文档必须用 /openapi/mcp，token 放 Authorization 头（非 query）。"""
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("tencent-docs")
+        url, headers, transport = svc._remote_spec_for("tencent-docs", {"token": "T"}, e)
+        assert url == "https://docs.qq.com/openapi/mcp"
+        assert headers["Authorization"] == "T"
+        assert "token=" not in url
+        assert transport == "streamable_http"
+
+    def test_remote_spec_tencent_meeting_headers(self):
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("tencent-meeting")
+        url, headers, transport = svc._remote_spec_for("tencent-meeting", {"token": "T"}, e)
+        assert url == "https://mcp.meeting.tencent.com/mcp/wemeet-open/v1"
+        assert headers["X-Tencent-Meeting-Token"] == "T"
+        assert headers["X-Skill-Version"] == "v1.0.1"
+
+    def test_remote_spec_weiyun_normalizes_token(self):
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("tencent-weiyun")
+        _, headers, _ = svc._remote_spec_for(
+            "tencent-weiyun", {"token": "WyHeader: mcp_token=abc123"}, e
+        )
+        assert headers["WyHeader"] == "mcp_token=abc123"
+
+    def test_remote_spec_youdao_uses_sse_and_x_api_key(self):
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("youdao-note")
+        url, headers, transport = svc._remote_spec_for("youdao-note", {"token": "T"}, e)
+        assert transport == "sse"
+        assert headers["x-api-key"] == "T"
+
+    def test_custom_mcp_dify_uses_user_url(self):
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("dify")
+        spec = svc._remote_spec_for(
+            "dify", {"mcp_url": "https://dify.example.com/mcp/a/b"}, e
+        )
+        assert spec is not None
+        assert spec[0] == "https://dify.example.com/mcp/a/b"
+        assert spec[2] == "streamable_http"
+
+    def test_oauth2_remote_requires_access_token(self):
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("notion")
+        assert svc._remote_spec_for("notion", {}, e) is None
+        url, headers, transport = svc._remote_spec_for(
+            "notion", {"access_token": "AT"}, e
+        )
+        assert url == "https://mcp.notion.com/mcp"
+        assert headers["Authorization"] == "Bearer AT"
+        assert transport == "streamable_http"
+
+    def test_transport_normalization(self):
+        from connector_hub import connectors_service as svc
+        assert svc._normalize_transport("raw_http") == "streamable_http"
+        assert svc._normalize_transport(None) == "streamable_http"
+        assert svc._normalize_transport("sse") == "sse"
+        assert svc._normalize_transport("streamable_http") == "streamable_http"
+
+    def test_generate_spec_includes_headers(self):
+        """同步到 mcp/config.json 的条目必须带认证头，否则远端 401。"""
+        from connector_hub import connectors_service as svc
+        inst = {
+            "instance_id": "abc123",
+            "kind": "tencent-docs",
+            "name": "腾讯文档",
+            "enabled": True,
+            "creds_enc": svc.encrypt_credentials({"token": "T"}),
+        }
+        spec = svc.generate_mcp_spec(inst)
+        assert spec["url"] == "https://docs.qq.com/openapi/mcp"
+        assert spec["headers"]["Authorization"] == "T"
+
+    def test_gateway_internal_mcp_url_has_v2_prefix(self):
+        """gateway 的 internal MCP 必须指向真实挂载路径 /api/v2/connectors/internal/mcp。"""
+        from connector_hub import connectors_service as svc
+        inst = {
+            "instance_id": "g1",
+            "kind": "tencent-news",
+            "name": "腾讯新闻",
+            "enabled": True,
+            "creds_enc": svc.encrypt_credentials(
+                {"api_key": "k", "internal_token": "tok"}
+            ),
+        }
+        spec = svc.generate_mcp_spec(inst)
+        assert "/api/v2/connectors/internal/mcp/tencent-news/g1" in spec["url"]
+        assert "token=tok" in spec["url"]
+
+
+class TestCredentialNormalization:
+    def test_api_key_accepts_legacy_token_field(self):
+        """前端无 credential_fields 时兜底提交 token，需映射为 api_key。"""
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("tencent-news")
+        out = svc.normalize_credentials("tencent-news", e, {"token": "abc"})
+        assert out == {"api_key": "abc"}
+
+    def test_personal_token_keeps_token(self):
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("tencent-docs")
+        out = svc.normalize_credentials("tencent-docs", e, {"token": "abc"})
+        assert out == {"token": "abc"}
+
+    def test_imap_maps_email_password(self):
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("qq-mail")
+        out = svc.normalize_credentials(
+            "qq-mail", e, {"email": "a@qq.com", "password": "p"}
+        )
+        assert out["email"] == "a@qq.com" and out["password"] == "p"
+
+    def test_empty_api_key_raises(self):
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("tencent-news")
+        with pytest.raises(ValueError):
+            svc.normalize_credentials("tencent-news", e, {})
+
+
+class TestInternalMcpRoute:
+    def test_route_mounted_under_v2_prefix(self):
+        from connector_hub.connectors_api import router
+        paths = [r.path for r in router.routes]
+        assert "/api/v2/connectors/internal/mcp/{kind}/{instance_id}" in paths
+
+    def test_route_is_public_for_middleware(self):
+        """internal MCP 由路由内部校验 token，必须在鉴权白名单内。"""
+        import auth
+        assert auth.is_public("/api/v2/connectors/internal/mcp/tencent-news/x")
+
+
+class TestHttpMcpClientIntegration:
+    """回归：HTTP 连接器工具 schema 与调用分发（此前两处致命缺陷）。"""
+
+    def test_tool_schema_accepts_dict_form(self):
+        """amap_list_tools 返回 dict，不能按 SDK 对象取 .name。"""
+        from chat_client.mcp_client import _tool_schema_from_mcp
+        schema = _tool_schema_from_mcp({
+            "name": "search_news",
+            "description": "Search news",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "kw"}},
+                "required": ["query"],
+            },
+        })
+        assert schema["function"]["name"] == "search_news"
+        assert schema["function"]["parameters"]["required"] == ["query"]
+        assert schema["function"]["parameters"]["properties"]["query"]["description"] == "kw"
+
+    def test_tool_schema_accepts_object_form(self):
+        """SDK Tool 对象仍需兼容。"""
+        from chat_client.mcp_client import _tool_schema_from_mcp
+
+        class Tool:
+            name = "t1"
+            description = "d"
+            input_schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+
+        schema = _tool_schema_from_mcp(Tool())
+        assert schema["function"]["name"] == "t1"
+        assert "a" in schema["function"]["parameters"]["properties"]
+
+    def test_http_headers_are_forwarded(self):
+        """HttpMcpClient 必须保存并发送自定义认证头。"""
+        from connector_hub.http_mcp import HttpMcpClient
+        c = HttpMcpClient("https://example.com/mcp", headers={"Authorization": "T"})
+        assert c._headers == {"Authorization": "T"}
+
+    def test_call_tool_routes_http_servers_without_session(self):
+        """HTTP 连接器无 SDK session，call_tool 应走 amap_call 而非报未连接。"""
+        from chat_client.mcp_client import MCPClient
+        c = MCPClient()
+        c._tool_servers["fake_tool"] = "fake_server"
+        c._tool_servers_by_name["fake_server"] = {
+            "url": "http://127.0.0.1:1/mcp",
+            "token": None,
+            "transport": "streamable_http",
+            "headers": {},
+        }
+        out = c.call_tool("fake_tool", {})
+        # 不应是 "未连接"，而是真实发起请求后的连接错误
+        assert "未连接" not in out
+        assert "调用异常" in out or "失败" in out

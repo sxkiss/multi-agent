@@ -57,6 +57,7 @@ class HttpMcpClient:
         self.url = url.rstrip("/")
         self.transport = transport
         self._token = token
+        self._headers = headers or {}
         self._verify = verify
         self._timeout = timeout
         self._session_id: str | None = None
@@ -71,10 +72,9 @@ class HttpMcpClient:
         }
         if self._token:
             base["Authorization"] = f"Bearer {self._token}"
-        if headers:
-            base.update(headers)
+        if self._headers:
+            base.update(self._headers)
         self._client = httpx.AsyncClient(
-            base_url=self.url,
             headers=base,
             timeout=self._timeout,
             verify=self._verify,
@@ -104,7 +104,7 @@ class HttpMcpClient:
             payload["params"] = params
         to = _TIMEOUT_HANDSHAKE if handshake else self._timeout
         # SSE 传输用 GET 接收通道 + POST 发送；streamable 用 POST 同端点
-        resp = await self._client.post("/", json=payload, timeout=to)
+        resp = await self._client.post(self.url, json=payload, timeout=to)
         ctype = resp.headers.get("content-type", "")
         text = resp.text
         if "text/event-stream" in ctype:
@@ -137,7 +137,7 @@ class HttpMcpClient:
         # 发送 initialized 通知
         try:
             await self._client.post(
-                "/",
+                self.url,
                 json={"jsonrpc": "2.0", "method": "notifications/initialized"},
                 timeout=_TIMEOUT_HANDSHAKE,
             )
@@ -187,11 +187,23 @@ def _last_sse_data(text: str) -> str | None:
 
 
 # ── 便捷同步包装（供 service 层在线程池 / 同步路径调用）──────────
-async def amap_call(url: str, token: str | None, name: str, args: dict[str, Any], transport: str = "streamable_http") -> str:
-    async with HttpMcpClient(url, token=token, transport=transport) as c:
+async def amap_call(
+    url: str,
+    token: str | None,
+    name: str,
+    args: dict[str, Any],
+    transport: str = "streamable_http",
+    headers: dict[str, str] | None = None,
+) -> str:
+    async with HttpMcpClient(url, token=token, transport=transport, headers=headers) as c:
         return await c.call_tool(name, args)
 
 
-async def amap_list_tools(url: str, token: str | None, transport: str = "streamable_http") -> list[dict[str, Any]]:
-    async with HttpMcpClient(url, token=token, transport=transport) as c:
+async def amap_list_tools(
+    url: str,
+    token: str | None,
+    transport: str = "streamable_http",
+    headers: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    async with HttpMcpClient(url, token=token, transport=transport, headers=headers) as c:
         return await c.list_tools()

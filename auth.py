@@ -81,6 +81,11 @@ PUBLIC_PREFIX = (
     # 与 clawbot 同模式——白名单放行 + 接口内部校验，
     # 中间件放行不等于无鉴权，安全性由 v1_compat 内部校验保证。
     "/v1/",
+    # connector-hub gateway 连接器的内部 MCP 端点：由 MCP SDK 客户端调用，
+    # 只带 ?token=<internal_token>，无法携带用户 Bearer。与 /v1/ 同模式——
+    # 中间件放行，安全性由路由内部 verify_internal_token 校验保证。
+    "/api/internal/mcp",
+    "/api/v2/connectors/internal/mcp",
     "/favicon.png",
     "/static/",
     "/assets/",

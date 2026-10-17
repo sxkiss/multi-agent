@@ -18,11 +18,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Query, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 import public
 from connector_hub import connectors_catalog as cat
@@ -32,6 +33,13 @@ from connector_hub import connectors_service as svc
 logger = logging.getLogger("connector-hub-api")
 
 router = APIRouter(prefix="/api/v2/connectors", tags=["connectors"])
+
+
+async def _sse_keepalive():
+    """streamable_http 客户端初始化后保持 SSE 通道活跃。"""
+    yield "event: message\ndata: \n\n"
+    while True:
+        await asyncio.sleep(3600)
 
 
 async def _body(request: Request) -> dict[str, Any]:
@@ -132,7 +140,10 @@ async def api_delete_instance(instance_id: str):
 
 @router.post("/instances/{instance_id}/test")
 async def api_test_instance(instance_id: str):
-    res = svc.test_instance(instance_id)
+    # 在线程池里执行同步 test_instance，避免其内部 asyncio.run() 与
+    # uvicorn 的事件循环冲突（否则 remote 模式连接器测试报
+    # "asyncio.run() cannot be called from a running event loop"）。
+    res = await asyncio.to_thread(svc.test_instance, instance_id)
     return _ok(res) if res.get("ok") else _err(res.get("error", "测试失败"))
 
 
@@ -148,13 +159,21 @@ async def api_test_credentials(request: Request):
     try:
         if entry.mcp_mode == "remote":
             from connector_hub.http_mcp import amap_list_tools
-            url = svc._remote_url_for(kind, creds)
-            token = creds.get("token") or creds.get("api_key")
-            if not url:
-                return _err("无法从凭据推导 MCP URL")
-            import asyncio
-            tools = asyncio.run(amap_list_tools(url, token, entry.remote_transport))
-            return _ok({"ok": True, "tool_count": len(tools)})
+
+            def _probe_remote() -> int:
+                spec3 = svc._remote_spec_for(kind, creds, entry)
+                if not spec3:
+                    raise ValueError("无法从凭据推导 MCP 连接配置")
+                url, headers, transport = spec3
+                import asyncio as _asyncio
+                tools = _asyncio.run(
+                    amap_list_tools(url, None, transport, headers=headers)
+                )
+                return len(tools)
+
+            # 在线程池里执行，避免 asyncio.run 与 uvicorn 事件循环冲突
+            tool_count = await asyncio.to_thread(_probe_remote)
+            return _ok({"ok": True, "tool_count": tool_count})
         if cat.is_gateway_kind(kind):
             gw.probe_gateway_credentials(kind, creds)
             return _ok({"ok": True})
@@ -220,3 +239,41 @@ async def api_sync(request: Request):
     dry = bool(body.get("dry_run", False))
     res = svc.sync_to_mcp_config(dry_run=dry)
     return _ok(res, "已同步" if not dry else "试运行")
+
+
+# ── 内部 HTTP MCP 端点（gateway 连接器）────────────────────
+@router.post("/internal/mcp/{kind}/{instance_id}")
+async def api_internal_mcp(kind: str, instance_id: str, request: Request, token: str = Query(...)):
+    """gateway 连接器的本地 MCP 端点：校验 internal_token，处理 JSON-RPC。"""
+    from connector_hub.connectors_gateway import handle_mcp_request
+    creds = svc.verify_internal_token(instance_id, token)
+    if creds is None:
+        return _err("invalid internal token")
+    try:
+        body = await request.json()
+    except Exception:
+        return _err("invalid JSON body")
+    if not isinstance(body, dict):
+        return _err("expected JSON object")
+    method = str(body.get("method") or "")
+    if method == "notifications/initialized":
+        return Response(status_code=202)
+    resp = await asyncio.to_thread(
+        handle_mcp_request, kind=kind, creds=creds, body=body
+    )
+    if not resp:
+        return Response(status_code=202)
+    return JSONResponse(content=resp, headers={"content-type": "application/json"})
+
+
+@router.get("/internal/mcp/{kind}/{instance_id}")
+async def api_internal_mcp_get(kind: str, instance_id: str, token: str = Query(...)):
+    """SSE 长连接（streamable_http 客户端 initialize 后打开）。"""
+    creds = svc.verify_internal_token(instance_id, token)
+    if creds is None:
+        return _err("invalid internal token")
+    return StreamingResponse(
+        _sse_keepalive(),
+        media_type="text/event-stream",
+        headers={"cache-control": "no-cache", "connection": "keep-alive"},
+    )

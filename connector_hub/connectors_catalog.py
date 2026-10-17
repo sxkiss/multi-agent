@@ -75,7 +75,9 @@ class CatalogEntry:
     allowed_tools: tuple[str, ...] | None = None
     oauth_issuer: str | None = None
     mcp_url: str | None = None
+    oauth_resource: str | None = None
     oauth_scopes: str | None = None
+    mcp_user_agent: str | None = None
     credential_fields: tuple[CredentialField, ...] = ()
     remote_transport: str = "raw_http"
 
@@ -172,7 +174,9 @@ def _load() -> dict[str, CatalogEntry]:
             allowed_tools=tuple(c.get("allowed_tools", [])) or None,
             oauth_issuer=c.get("oauth_issuer"),
             mcp_url=c.get("mcp_url"),
+            oauth_resource=c.get("oauth_resource"),
             oauth_scopes=c.get("oauth_scopes"),
+            mcp_user_agent=c.get("mcp_user_agent"),
             credential_fields=_fields(c.get("credential_fields", [])),
             remote_transport=c.get("remote_transport", "raw_http"),
         )
