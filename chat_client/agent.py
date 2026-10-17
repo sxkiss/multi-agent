@@ -2047,6 +2047,11 @@ Here is some useful information about the environment you are running in:
                                     text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
                                     content = " ".join(text_parts)
                                 content = _truncate_tool_output(content)
+                                # 思考链也必须进摘要：thinking 模型的推理过程存在
+                                # reasoning_content 里，若丢弃，压缩后思考链上下文就断了。
+                                reasoning = m.get("reasoning_content")
+                                if isinstance(reasoning, str) and reasoning.strip():
+                                    content = (content + "\n" + reasoning) if content else reasoning
                                 early_text.append(f"{role}: {content}")
 
                             joined_text = chr(10).join(early_text)
