@@ -2039,19 +2039,36 @@ Here is some useful information about the environment you are running in:
                             if prev_summary_text:
                                 prev_summary_text = prev_summary_text.replace("[自动压缩的历史摘要]", "").strip()
 
+                            # 摘要只保留"对话主线"：user 输入 + assistant 最终答复/结论。
+                            # 思考链（reasoning_content）与工具原始输出（tool 结果）都不进摘要：
+                            # - 思考是达到结果的手段，压缩后无需保留，且 content 常为空、全在思考里，
+                            #   塞进去只会让摘要输入膨胀、摘要质量下降；
+                            # - 工具结果已由 _truncate_tool_output 截断仍可能很长（实测最长 39K），
+                            #   其价值已体现在后续轮次，原始输出仍保留在 sessions.json 可查。
                             early_text = []
                             for m in early_msgs:
                                 role = m.get("role", "unknown")
+                                if role == "tool":
+                                    continue  # 工具原始结果不进摘要
                                 content = m.get("content", "")
                                 if isinstance(content, list):
                                     text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
                                     content = " ".join(text_parts)
                                 content = _truncate_tool_output(content)
-                                # 思考链也必须进摘要：thinking 模型的推理过程存在
-                                # reasoning_content 里，若丢弃，压缩后思考链上下文就断了。
-                                reasoning = m.get("reasoning_content")
-                                if isinstance(reasoning, str) and reasoning.strip():
-                                    content = (content + "\n" + reasoning) if content else reasoning
+                                # thinking 模型的 assistant 消息 content 常为空，推理全在
+                                # reasoning_content。若该轮有工具调用，用"调用工具名"补上主线；
+                                # 真正答案出现在后续有 content 的轮次。
+                                if role == "assistant" and not (content or "").strip():
+                                    tc_names = [
+                                        ((tc or {}).get("function") or {}).get("name", "")
+                                        for tc in (m.get("tool_calls") or [])
+                                        if isinstance(tc, dict)
+                                    ]
+                                    tc_names = [n for n in tc_names if n]
+                                    if tc_names:
+                                        content = f"[调用工具: {', '.join(tc_names)}]"
+                                    else:
+                                        continue  # 无内容无工具的空轮次，直接跳过
                                 early_text.append(f"{role}: {content}")
 
                             joined_text = chr(10).join(early_text)
