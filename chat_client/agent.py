@@ -1056,8 +1056,6 @@ Here is some useful information about the environment you are running in:
                 
                 # 首次迭代（model 第一次回复）只传递用户指定工具；后续迭代使用全量工具
                 iter_tools = first_tools if iteration_count == 1 else tools
-                # 本轮是否检测到中文括号退化伪工具调用（在兜底解析分支中置位）
-                _degenerate_detected = False
 
                 # ---- 带自动重试的流式请求：断流 / 429 / 5xx 后重新请求 ----
                 # OpenAI SDK 的 max_retries 只覆盖建连阶段，不覆盖流式中途断开；
@@ -1194,29 +1192,11 @@ Here is some useful information about the environment you are running in:
                             logger.info("[AI-Retry] 等待重试期间任务被停止")
                             return
                         if yielded_content:
-                            # 续写模式：把已输出内容作为上下文附上，要求模型从中断处继续（前端按序拼接，不会重复）
-                            # 移除上一轮重试附加的续写上下文，避免重复堆叠
-                            # content 可能是多模态 list（[{"type":"text",...}]），直接
-                            # .startswith 会抛 AttributeError，导致重试逻辑自身崩溃、
-                            # 重试从未发生（异常在 except 块内，直接冒泡到最外层）。
-                            _last = request_messages[-1] if request_messages else None
-                            _last_c = _last.get("content", "") if isinstance(_last, dict) else ""
-                            if isinstance(_last_c, list):
-                                _last_c = " ".join(
-                                    p.get("text", "") for p in _last_c
-                                    if isinstance(p, dict) and p.get("type") == "text"
-                                )
-                            if request_messages and str(_last_c).startswith("[system-note]"):
-                                del request_messages[-2:]
-                            request_messages.append({"role": "assistant", "content": yielded_content})
-                            request_messages.append({"role": "system", "content":
-                                "[system-note] 上一次响应因网络异常被截断。请从上次中断处无缝继续输出剩余内容，"
-                                "不要重复任何已输出的文字，保持语气与格式连贯。"})
-                        else:
-                            # 尚无任何可见输出（或只有未执行的半截工具调用）→ 完全重新请求即可
-                            pass
-                        # 关键修复：sleep 后必须 continue 回到 while True 重新请求，
-                        # 否则会掉出 except 走"空响应->stop"分支，重试从未真正发生
+                            # 已推送过可见内容：断流后不再续写。参考标准版——已输出内容
+                            # 就是本轮结果，不把正文塞回请求让模型"继续"，否则模型重读
+                            # 已输出文字极易原样复述 → 「重复输出」。直接结束本轮。
+                            break
+                        # 尚无任何可见输出 → 完全重新请求（不携带任何正文，不会重复）
                         continue
                 # 如果这一轮有内容，累加到最终响应
                 if current_response_content:
@@ -1224,67 +1204,8 @@ Here is some useful information about the environment you are running in:
                 if current_reasoning_content:
                     full_reasoning_content = current_reasoning_content
 
-                # 兜底解析（2026-10-17）：模型未走标准 function_call，而是把工具调用
-                # 写成 <invoke> 文本（Claude Code 风格）时，解析为真实工具调用执行，
-                # 避免"只回文本不调工具"。同时剥离正文中的 <invoke> 块，防止历史污染。
-                if not tool_call_chunks and current_response_content:
-                    try:
-                        _invoke_tcs = self._parse_invoke_tool_calls(current_response_content)
-                    except Exception:
-                        _invoke_tcs = []
-                    # 区分：正常 <invoke>（有结构化参数，可执行） vs 中文括号退化伪调用
-                    _degenerate_tcs = [t for t in _invoke_tcs if t[1].get("__degenerate__")]
-                    _invoke_tcs = [t for t in _invoke_tcs if not t[1].get("__degenerate__")]
-                    if _degenerate_tcs:
-                        # 模型退化：把工具调用写成「（执行 X）自然语言指令...」且整段重复。
-                        # 直接执行不可行（自然语言非结构化参数），但必须剥离该文字并阻断
-                        # 历史污染（否则模型下一轮看到自己写的描述又输出一遍 → 重复循环）。
-                        logger.warning(
-                            "[ToolInvoke] 检测到 %d 个中文括号退化伪工具调用（不执行，引导标准调用）: %s",
-                            len(_degenerate_tcs), [t[0] for t in _degenerate_tcs],
-                        )
-                        current_response_content = self._strip_invoke_blocks(current_response_content)
-                        full_response_content = current_response_content
-                        # 标记本轮存在退化输出：后续若仍无标准 tool_call，注入引导而非静默结束
-                        _degenerate_detected = True
-                    if _invoke_tcs:
-                        logger.warning(
-                            "[ToolInvoke] 检测到 %d 个 <invoke> 文本工具调用，已转标准工具执行: %s",
-                            len(_invoke_tcs), [t[0] for t in _invoke_tcs],
-                        )
-                        current_response_content = self._strip_invoke_blocks(current_response_content)
-                        full_response_content = current_response_content
-                        tool_call_chunks = {}
-                        for _i, (_nm, _args) in enumerate(_invoke_tcs):
-                            tool_call_chunks[_i] = {
-                                "id": f"invoke_{_i}",
-                                "function": {
-                                    "name": _nm,
-                                    "arguments": json.dumps(_args, ensure_ascii=False),
-                                },
-                            }
-
                 # 如果没有工具调用，结束循环
                 if not tool_call_chunks:
-                    # 中文括号退化输出：模型把工具调用写成「（执行 X）...」而非标准
-                    # function_call。剥离后若本轮没有可执行的标准工具调用，注入引导让
-                    # 模型改用标准 function_call 再走一轮（只引导一次；若再次退化则
-                    # 退出循环，避免无限重试）。
-                    if _degenerate_detected and iteration_count < self.max_tool_iterations:
-                        logger.warning(
-                            "[ToolInvoke] 检测到退化伪工具调用且无标准 tool_call，注入引导重试"
-                        )
-                        messages.append({
-                            "role": "system",
-                            "content": (
-                                "<system-reminder>检测到你把工具调用写成了「（执行 工具名）自然语言描述」"
-                                "的文本形式。BT 无法执行这种文字描述。请改用标准函数调用（function_call）"
-                                "格式：直接发起对应的工具调用，把具体命令/参数填入工具参数中，"
-                                "不要再输出任何「执行 XX」的文字前缀。若无需工具则直接给出最终结论。</system-reminder>"
-                            ),
-                        })
-                        continue
-
                     # 结束前先等后台任务：工具转后台后模型往往"无话可说"直接结束，
                     # 若此时任务还在跑就 break，结果通知只推 SSE、进不了上下文，
                     # 模型永远拿不到——后台任务就成了黑盒，只能靠用户追问触发轮询。
@@ -1372,12 +1293,8 @@ Here is some useful information about the environment you are running in:
                 if current_reasoning_content:
                     assistant_msg_kwargs["reasoning_content"] = current_reasoning_content
 
-                # 源头防污染（2026-10-17）：保存历史前剥离 <invoke> 文本。
-                # 旧实现只在「发送前」清洗内存副本，memory 里仍残留 <invoke>，
-                # 后续请求（尤其续聊/恢复会话）会再次看到并持续模仿。
-                # 这里对字符串/list 内容统一剥离，从源头阻断污染循环。
-                _saved_content = Agent._strip_invoke_blocks(current_response_content)
-                self.memory.add_message("assistant", _saved_content, id=ai_msg_id, **assistant_msg_kwargs)
+                # 保存助手工具调用消息（模型输出什么就存什么）
+                self.memory.add_message("assistant", current_response_content, id=ai_msg_id, **assistant_msg_kwargs)
 
                 messages.append({
                     "role": "assistant",
@@ -1630,10 +1547,9 @@ Here is some useful information about the environment you are running in:
                      kwargs["reasoning_content"] = full_reasoning_content
                  
                  # 使用预生成的 ai_msg_id
-                 # 源头防污染：保存历史前剥离 <invoke> 文本（同上）
                  ai_msg = self.memory.add_message(
                      "assistant",
-                     Agent._strip_invoke_blocks(full_response_content),
+                     full_response_content,
                      id=ai_msg_id,
                      **kwargs,
                  )
@@ -1712,170 +1628,6 @@ Here is some useful information about the environment you are running in:
                 "content": content_structure,
             })
 
-    # ── 防伪工具调用污染（2026-10-17）────────────────────────────
-    # 现象：模型（尤其 GLM/自研系）在长会话/特定任务下会偶尔把工具调用写成
-    # Claude Code 风格的 <invoke name="..."> 文本而非标准 function_call。
-    # BT 不解析 <invoke> 文本，导致工具"只回文本不调用"；且历史里的 <invoke>
-    # 会诱导模型持续模仿，形成污染循环。
-    # 对策：
-    #   1. _strip_invoke_blocks：清洗历史里混入的 <invoke> 伪工具调用文本，
-    #      阻止模型自模仿（发给上游前调用）。
-    #   2. _parse_invoke_tool_calls：当模型输出正文里出现 <invoke> 时，
-    #      解析为真实工具调用并执行（兜底，避免工具静默失效）。
-    # 容错正则（2026-10-17 修复）：同时匹配「闭合」与「不闭合」的 <invoke> 块。
-    # 旧版 `.*?</invoke>` 要求闭合标签，但模型模仿历史时会输出畸形标签：
-    #   - 标准闭合：<invoke ...>...</invoke>
-    #   - 畸形闭合（带特殊 token 前缀）：<invoke ...>...</｜U2｜invoke>
-    #   - 完全不闭合（漏 </invoke>）
-    # 任一种都要求框架能：1) 解析出工具调用；2) 剥离文本防污染。
-    # 容错正则（2026-10-17 修复）：模型（尤其 GLM/自研系）在长会话中会把工具调用
-    # 写成 Claude Code 风格的 invoke 文本而非标准 function_call。不同上游/模型注入的
-    # 工具调用 token 前缀不固定（如标准 `<invoke>`、agnes 的 `｜U2｜invoke`、甚至裸
-    # `invoke`），**不能硬编码前缀**——这里按「标签名」匹配而非「前缀」匹配：
-    #   - 开标签：任意字符（含空/特殊 token）后跟 `invoke` / `tool_calls`
-    #   - 参数标签：任意前缀后跟 `parameter` + name 属性
-    #   - 闭合标签：任意前缀后跟 `/invoke` / `/parameter`
-    # 这样既兼容 `｜U2｜invoke` 也兼容未来任何前缀变体，换模型/网关不会失效。
-    # 标签名边界用 [^\s\>\/] 限制，避免把正文里的 invoke 单词误判（需带 > 或空白后跟属性）。
-    _OPEN_TAG = r"(?:<)?(?:[^\s<>]*?)(?:invoke|tool_calls)\b"
-    _PARAM_OPEN_TAG = r"(?:<)?(?:[^\s<>]*?)parameter\b"
-    _INVOKE_RE = re.compile(r"[<]?[^\s<>/]*?invoke\b[^>]*>.*?<\/[^\s<>]*?invoke\b[^>]*>", re.DOTALL)
-    _INVOKE_OPEN_RE = re.compile(
-        r"[^\s<>]*?invoke\b[^>]*>(?:(?![^\s<>]*?invoke\b).)*",
-        re.DOTALL,
-    )
-    _INVOKE_NAME_RE = re.compile(r"[^\s<>]*?invoke\b[^>]*\bname\s*=\s*\"([^\"]+)\"", re.DOTALL)
-    # 参数：开标签任意前缀 + `parameter` + name；闭合标签任意前缀 + `/parameter`
-    _PARAM_RE = re.compile(
-        r"[^\s<>]*?parameter\b[^>]*\bname\s*=\s*\"([^\"]+)\"[^>]*>(.*?)<\/?[^\s<>]*?parameter\b[^>]*>",
-        re.DOTALL,
-    )
-    # 不闭合的 <invoke> 块里，<parameter> 可能也漏掉闭合标签（模型模仿退化）。
-    # 退化为「parameter name="x"> 之后到下一个 parameter / invoke / 文本结尾」。
-    _PARAM_OPEN_RE = re.compile(
-        r"[^\s<>]*?parameter\b[^>]*\bname\s*=\s*\"([^\"]+)\"[^>]*>(?:(?!<\/?[^\s<>]*?parameter\b|<[^\s<>]*?invoke\b).)*",
-        re.DOTALL,
-    )
-
-    # ── 中文括号退化格式（2026-10-17 新增）─────────────────────────────
-    # 单ag 模式下，模型（尤其 GLM/自研系在长会话退化时）会把工具调用写成自然语言
-    # 描述而非标准 function_call，也不走 <invoke> 标签，而是中文括号伪调用：
-    #   「（执行 Bash）现在直接调用工具，不再输出文字。给现有 gateway 实例补
-    #     internal_token 并重同步。」（后面常整段重复十几遍 → 「重复输出」）
-    #   「[执行 Bash] 给现有实例补 internal_token」 半角变体也存在。
-    # 框架若不识别：① Bash 工具不执行；② 该文字进历史 → 模型下一轮看到自己写的
-    # 描述又输出一遍 → 死循环重复。故按【动作 + 自然语言指令】识别，剥离并引导
-    # 模型改用标准 function_call（不强行执行，因退化块无结构化合法参数）。
-    # 工具名：括号/方括号内 "执行 <工具名>"；指令：括号内之后到下一个退化块/结尾。
-    _DEGEN_EXEC_RE = re.compile(
-        r"[（(\[]\s*执行\s+([A-Za-z_][A-Za-z0-9_]*)\s*[）)\]]\s*"
-        r"(?:(?![（(\[]\s*执行\s+[A-Za-z_][A-Za-z0-9_]*\s*[）)\]]).)*",
-        re.DOTALL,
-    )
-
-    @staticmethod
-    def _strip_invoke_blocks(content: Any) -> Any:
-        """从文本/消息 content 中剥离 <invoke> 伪工具调用块。
-
-        只处理字符串 content 与 list[text 块]；其余原样返回。剥离后保留正文，
-        避免模型在历史里继续看到/模仿 <invoke> 文本格式。
-
-        兼容不闭合的 <invoke> 块（模型模仿退化漏掉 </invoke>）：闭合块优先，
-        未闭合的用 _INVOKE_OPEN_RE 匹配到「下一个 <invoke / 文本结尾」。
-        """
-        def _strip(text: str) -> str:
-            # 先剥离闭合块
-            out = Agent._INVOKE_RE.sub("", text)
-            # 再剥离不闭合块
-            out = Agent._INVOKE_OPEN_RE.sub("", out)
-            # 清除残留的孤立容器标签（如 ｜U2｜tool_calls> 包裹层，无实际调用块）
-            out = re.sub(r"[^\s<>]*?tool_calls\b[^>]*>\s*", "", out)
-            # 剥离中文括号退化格式「（执行 X）...」（防历史污染导致的重复循环）
-            out = Agent._DEGEN_EXEC_RE.sub("", out)
-            return out
-
-        if isinstance(content, str):
-            return _strip(content)
-        if isinstance(content, list):
-            out = []
-            for p in content:
-                if isinstance(p, dict):
-                    p = dict(p)
-                    if p.get("type") in ("text", "output_text", "input_text") and isinstance(p.get("text"), str):
-                        p["text"] = _strip(p["text"])
-                out.append(p)
-            return out
-        return content
-
-    @staticmethod
-    def _parse_invoke_tool_calls(content: str) -> list[tuple[str, dict[str, Any]]]:
-        """解析正文中混入的 <invoke name="X"> 文本工具调用。
-
-        返回 [(工具名, 参数字典), ...]；无 <invoke> 时返回空列表。
-        参数值会做 HTML 实体反转义（模型可能输出 &quot; &amp; 等）。
-
-        兼容「不闭合」的 <invoke> 块（模型模仿历史时漏掉 </invoke>）：
-        - <parameter name="x">v</parameter> 标准闭合形式
-        - <parameter name="x">v 后直接结束/遇到下一个标签（不闭合退化形式）
-        """
-        import html as _html
-        parsed: list[tuple[str, dict[str, Any]]] = []
-        seen_ranges: list[tuple[int, int]] = []
-
-        def _parse_block(blk: str) -> None:
-            name_m = Agent._INVOKE_NAME_RE.search(blk)
-            if not name_m:
-                return
-            name = _html.unescape(name_m.group(1).strip())
-            if not name:
-                return
-            args: dict[str, Any] = {}
-            # 标准闭合 <parameter> 优先
-            for pm in Agent._PARAM_RE.finditer(blk):
-                pname = _html.unescape(pm.group(1).strip())
-                pval = _html.unescape(pm.group(2).strip())
-                if pname:
-                    args[pname] = pval
-            # 若一个闭合参数都没有，尝试不闭合退化形式
-            if not args:
-                for pm in Agent._PARAM_OPEN_RE.finditer(blk):
-                    pname = _html.unescape(pm.group(1).strip())
-                    pval = _html.unescape(pm.group(2).strip())
-                    if pname:
-                        args[pname] = pval
-            parsed.append((name, args))
-
-        # 闭合块优先（非贪婪，不吞正文）
-        for m in Agent._INVOKE_RE.finditer(content or ""):
-            _parse_block(m.group(0))
-            seen_ranges.append(m.span())
-
-        # 不闭合块：跳过已被闭合块覆盖的区间
-        for m in Agent._INVOKE_OPEN_RE.finditer(content or ""):
-            start, end = m.span()
-            if any(s <= start and end <= e for s, e in seen_ranges):
-                continue
-            # 若与闭合块部分重叠（如不闭合块尾部被闭合块包含），跳过
-            if any(start < e and s < end for s, e in seen_ranges):
-                continue
-            _parse_block(m.group(0))
-            seen_ranges.append((start, end))
-
-        # 中文括号退化格式「（执行 X）指令...」：识别为伪工具调用（无结构化合法参数）。
-        # 标记 __degenerate__，主循环据此剥离 + 引导模型改用标准 function_call，
-        # 而不强行执行（自然语言指令无法直接映射成 Bash 等工具的合法参数）。
-        for m in Agent._DEGEN_EXEC_RE.finditer(content or ""):
-            block = m.group(0)
-            nm = re.search(r"[（(\[]\s*执行\s+([A-Za-z_][A-Za-z0-9_]*)\s*[）)\]]", block)
-            if not nm:
-                continue
-            instruction = block[nm.end():].strip()
-            parsed.append((nm.group(1).strip(), {
-                "__degenerate__": True,
-                "instruction": instruction,
-            }))
-
-        return parsed
 
     @staticmethod
     def _sanitize_messages_for_api(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1902,12 +1654,6 @@ Here is some useful information about the environment you are running in:
 
         for msg in messages:
             msg = dict(msg)
-
-            # 历史污染清洗（2026-10-17）：剥离 assistant 正文里混入的
-            # <invoke> 伪工具调用文本，阻止模型在历史中持续模仿该格式。
-            # 只处理 assistant 的正文；tool 消息（工具结果 XML）不动。
-            if msg.get("role") == "assistant" and msg.get("content"):
-                msg["content"] = Agent._strip_invoke_blocks(msg["content"])
 
             if "tool_calls" in msg:
                 clean_tcs = []
