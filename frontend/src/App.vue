@@ -13,6 +13,7 @@
       @delete-conversations="deleteConversations"
       @export-conversation="exportConversation"
       @open-settings="openSettingsDrawer"
+      @open-platform="openPlatformPanel"
       @toggle-fullscreen="toggleFullscreen"
     />
     <div class="chat-main-area">
@@ -1760,6 +1761,10 @@ function batchToggleTools(enabled) {
 function openSettingsDrawer() {
   settingsDrawerVisible.value = true
   loadTools()
+}
+
+function openPlatformPanel() {
+  window.open('/static/platform_panel.html', '_blank')
 }
 
 function closeSettingsDrawer() {

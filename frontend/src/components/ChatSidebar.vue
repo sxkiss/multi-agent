@@ -36,6 +36,15 @@
           </svg>
           全屏
         </button>
+        <button class="top-btn settings-btn" title="功能面板（通道/记忆/用量/浏览器）" @click="$emit('open-platform')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+            <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+            <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+            <rect x="14" y="14" width="7" height="7" rx="1"></rect>
+          </svg>
+          功能
+        </button>
         <button class="top-btn settings-btn" title="全局设置" @click="$emit('open-settings')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"></circle>
@@ -218,6 +227,7 @@ export default {
     'delete-conversations',
     'load-conversation',
     'open-settings',
+    'open-platform',
     'toggle-fullscreen',
     'export-conversation'
   ],

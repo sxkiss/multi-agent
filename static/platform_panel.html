@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>功能面板 · 通道 / 记忆 / 用量 / 浏览器</title>
+<link rel="icon" href="/favicon.png" />
+<style>
+  :root {
+    --bt-primary: #07c160; --bt-primary-dark: #06ad56; --bt-primary-soft: rgba(7,193,96,.10);
+    --bt-accent: #3b82f6; --bt-bg: #f6f7f9; --bt-surface: #fff; --bt-surface-2: #f9fafb;
+    --bt-border: #e8eaed; --bt-text: #1f2937; --bt-text-2: #6b7280; --bt-text-3: #9ca3af;
+    --bt-shadow-sm: 0 1px 2px rgba(16,24,40,.05); --bt-shadow: 0 4px 14px rgba(16,24,40,.08);
+    --bt-shadow-lg: 0 12px 40px rgba(16,24,40,.16); --bt-radius: 12px; --bt-radius-sm: 8px;
+    --bt-danger: #ef4444; --bt-warn: #f59e0b;
+    --bt-transition: .2s cubic-bezier(.4,0,.2,1);
+  }
+  html[data-theme="dark"] {
+    --bt-bg: #0f1115; --bt-surface: #171a21; --bt-surface-2: #1d2129; --bt-border: #2a2f3a;
+    --bt-text: #e5e7eb; --bt-text-2: #9ca3af; --bt-text-3: #6b7280;
+    --bt-primary-soft: rgba(7,193,96,.16);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', Roboto, sans-serif;
+    background: var(--bt-bg); color: var(--bt-text); line-height: 1.6; min-height: 100vh;
+    transition: background var(--bt-transition), color var(--bt-transition);
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
+  header.top { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+  header.top .logo {
+    width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, var(--bt-primary), #10b981);
+    display: flex; align-items: center; justify-content: center; color: #fff; font-size: 20px; flex: none;
+  }
+  header.top h1 { font-size: 22px; font-weight: 700; }
+  header.top .sub { color: var(--bt-text-2); font-size: 13px; }
+  .spacer { flex: 1; }
+  .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--bt-border); margin-bottom: 20px; flex-wrap: wrap; }
+  .tab {
+    padding: 10px 18px; border: none; background: transparent; color: var(--bt-text-2);
+    font-size: 14px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .tab.active { color: var(--bt-primary); border-bottom-color: var(--bt-primary); }
+  .tab:hover { color: var(--bt-text); }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .card {
+    background: var(--bt-surface); border: 1px solid var(--bt-border); border-radius: var(--bt-radius);
+    padding: 16px; margin-bottom: 14px; box-shadow: var(--bt-shadow-sm);
+  }
+  .card h3 { font-size: 15px; margin-bottom: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .ch-card {
+    background: var(--bt-surface); border: 1px solid var(--bt-border); border-radius: var(--bt-radius);
+    padding: 14px; box-shadow: var(--bt-shadow-sm);
+  }
+  .ch-card .hd { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .ch-card .nm { font-weight: 700; font-size: 14px; }
+  .ch-card .note { color: var(--bt-text-3); font-size: 12px; margin-bottom: 8px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge.ok { background: rgba(7,193,96,.15); color: var(--bt-primary); }
+  .badge.no { background: rgba(239,68,68,.12); color: var(--bt-danger); }
+  .badge.run { background: rgba(59,130,246,.15); color: var(--bt-accent); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .btn {
+    border: 1px solid var(--bt-border); background: var(--bt-surface); color: var(--bt-text);
+    padding: 6px 12px; border-radius: 8px; font-size: 12.5px; cursor: pointer; transition: all .15s;
+  }
+  .btn:hover { border-color: var(--bt-primary); color: var(--bt-primary); }
+  .btn.pri { background: var(--bt-primary); color: #fff; border-color: var(--bt-primary); }
+  .btn.pri:hover { background: var(--bt-primary-dark); color: #fff; }
+  .btn.danger:hover { border-color: var(--bt-danger); color: var(--bt-danger); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  input, textarea, select {
+    width: 100%; padding: 7px 10px; border: 1px solid var(--bt-border); border-radius: 8px;
+    background: var(--bt-surface-2); color: var(--bt-text); font-size: 13px; margin-bottom: 8px;
+  }
+  textarea { min-height: 60px; resize: vertical; }
+  label { font-size: 12px; color: var(--bt-text-2); display: block; margin-bottom: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--bt-border); }
+  th { color: var(--bt-text-2); font-weight: 600; font-size: 12px; }
+  .stat { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: 10px; margin-bottom: 16px; }
+  .stat .item { background: var(--bt-surface); border: 1px solid var(--bt-border); border-radius: var(--bt-radius); padding: 12px; text-align: center; }
+  .stat .num { font-size: 22px; font-weight: 700; color: var(--bt-primary); }
+  .stat .lbl { font-size: 12px; color: var(--bt-text-2); }
+  .empty { text-align: center; color: var(--bt-text-3); padding: 30px; font-size: 13px; }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #111827; color: #fff;
+    padding: 10px 20px; border-radius: 8px; font-size: 13px; opacity: 0; pointer-events: none;
+    transition: opacity .25s; z-index: 999; max-width: 80vw;
+  }
+  .toast.show { opacity: 1; }
+  .toast.err { background: var(--bt-danger); }
+  a.link { color: var(--bt-accent); text-decoration: none; font-size: 13px; }
+  a.link:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="logo">🧩</div>
+    <div>
+      <h1>功能面板</h1>
+      <div class="sub">多平台通道 · 增强记忆 · 用量统计 · 浏览器</div>
+    </div>
+    <div class="spacer"></div>
+    <a class="link" href="/browser" target="_blank">打开浏览器控制台 →</a>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="gateway" onclick="switchTab('gateway')">📡 通道</button>
+    <button class="tab" data-tab="memory" onclick="switchTab('memory')">🧠 记忆</button>
+    <button class="tab" data-tab="usage" onclick="switchTab('usage')">📊 用量</button>
+  </div>
+
+  <div id="tab-gateway" class="panel active"></div>
+  <div id="tab-memory" class="panel"></div>
+  <div id="tab-usage" class="panel"></div>
+</div>
+<div id="toast" class="toast"></div>
+<script src="/static/js/panel-auth.js"></script>
+
+<script>
+(function () {
+  'use strict'
+  var API = '/api/v2'
+  var AF = (window.PanelAuth && window.PanelAuth.authFetch) ? window.PanelAuth.authFetch : window.fetch
+  var AOPTS = (window.PanelAuth && window.PanelAuth.authOpts) ? window.PanelAuth.authOpts : function (o) { return o || {} }
+
+  function toast(msg, type) {
+    var t = document.getElementById('toast')
+    t.textContent = msg
+    t.className = 'toast show ' + (type === 'err' ? 'err' : '')
+    clearTimeout(t._tm)
+    t._tm = setTimeout(function () { t.className = 'toast' }, 2600)
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] })
+  }
+  function $(id) { return document.getElementById(id) }
+  async function api(path, opts) {
+    var r = await AF(API + path, AOPTS(opts || {}))
+    return r.json()
+  }
+
+  // ── Tab 切换 ─────────────────────────────
+  window.switchTab = function (name) {
+    document.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t.dataset.tab === name) })
+    document.querySelectorAll('.panel').forEach(function (p) { p.classList.toggle('active', p.id === 'tab-' + name) })
+  }
+
+  // ── Gateway 通道 ─────────────────────────
+  var gatewayChannels = []
+  async function loadGateway() {
+    var el = $('tab-gateway')
+    try {
+      var res = await api('/gateway/channels')
+      if (!res.status) throw new Error(res.msg || '加载失败')
+      gatewayChannels = res.data.channels || []
+      renderGateway()
+    } catch (e) {
+      el.innerHTML = '<div class="card"><div class="empty">⚠️ ' + esc(e.message) + '</div></div>'
+    }
+  }
+  function renderGateway() {
+    var el = $('tab-gateway')
+    if (!gatewayChannels.length) { el.innerHTML = '<div class="card"><div class="empty">没有可用通道</div></div>'; return }
+    el.innerHTML = '<div class="grid">' + gatewayChannels.map(function (c) {
+      var cfgBadge = c.configured ? '<span class="badge ok">已配置</span>' : '<span class="badge no">未配置</span>'
+      var sdkBadge = c.sdk_installed ? '<span class="badge ok">SDK✓</span>' : '<span class="badge no">SDK 未装</span>'
+      var runBadge = c.running ? '<span class="badge run">运行中</span>' : ''
+      return '<div class="ch-card" data-kind="' + esc(c.kind) + '">' +
+        '<div class="hd"><div class="nm">' + esc(c.label) + '</div><div class="spacer"></div>' + cfgBadge + ' ' + sdkBadge + ' ' + runBadge + '</div>' +
+        '<div class="note">' + esc(c.note) + '</div>' +
+        '<div class="fields" id="fields-' + esc(c.kind) + '"></div>' +
+        '<div class="row">' +
+          '<button class="btn pri" onclick="gwStart(\'' + esc(c.kind) + '\')">启动</button>' +
+          '<button class="btn danger" onclick="gwStop(\'' + esc(c.kind) + '\')">停止</button>' +
+        '</div>' +
+      '</div>'
+    }).join('') + '</div>'
+    // 渲染每个平台的配置字段
+    gatewayChannels.forEach(function (c) {
+      var box = $('fields-' + c.kind)
+      if (!box) return
+      var saved = window.__gwSavedConfigs && window.__gwSavedConfigs[c.kind]
+      box.innerHTML = (c.config_fields || []).map(function (f) {
+        var val = (saved && saved[f.name]) || ''
+        return '<div><label>' + esc(f.name) + (f.required ? ' *' : '') + '</label>' +
+          '<input id="cfg-' + esc(c.kind) + '-' + esc(f.name) + '" value="' + esc(val) + '" placeholder="' + esc(f.name) + '"></div>'
+      }).join('') +
+      '<div class="row"><button class="btn" onclick="gwSaveConfig(\'' + esc(c.kind) + '\')">保存配置</button></div>'
+    })
+  }
+  window.__gwSavedConfigs = {}
+  window.gwSaveConfig = async function (kind) {
+    var c = gatewayChannels.find(function (x) { return x.kind === kind })
+    if (!c) return
+    var body = {}
+    ;(c.config_fields || []).forEach(function (f) {
+      var v = $('cfg-' + kind + '-' + f.name)
+      if (v) body[f.name] = v.value.trim()
+    })
+    try {
+      var res = await api('/gateway/channels/' + kind + '/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      if (!res.status) throw new Error(res.msg || '保存失败')
+      window.__gwSavedConfigs[kind] = body
+      toast('配置已保存')
+      loadGateway()
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.gwStart = async function (kind) {
+    try {
+      var res = await api('/gateway/channels/' + kind + '/start', { method: 'POST' })
+      if (!res.status) throw new Error(res.msg || '启动失败')
+      toast('通道已启动')
+      loadGateway()
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.gwStop = async function (kind) {
+    try {
+      var res = await api('/gateway/channels/' + kind + '/stop', { method: 'POST' })
+      if (!res.status) throw new Error(res.msg || '停止失败')
+      toast('通道已停止')
+      loadGateway()
+    } catch (e) { toast(e.message, 'err') }
+  }
+
+  // ── Memory 记忆 ─────────────────────────
+  var memData = { nodes: [], topics: {} }
+  async function loadMemory() {
+    var el = $('tab-memory')
+    try {
+      var res = await api('/memory/status')
+      if (!res.status) throw new Error(res.msg || '加载失败')
+      memData = res.data || {}
+      el.innerHTML =
+        '<div class="card">' +
+          '<h3>📝 新增记忆</h3>' +
+          '<label>内容</label><textarea id="memContent" placeholder="要记住的内容..."></textarea>' +
+          '<div class="row"><label style="flex:1">主题 <input id="memTopic" placeholder="如 project / address / user"></label>' +
+          '<button class="btn pri" onclick="memStore()">存储</button></div>' +
+        '</div>' +
+        '<div class="card"><h3>🔍 召回记忆</h3>' +
+          '<div class="row"><input id="memQuery" placeholder="输入关键词召回" style="flex:1">' +
+          '<button class="btn" onclick="memRecall()">召回</button></div>' +
+          '<div id="memRecallResult" class="empty">输入关键词查询</div>' +
+        '</div>' +
+        '<div class="card"><h3>🗂 记忆库（' + (memData.total_nodes || 0) + ' 条）</h3>' +
+          '<div class="row"><button class="btn" onclick="memExport()">导出</button>' +
+          '<button class="btn" onclick="memImport()">导入</button>' +
+          '<input type="file" id="memImportFile" style="display:none" accept=".json" onchange="memDoImport(event)"></div>' +
+          '<div id="memList" class="empty">加载中...</div>' +
+        '</div>'
+      renderMemList()
+    } catch (e) {
+      el.innerHTML = '<div class="card"><div class="empty">⚠️ ' + esc(e.message) + '</div></div>'
+    }
+  }
+  function renderMemList() {
+    var box = $('memList')
+    if (!box) return
+    if (!memData.nodes || !memData.nodes.length) { box.innerHTML = '<div class="empty">暂无记忆</div>'; return }
+    box.innerHTML = '<table><tr><th>内容</th><th>主题</th><th>操作</th></tr>' + memData.nodes.slice(0, 50).map(function (n) {
+      return '<tr><td>' + esc(n.content) + '</td><td>' + esc(n.topic || '-') + '</td>' +
+        '<td><button class="btn danger" onclick="memDelete(\'' + esc(n.id) + '\')">删</button></td></tr>'
+    }).join('') + '</table>'
+  }
+  window.memStore = async function () {
+    var content = $('memContent').value.trim()
+    var topic = $('memTopic').value.trim()
+    if (!content) { toast('请输入内容', 'err'); return }
+    try {
+      var res = await api('/memory/store', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: content, topic: topic || undefined }) })
+      if (!res.status) throw new Error(res.msg || '存储失败')
+      toast('已存储')
+      loadMemory()
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.memRecall = async function () {
+    var q = $('memQuery').value.trim()
+    var box = $('memRecallResult')
+    if (!q) { box.className = 'empty'; box.textContent = '输入关键词查询'; return }
+    try {
+      var res = await api('/memory/recall?query=' + encodeURIComponent(q) + '&limit=5')
+      if (!res.status) throw new Error(res.msg || '召回失败')
+      var nodes = res.data.nodes || []
+      box.className = ''
+      box.innerHTML = nodes.length
+        ? '<table><tr><th>内容</th><th>主题</th></tr>' + nodes.map(function (n) {
+            return '<tr><td>' + esc(n.content) + '</td><td>' + esc(n.topic || '-') + '</td></tr>'
+          }).join('') + '</table>'
+        : '<div class="empty">无结果</div>'
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.memDelete = async function (id) {
+    try {
+      var res = await api('/memory/delete/' + encodeURIComponent(id), { method: 'DELETE' })
+      if (!res.status) throw new Error(res.msg || '删除失败')
+      toast('已删除')
+      loadMemory()
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.memExport = async function () {
+    try {
+      var res = await api('/memory/export')
+      if (!res.status) throw new Error(res.msg || '导出失败')
+      var blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+      var a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'memory-export.json'
+      a.click()
+      URL.revokeObjectURL(a.href)
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.memImport = function () { $('memImportFile').click() }
+  window.memDoImport = async function (ev) {
+    var f = ev.target.files && ev.target.files[0]
+    if (!f) return
+    try {
+      var data = JSON.parse(await f.text())
+      var nodes = data.nodes || data
+      if (!Array.isArray(nodes)) throw new Error('格式错误')
+      var res = await api('/memory/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodes: nodes }) })
+      if (!res.status) throw new Error(res.msg || '导入失败')
+      toast('导入 ' + (res.data.imported || 0) + ' 条')
+      ev.target.value = ''
+      loadMemory()
+    } catch (e) { toast(e.message, 'err') }
+  }
+
+  // ── Usage 用量 ─────────────────────────
+  var usageWin = 'last_7d'
+  async function loadUsage() {
+    var el = $('tab-usage')
+    try {
+      var res = await api('/usage/summary?window=' + usageWin + '&granularity=by_day')
+      if (!res.status) throw new Error(res.msg || '加载失败')
+      var d = res.data
+      var s = d.summary || {}
+      var days = d.by_day || {}
+      el.innerHTML =
+        '<div class="card"><div class="row" style="align-items:center">' +
+          '<h3 style="flex:1">📊 用量统计</h3>' +
+          '<select id="usageWin" style="width:auto" onchange="usageWin=this.value;loadUsage()">' +
+            '<option value="today"' + (usageWin==='today'?' selected':'') + '>今天</option>' +
+            '<option value="last_7d"' + (usageWin==='last_7d'?' selected':'') + '>近7天</option>' +
+            '<option value="last_30d"' + (usageWin==='last_30d'?' selected':'') + '>近30天</option>' +
+            '<option value="all"' + (usageWin==='all'?' selected':'') + '>全部</option>' +
+          '</select></div>' +
+          '<div class="stat">' +
+            '<div class="item"><div class="num">' + (s.calls || 0) + '</div><div class="lbl">调用次数</div></div>' +
+            '<div class="item"><div class="num">' + (s.total_tokens || 0) + '</div><div class="lbl">总 Token</div></div>' +
+            '<div class="item"><div class="num">' + (s.input_tokens || 0) + '</div><div class="lbl">输入</div></div>' +
+            '<div class="item"><div class="num">' + (s.output_tokens || 0) + '</div><div class="lbl">输出</div></div>' +
+            '<div class="item"><div class="num">$' + (s.cost_usd || 0).toFixed(4) + '</div><div class="lbl">成本(USD)</div></div>' +
+          '</div></div>' +
+          '<div class="card"><h3>按天明细</h3><table><tr><th>日期</th><th>次数</th><th>Token</th><th>成本</th></tr>' +
+            Object.keys(days).sort().map(function (k) {
+              var v = days[k]
+              return '<tr><td>' + esc(k) + '</td><td>' + (v.calls || 0) + '</td><td>' + (v.total_tokens || 0) + '</td><td>$' + (v.cost_usd || 0).toFixed(4) + '</td></tr>'
+            }).join('') + '</table></div>'
+    } catch (e) {
+      el.innerHTML = '<div class="card"><div class="empty">⚠️ ' + esc(e.message) + '</div></div>'
+    }
+  }
+
+  // ── 初始化 ─────────────────────────
+  document.addEventListener('DOMContentLoaded', function () {
+    loadGateway()
+    loadMemory()
+    loadUsage()
+  })
+})();
+</script>
+</body>
+</html>
