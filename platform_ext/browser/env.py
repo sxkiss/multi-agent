@@ -1,4 +1,4 @@
-"""浏览器环境探测 + Chromium 安装（对齐 Octop api/routers/browser/env.py）。
+"""浏览器环境探测 + Chromium 安装。
 
   GET  /api/v2/browser/env-status  → {playwright, browsers_ok, chrome_path, …}
   POST /api/v2/browser/install     → SSE 安装进度（复用系统 Chrome 或下载 Chromium）

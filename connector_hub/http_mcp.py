@@ -1,6 +1,5 @@
 """HTTP / SSE MCP 客户端（补齐 BT mcp_client 仅支持 stdio 的缺口）。
 
-Octop 的 remote 模式连接器（tencent-docs、didi、dify 等）都是远程 HTTP/SSE
 MCP 服务。BT 现有 chat_client/mcp_client.py 在 `_connect_server` 中显式跳过
 HTTP/SSE（注释"当前仅支持 stdio"）。本模块新增一个轻量异步 HTTP MCP 客户端，
 复用 MCP 2024-11-05 JSON-RPC 协议，支持：

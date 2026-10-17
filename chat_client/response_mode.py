@@ -1,10 +1,8 @@
 """
 @input: os, re, typing
-@output: resolve_response_mode / strip_thinking — 响应模式协商 + 思考文本清洗（P7，对齐 Octop）
 @position: Gateway layer — 按渠道配置响应模式；清洗模型输出中的思考标签
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P7（2026-10-15，boss「修建议的全部」）：对齐 Octop
 `gateway/process/response_mode.py` + `gateway/process/channel_thinking.py`。
 
 1) 响应模式协商（response_mode）：

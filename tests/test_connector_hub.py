@@ -1,4 +1,4 @@
-"""Octop 连接器适配层测试（/home/sxkiss/bt/connector_hub）。
+"""连接器适配层测试（/home/sxkiss/bt/connector_hub）。
 
 覆盖：
 - catalog 加载（27 个连接器、本地化、supported 判定）

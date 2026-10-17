@@ -5082,7 +5082,6 @@ async def api_agent_run_post(request: Request):
     )
 
 
-# ── Octop 连接器适配层（/api/v2/connectors/*，不破坏现有 /api/*）──────
 # 装载失败不得影响主服务：包在 try 里，仅记录日志。
 try:
     from connector_hub.connectors_api import router as _connector_hub_router

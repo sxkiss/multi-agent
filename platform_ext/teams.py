@@ -1,7 +1,7 @@
-"""专家团队实体（对齐 Octop teams/team_manager + TeamService）。
+"""专家团队实体。
 
 BT 已有集团模式（RunCrew/Task/AgentRegistry，见 chat_client/tools/task.py）。
-本模块补上 Octop 那种「持久化团队实体」：
+本模块补上「持久化团队实体」：
 - 团队 = 一个 roster（成员名单）+ 元信息（名称/描述/协调者）
 - 存 config.json 的 platform_ext.teams 段（不引入 DB）
 - 提供 CRUD + 模板预览 + 成员校验
@@ -24,7 +24,6 @@ CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.json")
 
 TEAM_MIN_MEMBERS = 2
 
-# 默认团队工作区模板（对齐 Octop teams/template）
 DEFAULT_TEMPLATE = {
     "SOUL.md": (
         "# 团队协调者\n\n"

@@ -1,14 +1,11 @@
 """
 @input: json, os, threading, time, typing, yaml
-@output: ExpertCatalog / get_catalog — 本地专家库自动发现（P5，对齐 Octop）
-@position: Expert layer — 启动时扫描多个 root，自动发现专家（对齐 Octop ExpertCatalog）
 @auto-doc: Update header and folder INDEX.md when this file changes
 
 P5（2026-10-15，boss 反馈「不像 Octop 那样自动发现技能和专家」）：
 bt 此前专家只能通过外部市场手动查询（ExpertMarket → GetExpertPrompt），
 没有本地专家库、不自动发现、不注入系统提示。
 
-对齐 Octop 的 `ExpertCatalog(library_root, extra_roots=[expert_market_dir])` 模型：
 扫描**多个 root**，内置 + 市场缓存都自动发现：
 
 - **内置 root**：`experts/`（随仓库分发，版本管理）
@@ -16,7 +13,7 @@ bt 此前专家只能通过外部市场手动查询（ExpertMarket → GetExpert
 - **市场缓存 root**：`expert_market/`（gitignored，运行时落盘）
   市场专家被取用/安装后缓存到此，catalog 自动扫描到 → 之后即算「本地已有」
 
-与 Octop 一致：市场专家**不预加载全部 429 个**（那是市场目录，需按需取用）；
+一致：市场专家**不预加载全部 429 个**（那是市场目录，需按需取用）；
 一旦取用即落盘缓存，catalog 自动发现，后续无需联网。
 
 manifest.json 字段：
@@ -38,7 +35,6 @@ import threading
 import time
 from typing import Any
 
-# 缓存 root（运行时落盘，gitignored）—— 对齐 Octop 的 expert_market/
 MARKET_CACHE_DIRNAME = "expert_market"
 BUNDLED_DIRNAME = "experts"
 
@@ -86,7 +82,6 @@ class Expert:
         self.triggers: list[str] = []
         self.tools: list[str] = []
         self.prompt_files: list[str] = []
-        self.files: list[str] = []          # 递归文件清单（对齐 Octop discover_seed_paths）
         self.soul = ""
         self.identity = ""
         self.user = ""
@@ -110,7 +105,6 @@ class Expert:
         self.category = _pick_lang(m.get("category")) or "其他"
         self.source = str(m.get("source") or self.source).strip() or self.source
         self.welcome_message = _pick_lang(m.get("welcome_message") or m.get("welcome"))
-        # quick_prompts（对齐 Octop：title/description/prompt/color/icon）
         qp = m.get("quick_prompts") or []
         if isinstance(qp, list):
             for item in qp:
@@ -155,7 +149,6 @@ class Expert:
                 d for d in os.listdir(sdir)
                 if os.path.isdir(os.path.join(sdir, d)) and not d.startswith(".")
             )
-        # 递归文件清单（对齐 Octop discover_seed_paths，排除 manifest.json）
         self.files = self._discover_files()
 
     def _discover_files(self) -> list[str]:
@@ -198,7 +191,7 @@ class Expert:
 
 
 class ExpertCatalog:
-    """专家库：扫描多个 root（内置 + 市场缓存），缓存结果。对齐 Octop。"""
+    """专家库：扫描多个 root（内置 + 市场缓存），缓存结果。"""
 
     def __init__(self, base_dir: str, extra_roots: list[str] | None = None):
         self.base_dir = base_dir
@@ -314,7 +307,6 @@ class ExpertCatalog:
     def list_dicts(self) -> list[dict[str, Any]]:
         return [e.to_dict() for e in self.scan()]
 
-    # ── 市场专家落地缓存（对齐 Octop expert_market/）──────────────
     def cache_market_expert(self, expert_id: str, prompt_text: str,
                             meta: dict[str, Any] | None = None) -> str:
         """把市场专家提示词落盘到 expert_market/<id>/，使其被自动发现。

@@ -1,10 +1,8 @@
 """
 @input: base64, hashlib, mimetypes, os, time, typing
-@output: save_inbound_media / inbound_dir — 入站媒体落 workspace（P7，对齐 Octop gateway/media/ingress）
 @position: Gateway layer — 微信/渠道入站媒体（图片/文件）落盘 inbound/，供 agent 引用
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P7（2026-10-15，boss「修建议的全部」）：对齐 Octop `gateway/media/ingress.py`
 的轻量版。
 
 bt 此前入站图片只转 base64 传上游，**未落盘**——agent 无法用 Read 等工具

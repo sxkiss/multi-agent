@@ -1,10 +1,8 @@
 """
 @input: json, os, shutil, time, typing, zipfile
-@output: SkillPackageStore / export_skill_package / import_skill_package — 技能包仓储（P7，对齐 Octop skill_package_store）
 @position: Skills layer — 技能打包/导入/导出 + 磁盘库管理
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P7（2026-10-15，boss「修建议的全部」）：对齐 Octop `skills/skill_package_store.py`
 的轻量版。
 
 bt 此前技能是扁平目录（skills/<name>/），无法跨会话打包迁移。本模块：
@@ -14,7 +12,6 @@ bt 此前技能是扁平目录（skills/<name>/），无法跨会话打包迁移
 - list_packages：列出已打包的技能（磁盘库）
 - 复用 bt 现有 skills.py 的 install_from_zip 安全校验思路
 
-对齐点：Octop 的全局包磁盘库 + 符号链接发现；bt 简化为一对一打包/解包。
 """
 import json
 import logging

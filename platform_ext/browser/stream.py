@@ -1,4 +1,4 @@
-"""浏览器实时画面流（WebSocket screencast）—— 对齐 Octop api/routers/browser/stream.py。
+"""浏览器实时画面流（WebSocket screencast）。
 
 客户端 → 服务端::
 

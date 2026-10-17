@@ -417,7 +417,6 @@ class Agent:
                     logger.info(f"技能摘要已注入系统提示（{len(skill_manager.all_enabled())} 个技能）")
             except Exception as e:
                 logger.debug(f"技能摘要注入失败: {e}")
-            # P5: 注入本地专家库摘要（自动发现，对齐 Octop）
             try:
                 from .experts import get_catalog
                 _base = self.config.get("base_dir") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -467,7 +466,6 @@ class Agent:
             _add = _all_ids - self._GROUP_TOOLS
             # 工具下发裁剪（P1，2026-10-15）：AI_AGENT_TOOL_DISCLOSURE=trim 时，
             # 门控组（媒体/数据库/知识库/记忆/市场/定时/网站）默认不下发，
-            # 只保留核心 + 常驻工具，降低首 token 延迟（对齐 Octop CRITICAL/gate）。
             # 默认 full = 全量，保持向后兼容。显式指定在 config["tools"] 里的工具
             # 或 config["tool_gate_enabled"] 组始终保留。
             try:
@@ -491,7 +489,6 @@ class Agent:
                 logger.warning("[ToolDisclosure] 裁剪失败，回退全量下发", exc_info=True)
             self.enabled_tools.extend(t for t in _add if t not in self.enabled_tools)
 
-            # P7（2026-10-15）会话模式（Ask/Plan/Craft，对齐 Octop conversation_mode）：
             # ask=只读问答 / plan=先规划 / craft=全能力。按模式裁剪工具白名单。
             try:
                 from .conversation_mode import resolve_mode, filter_tools_for_mode, mode_instructions
@@ -837,7 +834,6 @@ Here is some useful information about the environment you are running in:
         if "qwen" in model_l or "default" in model_l:
             params["extra_body"]["enable_thinking"] = thinking
 
-        # P7（2026-10-15）per-turn reasoning 覆盖（对齐 Octop middleware/reasoning）：
         # 不同 provider 对「思考强度」的字段名/取值不同，按模型家族覆盖请求参数。
         # config: reasoning_overrides = {"<provider关键字>": {...要覆盖的 params 片段...}}
         # 例：{"o1": {"reasoning_effort": "high"}, "deepseek": {"extra_body": {"thinking": {"type": "enabled"}}}}

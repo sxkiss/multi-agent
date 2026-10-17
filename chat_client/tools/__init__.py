@@ -28,7 +28,6 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 # ============================================================
 # 工具下发策略（Tool Disclosure Policy）
 # 背景：单 Agent 模式默认把全部工具下发，工具数多时首 token 延迟偏高
-# （ARCHITECTURE.md §13 记录）。参照 Octop 的 CRITICAL/gate 三级裁剪：
 #   1. CRITICAL_TOOLS：核心工具，永不被裁剪（保证基础能力）
 #   2. 条件门控（gated）：按配置/环境启用的工具，默认不下发，需显式开启
 #   3. 其余工具：正常下发
@@ -277,7 +276,6 @@ def is_allow_high() -> bool:
 
 
 # ============================================================
-# per-thread HITL 审批模式（P1，2026-10-15，对齐 Octop/Codex）
 # 三档：ask（默认，高风险需确认）/ allow_all（破甲，放行全部）/
 #       allow_tools（放行白名单内的高风险工具）
 # 独立于 _session_allow_high（后者由 strict_tools 决定，是基线），
@@ -288,7 +286,6 @@ _hitl_lock = threading.Lock()
 
 HITL_MODES = ("ask", "allow_all", "allow_tools")
 
-# P7（2026-10-15）HITL 硬保护（对齐 Octop hitl_session.py）：
 # - 确认类工具永不跳过（即使用户开了 allow_all 也必须弹确认）
 # - 工具名长度/数量校验，防注入超长名单
 _HITL_NEVER_SKIP: frozenset[str] = frozenset({"AskUserQuestion", "ask_user_question"})
@@ -300,7 +297,6 @@ def set_session_hitl(session_id: str, mode: str = "ask", tools: list[str] | None
     """设置指定会话的 HITL 审批模式（ask/allow_all/allow_tools）。
 
     P7 硬保护：确认类工具（AskUserQuestion）永不进入白名单；工具名超长/超量
-    的条目被丢弃（对齐 Octop hitl_session 的 _MAX_TOOLS/_MAX_TOOL_NAME 校验）。
     """
     if not session_id:
         return
@@ -340,7 +336,6 @@ def is_high_allowed(tool_name: str = "") -> bool:
     优先级：HITL allow_all > HITL allow_tools(命中) > 基线 allow_high。
     P7 硬保护：确认类工具（AskUserQuestion）永不跳过——即使 allow_all 也返回 False。
     """
-    # 确认类工具永不跳过（对齐 Octop：ask_user_question is never skipped）
     if tool_name and tool_name in _HITL_NEVER_SKIP:
         return False
     sid = _current_session_id()
@@ -430,7 +425,6 @@ def _scan_dangerous_payload(kwargs: dict[str, Any]):
     """扫描工具参数中的高危命令特征，命中返回 (True, 描述)。
 
     P7（2026-10-15）：优先用**可编辑 YAML 护栏规则库**（chat_client/guard_rules.py，
-    对齐 Octop tool_guard_rules），YAML 不存在时回退硬编码 _DANGEROUS_CMD_PATTERNS。
     """
     import re as _re
     texts = []

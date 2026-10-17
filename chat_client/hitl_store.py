@@ -1,10 +1,8 @@
 """
 @input: json, os, threading, time, typing, uuid
-@output: HitlApprovalStore — 审批闭环（P7，对齐 Octop gateway/hitl）
 @position: Security layer — 高风险工具审批的 pending 队列 + TTL + 批准/拒绝
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P7（2026-10-15，boss「修建议的全部」）：对齐 Octop `gateway/hitl/coordinator.py`
 + `store.py` 的轻量版。
 
 bt 此前只有「会话级档位开关」（set_session_hitl），没有**审批闭环**——

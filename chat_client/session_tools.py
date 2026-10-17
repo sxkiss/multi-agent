@@ -4,7 +4,6 @@
 @position: Session utilities — 上下文用量分解 / 会话导出 / 对话分支（P4）
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P4（2026-10-15，借鉴 Octop）：
 - 上下文用量分解（context_breakdown）：估算系统提示/工具定义/历史/知识等各段占用
 - 会话导出（export）：把会话导出为 Markdown / JSON
 - 对话分支（fork）：从某条消息复制出一个新会话，原会话不变
@@ -70,7 +69,6 @@ def analyze_context(base_dir: str, session_id: str, *,
                     skills: str = "", mcp: str = "", subagent: str = "") -> dict[str, Any]:
     """估算某会话的上下文占用，按段分解。
 
-    P7（2026-10-15）：对齐 Octop context_breakdown 的 7 段模型：
       system_prompt / tool_definitions / rules / skills / mcp /
       subagent_definitions / conversation
     其中「conversation」由会话历史细分（对话正文/工具返回/思考/知识注入）；
@@ -106,7 +104,6 @@ def analyze_context(base_dir: str, session_id: str, *,
         else:
             conv["other"] += toks
 
-    # 静态注入段（对齐 Octop SEGMENT_KEYS）
     static = {
         "system_prompt": _estimate_tokens(system_prompt),
         "tool_definitions": _estimate_tokens(tool_definitions),

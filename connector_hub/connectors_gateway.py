@@ -1,7 +1,6 @@
-"""Gateway 适配器注册表 —— 移植自 Octop connectors.gateway.registry。
+"""Gateway 适配器注册表。
 
 kind -> adapter（list_tools / call_tool / probe_credentials）。
-adapter 实现位于 connector_hub.gateway_adapters.*，为从 Octop 原样移植的
 各厂商 MCP 适配器（纯 httpx 实现；*_cli 类需主机安装外部 CLI 二进制）。
 """
 
@@ -86,7 +85,6 @@ def list_gateway_kinds() -> list[str]:
     return sorted(_ADAPTERS.keys())
 
 
-# ── MCP JSON-RPC 协议处理（移植自 Octop gateway.protocol）────────
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
 

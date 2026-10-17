@@ -14,6 +14,7 @@
       @export-conversation="exportConversation"
       @open-settings="openSettingsDrawer"
       @open-platform="openPlatformPanel"
+      @open-connectors="openConnectorsPanel"
       @toggle-fullscreen="toggleFullscreen"
     />
     <div class="chat-main-area">
@@ -1765,6 +1766,10 @@ function openSettingsDrawer() {
 
 function openPlatformPanel() {
   window.open('/static/platform_panel.html', '_blank')
+}
+
+function openConnectorsPanel() {
+  window.open('/connectors', '_blank')
 }
 
 function closeSettingsDrawer() {

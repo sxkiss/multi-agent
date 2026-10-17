@@ -1,11 +1,9 @@
 """
 @input: os, re, time, typing
-@output: PersonaTemplate / render_soul / list_personas — persona 模板化（借鉴 Octop MBTI）
 @position: Agent layer — 从 persona 模板生成 SOUL.md 人格文件
 @auto-doc: Update header and folder INDEX.md when this file changes
 
 P2-d（2026-10-15）：把"手写 SOUL.md"升级为"模板 + 变量渲染"，
-支持预设人格模板（对齐 Octop 的 MBTI persona 思路，但更贴合本项目的经理/成员场景），
 也支持自定义模板变量覆盖。
 """
 import os

@@ -1,10 +1,8 @@
 """
 @input: json, re, typing
-@output: SlashCatalog / get_slash_catalog — 斜杠命令体系（P7，对齐 Octop slash）
 @position: Gateway layer — 斜杠命令注册/解析/分发（轻量版，纯字符串分发）
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P7（2026-10-15，boss「修建议的全部」）：对齐 Octop `gateway/slash/catalog.py`
 + `dispatcher.py` 的轻量版。
 
 bt 此前没有斜杠命令体系（全靠自然语言）。本模块提供：
@@ -13,7 +11,6 @@ bt 此前没有斜杠命令体系（全靠自然语言）。本模块提供：
 - 分发：调用注册的 handler
 - 内置命令：/help /clear /model /tools /context /experts /skills /backup
 
-设计取舍：轻量纯字符串分发，不引入 Octop 的客户端动作元数据/UI 帧协议
 （bt 是单用户单实例，够用即可）。
 """
 import logging

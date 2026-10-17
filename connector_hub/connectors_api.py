@@ -1,6 +1,5 @@
 """连接器 REST API —— /api/v2/connectors/*
 
-对齐 Octop connectors 路由的语义，但走 BT 风格（public.return_data 包裹）。
 所有路由挂在新前缀 /api/v2/connectors/* 下，与现有 /api/* 完全隔离，
 并由 BT 全局 auth 中间件自动保护（auth.enabled 时）。
 

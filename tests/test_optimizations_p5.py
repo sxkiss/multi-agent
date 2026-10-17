@@ -141,7 +141,7 @@ class TestInstallFromLocal:
 
 
 class TestMarketCache:
-    """P5 对齐 Octop：市场专家落盘后自动发现。"""
+    """P5：市场专家落盘后自动发现。"""
 
     def test_cache_market_expert_then_discovered(self, tmp_path):
         from chat_client.experts import ExpertCatalog
@@ -194,7 +194,7 @@ class TestMarketCache:
 
 
 class TestExpertFullModel:
-    """P5 对齐 Octop：专家完整数据模型（welcome/quick_prompts/files/color）。"""
+    """P5：专家完整数据模型（welcome/quick_prompts/files/color）。"""
 
     def test_full_manifest_fields(self, tmp_path):
         from chat_client.experts import ExpertCatalog
@@ -226,7 +226,7 @@ class TestExpertFullModel:
         assert e.prompt_files == ["SOUL.md", "IDENTITY.md"]
 
     def test_files_recursive_discovery(self, tmp_path):
-        """对齐 Octop discover_seed_paths：递归列出所有文件（排除 manifest）。"""
+        """discover_seed_paths：递归列出所有文件（排除 manifest）。"""
         from chat_client.experts import ExpertCatalog
         base = str(tmp_path)
         d = os.path.join(base, "experts", "rec")

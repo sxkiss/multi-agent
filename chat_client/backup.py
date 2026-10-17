@@ -1,7 +1,6 @@
 """
 @input: json, os, shutil, tarfile, time, threading, typing
 @output: create_backup / list_backups / restore_backup / auto_backup_loop
-@position: Backup layer — 配置/会话/技能的定时与手动快照（P4-d，借鉴 Octop backup）
 @auto-doc: Update header and folder INDEX.md when this file changes
 
 P4-d（2026-10-15）：

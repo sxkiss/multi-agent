@@ -1,4 +1,4 @@
-"""浏览器会话接管助手（对齐 Octop api/routers/browser/harness.py）。
+"""浏览器会话接管助手。
 
 BT 是单用户，profile 固定为 "default"（可配置）。负责：
 - 解析/复用活跃 BrowserSession（带健康检查）

@@ -1,4 +1,4 @@
-"""浏览器录制回放 + 生成技能（对齐 Octop api/routers/browser/record_replay.py）。
+"""浏览器录制回放 + 生成技能。
 
   GET  /api/v2/browser/record-replay/status
   POST /api/v2/browser/record-replay/start

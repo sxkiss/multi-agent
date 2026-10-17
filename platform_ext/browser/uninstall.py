@@ -1,4 +1,4 @@
-"""浏览器卸载（对齐 Octop api/routers/browser/uninstall.py）。
+"""浏览器卸载。
 
   POST /api/v2/browser/uninstall  → SSE 卸载进度（仅移除 Playwright 自管 Chromium，
   不动系统 Chrome）。

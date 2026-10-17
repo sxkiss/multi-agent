@@ -1,10 +1,8 @@
 """
 @input: json, os, re, threading, yaml
-@output: GuardRules / get_guard_rules — 可编辑 YAML 护栏规则库（P7，对齐 Octop tool_guard_rules）
 @position: Security layer — 磁盘 YAML 护栏规则，替代硬编码危险命令黑名单
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P7（2026-10-15，boss「修建议的全部」）：对齐 Octop `security/tool_guard_rules.py`。
 
 原实现把危险命令正则**硬编码**在 `tools/__init__.py` 的 `_DANGEROUS_CMD_PATTERNS`，
 用户无法调整。本模块改为**磁盘 YAML 规则库**：

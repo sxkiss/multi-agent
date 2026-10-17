@@ -1,4 +1,4 @@
-"""可插拔通道抽象（对齐 Octop gateway.channels）。
+"""可插拔通道抽象。
 
 BT 现有通道（微信小程序、clawbot、HTTP/SSE、OpenAI 兼容）是散落的。
 本模块引入一个轻量统一抽象：

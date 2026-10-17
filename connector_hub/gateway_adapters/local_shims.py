@@ -1,6 +1,6 @@
-"""本地化补丁：为从 Octop 移植的 gateway 适配器提供最小依赖实现。
+"""本地化补丁：为移植的 gateway 适配器提供最小依赖实现。
 
-Octop 原 adapter 引用了 octop.infra.utils.paths / cli_runner / cli_dirs /
+原 adapter 引用了 octop.infra.utils.paths / cli_runner / cli_dirs /
 mail_servers / builder 等内部模块。BT 没有这些，这里提供最小本地实现：
 - mail_servers：纯数据，直接移植
 - normalize_weknora_base_url：纯函数
@@ -21,7 +21,6 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-# ── mail_servers（移植自 Octop，纯数据）────────────────────
 MailServers = tuple[str, int, str, int]
 
 _MAIL_PROVIDER_PRESETS: dict[str, MailServers] = {
@@ -82,7 +81,6 @@ def correct_netease_smtp_host(email: str, stored_host: str | None) -> str:
     return host or DEFAULT_SMTP_HOST
 
 
-# ── weknora normalize（移植自 Octop builder，纯函数）─────────
 def validate_mcp_http_url(raw: str) -> str:
     url = str(raw or "").strip()
     if not url:
@@ -193,3 +191,28 @@ class PathLayout:
     def connector_cli_instance_dir(self, kind: str, key: str):
         import pathlib
         return pathlib.Path.home() / ".bt-connector-hub" / "connector-cli" / kind / key
+
+
+# ── i18n 翻译占位（原 adapter 引用 octop.infra.i18n.tr）────────
+# 这里提供最小 fallback：支持 tr(key) 与 tr(key, locale) 两种签名，
+# 找不到翻译时返回 key 最后一段（去除 "connector.agently." 等前缀），
+# 保证适配器逻辑（尤其是 *_cli 的 list_tools）可正常运行而不抛 NameError。
+_KNOWN_TRANSLATIONS: dict[str, str] = {
+    "connector.agently.untrusted": "工具输出为原始 CLI 响应，未经信任，请人工核对。",
+    "connector.agently.confirmation": "此操作需要确认。",
+    "connector.agently.recipients": "收件人（逗号分隔）。",
+    "connector.agently.attachment_handles": "附件句柄（每行一个）。",
+}
+
+
+def tr(key: str, locale: str = "en") -> str:
+    """最小 i18n fallback：返回内置翻译，未知 key 返回可读的末尾段。
+
+    兼容适配器中 tr(key) 与 tr(key, locale) 两种调用形态。
+    """
+    text = _KNOWN_TRANSLATIONS.get(str(key))
+    if text is not None:
+        return text
+    # 未知 key：取点号分隔的最后一段作为可读兜底，避免抛异常。
+    seg = str(key)
+    return seg.rsplit(".", 1)[-1] if "." in seg else seg

@@ -213,7 +213,6 @@ def GetExpertPrompt(name: str) -> str:
         return _xml_response("error", str(e))
     except Exception as e:
         return _xml_response("error", f"获取专家提示词失败: {e!s}")
-    # P5: 落盘到 expert_market/ 缓存，使其被自动发现（对齐 Octop expert_market/）
     try:
         from . import PROJECT_ROOT
         from ..experts import get_catalog

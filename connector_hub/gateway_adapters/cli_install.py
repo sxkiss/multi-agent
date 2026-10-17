@@ -1,6 +1,5 @@
 """Install / detect host CLIs for Feishu & WeCom connector adapters.
 
-移植自 Octop infra.connectors.gateway.cli_install（纯标准库，无 octop 依赖）。
 运行时通过 npm 自动安装 lark-cli / wecom-cli / agently-cli；
 Obsidian 走系统应用内 CLI 的注册。非 root 时自动降级到 ~/.npm-global。
 """

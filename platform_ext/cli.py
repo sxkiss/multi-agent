@@ -1,4 +1,4 @@
-"""薄 CLI —— 复用 BT 现有 HTTP API（对齐 Octop 的 CLI/REPL 入口）。
+"""薄 CLI —— 复用 BT 现有 HTTP API。
 
 设计：不重写业务逻辑，只做 HTTP 客户端 + 少量本地命令，零新增依赖
 （仅标准库 urllib + argparse）。

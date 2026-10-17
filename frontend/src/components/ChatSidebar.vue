@@ -36,6 +36,13 @@
           </svg>
           全屏
         </button>
+        <button class="top-btn settings-btn" title="连接器管理（27 个平台连接器）" @click="$emit('open-connectors')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+          连接器
+        </button>
         <button class="top-btn settings-btn" title="功能面板（通道/记忆/用量/浏览器）" @click="$emit('open-platform')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="7" height="7" rx="1"></rect>
@@ -228,6 +235,7 @@ export default {
     'load-conversation',
     'open-settings',
     'open-platform',
+    'open-connectors',
     'toggle-fullscreen',
     'export-conversation'
   ],

@@ -1,12 +1,9 @@
 """
 @input: typing
-@output: ConversationMode / resolve_mode / filter_tools_for_mode — 会话模式（P7，对齐 Octop conversation_mode）
 @position: Agent layer — Ask/Plan/Craft 三档会话模式，控制工具白名单与行为
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P7（2026-10-15，boss「修建议的全部」）：对齐 Octop `conversation_mode.py`。
 
-三档模式（对齐 Claude Code / Octop 的 ask/plan/craft）：
 - ask：只读问答，禁用所有写/执行类工具（HOST_READ_TOOLS 白名单）
 - plan：先规划后执行，允许只读工具 + 计划产出（写计划文件），不直接改代码
 - craft：全能力（默认），可写可执行

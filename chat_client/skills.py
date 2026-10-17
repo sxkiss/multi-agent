@@ -935,7 +935,6 @@ class SkillManager:
 
     # ==================== P2-a: 技能包（复用/导出/导入） ====================
     # 技能包 = 一组技能的清单（manifest），可导出为 ZIP 跨项目/跨会话复用。
-    # 参照 Octop 的 skill_package 概念：把精选技能打成一个可分享单元。
 
     PACKAGE_FORMAT = "bt-skill-package/v1"
 

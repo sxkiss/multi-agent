@@ -1,6 +1,5 @@
 """平台扩展 REST API —— /api/v2/{teams,channels,storage}/*
 
-对齐 Octop 对应路由语义，走 BT 风格（public.return_data 包裹）。
 所有路由挂在新前缀 /api/v2/* 下，与现有 /api/* 完全隔离，
 由 BT 全局 auth 中间件自动保护。
 

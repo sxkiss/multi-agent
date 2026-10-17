@@ -4,7 +4,6 @@
 @position: Knowledge layer — 文档知识库（解析→切块→向量化→检索→引用）
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-设计参考 TencentCloud/Octop 的 knowledge/service.py + index.py +
 retrieve.py + citations.py，按 BT 现有 SimpleVectorDB 的轻量 JSON 存储风格落地。
 
 存储布局（storage_dir 下）：
@@ -248,7 +247,6 @@ class KnowledgeBase:
                 f"②确认相关文档已用 KnowledgeAdd 入库（当前库内 {len(self.manifest)} 篇）；"
                 f"③适当降低 score 门槛。"
             )
-        # P7（2026-10-15）机器可读引用（对齐 Octop citations.py）：
         # 内嵌一段 JSON 注释，供前端/下游解析出结构化引用（去重、带 doc/块/相似度）。
         citations_md = self._machine_citations(results)
         return {"status": True, "results": results, "gate": gate,
@@ -279,7 +277,7 @@ class KnowledgeBase:
             {"citations": cites}, ensure_ascii=False) + " -->"
 
     def capability_gate(self) -> dict:
-        """能力门禁（对齐 Octop knowledge/gate.py）：报告 embedding 可用性。
+        """能力门禁（对齐 knowledge/gate.py）：报告 embedding 可用性。
 
         供上层在检索/入库前判断能力是否就绪，而非硬编码后端。
         """

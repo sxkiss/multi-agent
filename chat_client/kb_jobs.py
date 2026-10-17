@@ -1,10 +1,8 @@
 """
 @input: json, os, threading, time, typing, uuid
-@output: IndexJobQueue / get_index_queue — 知识库异步索引队列（P7，对齐 Octop knowledge/jobs）
 @position: Knowledge layer — 文档索引任务队列（信号量并发 + 原子替换）
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P7（2026-10-15，boss「修建议的全部」）：对齐 Octop `knowledge/jobs.py` 的轻量版。
 
 bt 此前 add_document 是**同步**的——大文档/批量入库会阻塞请求。本模块提供
 异步索引队列：
@@ -14,7 +12,7 @@ bt 此前 add_document 是**同步**的——大文档/批量入库会阻塞请�
 - 状态查询：status(job_id) → pending/running/done/failed
 - 队列统计：stats()
 
-设计取舍：Octop 用信号量并发+原子替换；bt 单库场景用单 worker 顺序处理
+设计取舍：用信号量并发+原子替换；bt 单库场景用单 worker 顺序处理
 即可（避免并发写 JSON 向量库的竞争）。
 """
 import logging

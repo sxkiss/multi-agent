@@ -1,4 +1,4 @@
-"""增强分层记忆（对齐 Octop octop-memory 官方包）。
+"""增强分层记忆。
 
 封装 `octop_memory.Memory`（sqlite backend），为 BT 提供超越 mem0 的
 分层长期记忆（leaf/branch/root 组织 + recall + 可迁移导出/导入）。

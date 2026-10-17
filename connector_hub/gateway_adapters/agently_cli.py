@@ -21,6 +21,7 @@ from typing import Any
 from connector_hub.gateway_adapters.local_shims import resolve_cli_config_key
 from connector_hub.gateway_adapters.local_shims import resolve_binary, run_cli
 from connector_hub.gateway_adapters.local_shims import PathLayout
+from connector_hub.gateway_adapters.local_shims import tr
 
 _KIND = "agently-cli"
 _MAX_FILE = 10 * 1024 * 1024

@@ -4,7 +4,6 @@
 @position: Observability layer — 工具/LLM 调用的计数与耗时统计
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P3-b（2026-10-15，借鉴 Octop 的可观测性思路）：
 不引入 Prometheus 依赖，用纯标准库维护进程内计数器/直方图，
 通过 /api/metrics 以 JSON（可转 Prometheus 文本）暴露。
 覆盖：工具调用次数/耗时/状态、LLM 调用次数/耗时、错误计数。

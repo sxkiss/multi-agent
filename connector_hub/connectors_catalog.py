@@ -1,7 +1,5 @@
-"""连接器目录（catalog）加载 —— 移植自 Octop connectors.catalog。
+"""连接器目录（catalog）加载。
 
-只做纯数据加载与本地化解析，不依赖 Octop 的 utils.locale / config 体系。
-catalog 原始数据来自同目录 catalog.json（与 Octop 完全一致，27 个连接器）。
 """
 
 from __future__ import annotations

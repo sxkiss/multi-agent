@@ -1,4 +1,4 @@
-"""多平台 IM 通道桥（对齐 Octop octop-gateway 官方包）。
+"""多平台 IM 通道桥。
 
 封装 `octop_gateway.manager.ChannelManager`，为 BT 提供统一的多平台
 IM 通道注册/启停/状态管理。
@@ -39,8 +39,9 @@ router = APIRouter()
 _PLATFORM_META: dict[str, dict[str, Any]] = {
     "weixin": {
         "label": "微信 (iLink)",
-        "config_fields": [{"name": "token", "type": "string", "required": True}],
-        "note": "复用 BT 869 微信能力，需配置 webhook/token",
+        "config_fields": [{"name": "token", "type": "string", "required": True, "placeholder": "iLink Bot token"},
+                          {"name": "account_id", "type": "string", "required": False, "placeholder": "账号 ID / bot_uin"},
+                          {"name": "base_url", "type": "string", "required": False, "placeholder": "默认 https://ilinkai.weixin.qq.com"}],
     },
     "feishu": {
         "label": "飞书",
@@ -106,7 +107,7 @@ def _build_platform_kinds() -> dict[str, dict[str, Any]]:
         meta = dict(_PLATFORM_META.get(kind, {}))
         meta.setdefault("label", kind.title())
         meta.setdefault("config_fields", [])
-        meta.setdefault("note", "Octop 官方通道（SDK 按需安装）")
+        meta.setdefault("note", "SDK 通道，按需安装依赖")
         kinds[kind] = meta
     return kinds
 
@@ -296,3 +297,45 @@ async def gateway_stop(kind: str) -> JSONResponse:
     except Exception as e:  # noqa: BLE001
         logger.exception("[gateway] 停止 %s 失败", kind)
         return _err(f"停止 {kind} 失败: {e}")
+from platform_ext import qr_login  # noqa: E402
+
+
+@router.post("/gateway/channels/{kind}/qrcode/generate")
+async def gateway_qrcode_generate(kind: str, request: Request) -> JSONResponse:
+    """生成二维码。body 可带 session_id（可选）。"""
+    if kind not in qr_login.supported_qr_kinds():
+        return _err(f"平台 {kind} 不支持扫码登录。支持的扫码平台: {', '.join(qr_login.supported_qr_kinds())}")
+    try:
+        body = await request.json() if request is not None else {}
+    except Exception:
+        body = {}
+    session_id = str((body or {}).get("session_id") or "default")
+    try:
+        data = await qr_login.generate(kind, session_id=session_id)
+        return _ok(data)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[gateway] %s 生成二维码失败", kind)
+        return _err(f"生成二维码失败: {e}")
+
+
+@router.post("/gateway/channels/{kind}/qrcode/poll")
+async def gateway_qrcode_poll(kind: str, request: Request) -> JSONResponse:
+    """轮询扫码结果。body: {token, session_id?}。成功后自动保存配置。"""
+    if kind not in qr_login.supported_qr_kinds():
+        return _err(f"平台 {kind} 不支持扫码登录")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict) or not body.get("token"):
+        return _err("缺少 token")
+    token = str(body["token"])
+    session_id = str(body.get("session_id") or "default")
+    try:
+        data = await qr_login.poll(kind, token, session_id=session_id)
+        if data.get("status") == "success":
+            data["configured"] = True
+        return _ok(data)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[gateway] %s 轮询失败", kind)
+        return _err(f"轮询失败: {e}")

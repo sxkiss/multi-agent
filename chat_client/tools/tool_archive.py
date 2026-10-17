@@ -2,7 +2,6 @@
 
 当工具结果过大时，agent.py 会调用 `tool_archive.archive_result` 精简入上下文，
 完整内容落盘 `tool_archives/<session>/<id>.txt`。本工具让模型**按需取回**完整内容，
-信息不丢失（对齐 Octop「上下文分段治理」思路，避免硬截断永久丢信息）。
 
 @tool-as-app: 上下文治理（归档召回）
 @output: 按 archive_id 取回被精简的工具结果全文/分段

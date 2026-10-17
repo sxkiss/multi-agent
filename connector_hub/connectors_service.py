@@ -1,4 +1,4 @@
-"""连接器实例服务 —— 移植自 Octop connectors.service + crypto。
+"""连接器实例服务。
 
 职责：
 1. 实例持久化（list/create/update/delete/test），存于 config.json 的

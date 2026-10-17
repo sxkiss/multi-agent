@@ -1,4 +1,4 @@
-"""用量统计（对齐 Octop api/routers/usage.py，轻量版）。
+"""用量统计（轻量版）。
 
 BT 是单用户、无 DB，因此用「追加式 JSONL ledger」记录每次对话的
 token 用量与成本，提供汇总 API。

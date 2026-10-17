@@ -1,10 +1,8 @@
 """
 @input: json, os, random, threading, time, typing
-@output: ProactiveService — 主动关怀（P7，对齐 Octop infra/proactive）
 @position: Proactive layer — 按活跃时段+间隔主动推送（提醒/关怀）
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P7（2026-10-15，boss「修建议的全部」）：对齐 Octop `infra/proactive/`
 （picker.py 打分选片段 + scheduler.py 活跃时段+随机间隔 + service.py 推送）。
 
 bt 此前只有被动响应。本模块提供轻量主动关怀：
@@ -13,7 +11,7 @@ bt 此前只有被动响应。本模块提供轻量主动关怀：
 - 回调推送：触发时调用注入的 push 回调（如发微信）
 - 开关：默认关闭（config.proactive_enabled），需显式开启
 
-设计取舍：Octop 用 EpisodePicker 按情绪/时间衰减从记忆里选片段；bt 简化为
+设计取舍：用 EpisodePicker 按情绪/时间衰减从记忆里选片段；bt 简化为
 「按预设话题池随机选 + 回调推送」，够单用户场景用。
 """
 import logging

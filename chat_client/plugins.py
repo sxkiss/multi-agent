@@ -1,6 +1,5 @@
 """
 @input: json, os, importlib, logging, threading, typing
-@output: PluginManager — 轻量插件体系（P3-a，借鉴 Octop bundled plugins）
 @position: Plugin layer — 从 plugins/ 目录加载插件，插件可注册工具/钩子
 @auto-doc: Update header and folder INDEX.md when this file changes
 

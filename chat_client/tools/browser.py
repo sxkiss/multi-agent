@@ -1,4 +1,4 @@
-"""browser_use —— 内置浏览器自动化工具（对齐 Octop 的内置 browser 工具）。
+"""browser_use —— 内置浏览器自动化工具。
 
 底层走 vendored octop_browser 的 CDP 引擎（真实 Chrome），支持导航、
 DOM 快照、点击、输入、截图、标签页等。BT 工具是同步的，这里用专用后台
@@ -22,7 +22,6 @@ from .base import _xml_response
 
 logger = logging.getLogger(__name__)
 
-# 浏览器截图输出目录（对齐 Octop outbound/，在 /api/files/raw 白名单内）
 def _screenshots_dir() -> str:
     base = os.environ.get("PROJECT_ROOT") or os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -116,7 +115,6 @@ def browser_use(action: str, url: str = "", x: int = 0, y: int = 0,
         params["url"] = url
     elif action == "screenshot":
         # 截图保存到 workspace/outbound/screenshots/（/api/files/raw 可访问），
-        # 使截图能在对话界面作为图片显示（对齐 Octop outbound 机制）。
         shots_dir = _screenshots_dir()
         try:
             os.makedirs(shots_dir, exist_ok=True)
