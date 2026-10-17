@@ -1253,12 +1253,8 @@ Here is some useful information about the environment you are running in:
                         if _sleep_interruptible(wait_s):
                             logger.info("[AI-Retry] 等待重试期间任务被停止")
                             return
-                        if yielded_content:
-                            # 已推送过可见内容：断流后不再续写。参考标准版——已输出内容
-                            # 就是本轮结果，不把正文塞回请求让模型"继续"，否则模型重读
-                            # 已输出文字极易原样复述 → 「重复输出」。直接结束本轮。
-                            break
-                        # 尚无任何可见输出 → 完全重新请求（不携带任何正文，不会重复）
+                        # 断流/异常一律重新请求：不续写、不结束本轮，直到成功或达重试上限。
+                        # 重新请求不携带任何已输出正文，因此不会重复，也不丢结果。
                         continue
                 # 如果这一轮有内容，累加到最终响应
                 if current_response_content:
