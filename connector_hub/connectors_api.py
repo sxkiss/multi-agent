@@ -183,6 +183,151 @@ async def api_test_credentials(request: Request):
         return _err(str(exc))
 
 
+# ── OAuth2 授权流程 ─────────────────────────────────────────
+@router.post("/oauth2/authorize")
+async def api_oauth2_authorize(request: Request):
+    """启动 OAuth2 授权流程，返回授权 URL 和 state。
+
+    请求: {"kind": "notion"}
+    响应: {"auth_url": "https://...", "state": "..."}
+    """
+    from connector_hub import oauth_manager as oauth
+
+    body = await _body(request)
+    kind = str(body.get("kind") or "").strip()
+    if not kind:
+        return _err("缺少 kind")
+    provider = oauth.get_provider(kind)
+    if not provider:
+        return _err(f"连接器 {kind} 不支持 OAuth2")
+    # 无授权端点的连接器（qcc/openalex）不支持标准授权流程
+    if not provider.authorization_endpoint:
+        return _err(f"连接器 {kind} 无标准 OAuth 授权端点，请使用手动粘贴 Token 方式")
+
+    try:
+        redirect_uri = oauth.build_callback_url(request)
+        auth_url, state = oauth.create_auth_url(kind, redirect_uri)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("oauth2 authorize failed for %s", kind)
+        return _err(f"启动授权失败: {exc}")
+
+    return _ok({"auth_url": auth_url, "state": state})
+
+
+@router.get("/oauth2/callback")
+async def api_oauth2_callback(request: Request):
+    """OAuth2 回调处理。
+
+    查询参数: code、state
+    响应: {"ok": true, "instance_id": "abc123", "kind": "notion"}
+    """
+    from connector_hub import oauth_manager as oauth
+
+    code = request.query_params.get("code", "")
+    state = request.query_params.get("state", "")
+    if not code or not state:
+        return _err("缺少 code 或 state 参数")
+
+    try:
+        redirect_uri = oauth.build_callback_url(request)
+        instance_id, kind, creds = await oauth.handle_callback(code, state, redirect_uri)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("oauth2 callback failed")
+        return _err(f"OAuth 回调处理失败: {exc}")
+
+    return _ok({"ok": True, "instance_id": instance_id, "kind": kind})
+
+
+@router.post("/oauth2/refresh")
+async def api_oauth2_refresh(request: Request):
+    """手动刷新 OAuth2 token。
+
+    请求: {"instance_id": "abc123"}
+    响应: {"ok": true, "access_token": "..."}（脱敏）
+    """
+    from connector_hub import oauth_manager as oauth
+
+    body = await _body(request)
+    instance_id = str(body.get("instance_id") or "").strip()
+    kind = str(body.get("kind") or "").strip()
+    if not instance_id:
+        return _err("缺少 instance_id")
+
+    creds = oauth.get_credentials(kind, instance_id) if kind else None
+    if creds is None:
+        # 尝试从所有 token_cache 查找
+        if kind:
+            for cid, c in oauth.get_credentials_by_kind(kind):
+                if cid == instance_id:
+                    creds = c
+                    break
+        if creds is None:
+            return _err("未找到该实例的 OAuth2 凭据")
+
+    try:
+        new_creds = await oauth.refresh_token(kind or creds.kind, instance_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("oauth2 refresh failed for %s", instance_id)
+        return _err(f"刷新 Token 失败: {exc}")
+
+    return _ok({
+        "ok": True,
+        "access_token": new_creds.access_token[:8] + "..." if new_creds.access_token else "",
+        "instance_id": instance_id,
+        "kind": creds.kind,
+    })
+
+
+@router.post("/oauth2/manual-token")
+async def api_oauth2_manual_token(request: Request):
+    """手动粘贴 OAuth2 Token（兜底方案）。
+
+    请求: {"kind": "openalex", "token": "..."}
+    响应: {"ok": true, "instance_id": "abc123"}
+    """
+    from connector_hub import oauth_manager as oauth
+    from connector_hub import connectors_service as svc2
+
+    body = await _body(request)
+    kind = str(body.get("kind") or "").strip()
+    token = str(body.get("token") or body.get("access_token") or "").strip()
+    if not kind:
+        return _err("缺少 kind")
+    if not token:
+        return _err("缺少 token")
+    provider = oauth.get_provider(kind)
+    if not provider:
+        return _err(f"连接器 {kind} 不支持 OAuth2")
+    if not provider.supports_manual_token:
+        return _err(f"连接器 {kind} 不支持手动粘贴 Token")
+
+    try:
+        # 创建 connector 实例
+        name = provider.name_zh or kind
+        inst = svc2.create_instance(
+            kind=kind,
+            name=name,
+            creds={"manual_token": token},
+            enabled=True,
+        )
+        instance_id = inst["instance_id"]
+        # 保存凭据到 token_cache（含 manual_token）
+        oauth.save_manual_token(kind, token, instance_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("oauth2 manual-token failed for %s", kind)
+        return _err(f"保存 Token 失败: {exc}")
+
+    return _ok({"ok": True, "instance_id": instance_id, "kind": kind})
+
+
+@router.get("/oauth2/status")
+async def api_oauth2_status():
+    """查询当前 OAuth2 状态。"""
+    from connector_hub import oauth_manager as oauth
+
+    return _ok(oauth.get_status())
+
+
 # ── gateway 适配器 ──────────────────────────────────────────
 @router.get("/gateway/kinds")
 async def api_gateway_kinds():

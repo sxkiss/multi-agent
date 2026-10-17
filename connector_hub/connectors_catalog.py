@@ -86,7 +86,8 @@ class CatalogEntry:
     def supported(self) -> bool:
         """BT 能否实际录入凭据并接入。"""
         if self.auth_kind == "oauth2":
-            return False  # OAuth2 全流（notion/qcc/openalex/dida365/tencent-ardot）暂未实现
+            from connector_hub.oauth_providers import get_provider
+            return get_provider(self.kind) is not None
         return self.auth_kind in SUPPORTED_AUTH_KINDS
 
     def to_api(self, locale: str = "en") -> dict[str, Any]:
@@ -194,3 +195,9 @@ def list_catalog_entries() -> list[CatalogEntry]:
 
 def is_gateway_kind(kind: str) -> bool:
     return kind in GATEWAY_KINDS
+
+
+def get_oauth2_config(kind: str):
+    """返回指定 kind 的 OAuth2 配置，不存在时返回 None。"""
+    from connector_hub.oauth_providers import get_provider
+    return get_provider(kind)

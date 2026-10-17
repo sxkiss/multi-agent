@@ -187,6 +187,7 @@ def _remote_spec_for(
 
     # OAuth2 类 remote（notion / openalex / dida365 / tencent-ardot）
     # 需要 access_token + catalog 的 mcp_url；未完成 OAuth 流程时不可用。
+    # 若实例关联的 token_cache 存在且 token 过期，先尝试自动刷新再返回。
     if getattr(entry, "auth_kind", "") == "oauth2":
         mcp_url = str(getattr(entry, "mcp_url", "") or "").strip()
         if not mcp_url:
@@ -194,6 +195,17 @@ def _remote_spec_for(
         access_token = str(creds.get("access_token") or creds.get("token") or "").strip()
         if not access_token:
             return None
+        # 自动刷新：从 oauth_manager 的 token_cache 取有效 token
+        # （instance_id 在调用方通过 instance 传入时由调用方拼接，这里尽力推断）
+        from connector_hub import oauth_manager as oauth
+        instance_id = creds.get("instance_id") or creds.get("_instance_id") or ""
+        if instance_id and oauth.get_provider(kind):
+            try:
+                access_token = oauth.get_valid_access_token_sync(kind, instance_id, fallback=access_token)
+            except Exception:
+                logger.warning("OAuth2 auto-refresh failed for %s/%s; using stored token",
+                              kind, instance_id)
+                access_token = access_token
         headers = {**_mcp_http_headers(), "Authorization": f"Bearer {access_token}"}
         user_agent = str(getattr(entry, "mcp_user_agent", "") or "").strip()
         if user_agent:
@@ -233,6 +245,9 @@ def generate_mcp_spec(instance: dict[str, Any]) -> dict[str, Any] | None:
         return None
     creds = decrypt_credentials(instance.get("creds_enc", "")) if instance.get("creds_enc") else {}
     if entry.mcp_mode == "remote":
+        # OAuth2 实例需要把 instance_id 带给 _remote_spec_for，用于自动刷新
+        if getattr(entry, "auth_kind", "") == "oauth2" and creds:
+            creds["_instance_id"] = instance["instance_id"]
         spec3 = _remote_spec_for(kind, creds, entry)
         if not spec3:
             return None
@@ -368,10 +383,17 @@ def normalize_credentials(kind: str, entry: Any, creds: dict[str, Any]) -> dict[
         return out
 
     if auth == "oauth2":
-        access_token = str(creds.get("access_token") or creds.get("token") or "").strip()
+        # 支持两种来源：1) 已完成 OAuth 流程自动带 access_token；
+        #              2) 手动粘贴的 manual_token（无标准 OAuth 发现的兜底）。
+        access_token = str(
+            creds.get("access_token") or creds.get("token") or creds.get("manual_token") or ""
+        ).strip()
         if not access_token:
-            raise ValueError("OAuth2 连接器需先完成授权")
-        return {"access_token": access_token}
+            raise ValueError("OAuth2 连接器需先完成授权，或手动粘贴 Token")
+        return {
+            "access_token": access_token,
+            "manual_token": access_token if creds.get("manual_token") else None,
+        }
 
     if auth == "custom_fields":
         # 原样保留（dify / weknora / obsidian-cli 等）
@@ -454,6 +476,27 @@ def verify_internal_token(instance_id: str, token: str) -> dict[str, Any] | None
                 return creds
             return None
     return None
+
+
+def get_oauth2_instance(instance_id: str) -> dict[str, Any] | None:
+    """返回指定 instance_id 的 OAuth2 凭据 + 实例信息。
+
+    与 get_instance 的区别：返回的 dict 额外带 oauth2 相关字段
+    （access_token 明文、refresh_token、expires_at），供 API 层使用。
+    """
+    from connector_hub import oauth_manager as oauth
+
+    inst = get_instance(instance_id, include_secrets=True)
+    if not inst:
+        return None
+    # 附加 OAuth2 凭据
+    try:
+        creds = oauth.get_credentials(inst["kind"], instance_id)
+        if creds:
+            inst["oauth2"] = creds.to_dict()
+    except Exception:
+        pass
+    return inst
 
 
 def test_instance(instance_id: str) -> dict[str, Any]:

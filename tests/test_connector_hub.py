@@ -46,8 +46,10 @@ class TestCatalog:
         # personal_token / api_key 支持
         assert cat.get_catalog_entry("tencent-docs").supported is True
         assert cat.get_catalog_entry("qq-mail").supported is True
-        # oauth2 暂不支持（未实现 OAuth 全流）
-        assert cat.get_catalog_entry("notion").supported is False
+        # oauth2 已实现 OAuth 全流（DCR + PKCE + 刷新），应标记为支持
+        assert cat.get_catalog_entry("notion").supported is True
+        # 非 catalog 内的 OAuth2 kind 不应被误判为支持
+        assert cat.get_catalog_entry("tencent-docs").supported is True
 
     def test_to_api_shape(self):
         from connector_hub import connectors_catalog as cat

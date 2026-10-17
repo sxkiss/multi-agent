@@ -254,25 +254,87 @@
     if (!list.length) { $('#marketList').innerHTML = '<div class="empty"><div class="big">🔍</div>没有匹配的连接器</div>'; return; }
     var html = '<div class="grid">' + list.map(function (e) {
       var supported = e.supported;
+      var isOAuth2 = (e.auth_kind === 'oauth2');
+      var badges = '<span class="badge mode-' + esc(e.mcp_mode) + '">' + esc(e.mcp_mode) + '</span>' +
+        '<span class="badge">' + esc(e.category) + '</span>' +
+        '<span class="badge">' + esc(e.auth_kind) + '</span>' +
+        (supported ? '<span class="badge ok">可接入</span>' : '<span class="badge no">暂不支持</span>');
+      var actions = '';
+      if (isOAuth2) {
+        // OAuth2 连接器统一走「一键授权」（后端已对所有 5 个实现完整 OAuth 流程 + DCR）
+        actions += '<button class="btn primary" data-oauth2="' + esc(e.kind) + '">⚡ 一键授权</button>';
+        // 少数厂商额外支持「手动粘贴 Token」作为兜底（openalex / qcc）
+        if (e.kind === 'openalex' || e.kind === 'qcc') {
+          actions += '<button class="btn" data-manual-oauth2="' + esc(e.kind) + '">手动粘贴 Token</button>';
+        }
+      } else if (supported) {
+        actions += '<button class="btn primary" data-add="' + esc(e.kind) + '">+ 添加</button>';
+      }
+      if (e.manual_url) {
+        actions += '<a class="a-link" href="' + esc(e.manual_url) + '" target="_blank" rel="noopener" style="align-self:center">获取凭据 ↗</a>';
+      }
       return '<div class="card">' +
         '<div class="hd"><div class="icon" style="background:' + colorOf(e) + '">' + initial(e) + '</div>' +
         '<div style="flex:1;min-width:0"><div class="nm">' + esc(e.name) + '</div>' +
         '<div class="kind">' + esc(e.kind) + '</div></div></div>' +
         '<div class="desc">' + esc(e.description) + '</div>' +
-        '<div class="badges"><span class="badge mode-' + esc(e.mcp_mode) + '">' + esc(e.mcp_mode) + '</span>' +
-        '<span class="badge">' + esc(e.category) + '</span>' +
-        '<span class="badge">' + esc(e.auth_kind) + '</span>' +
-        (supported ? '<span class="badge ok">可接入</span>' : '<span class="badge no">暂不支持</span>') +
-        '</div>' +
-        '<div class="ft">' +
-        (supported ? '<button class="btn primary" data-add="' + esc(e.kind) + '">+ 添加</button>' : '') +
-        (e.manual_url ? '<a class="a-link" href="' + esc(e.manual_url) + '" target="_blank" rel="noopener" style="align-self:center">获取凭据 ↗</a>' : '') +
-        '</div></div>';
+        '<div class="badges">' + badges + '</div>' +
+        '<div class="ft">' + actions + '</div></div>';
     }).join('') + '</div>';
     $('#marketList').innerHTML = html;
     document.querySelectorAll('[data-add]').forEach(function (b) {
       b.onclick = function () { openModal(b.getAttribute('data-add'), null); };
     });
+    document.querySelectorAll('[data-oauth2]').forEach(function (b) {
+      b.onclick = function () { startOAuth2(b.getAttribute('data-oauth2')); };
+    });
+    document.querySelectorAll('[data-manual-oauth2]').forEach(function (b) {
+      b.onclick = function () { openManualToken(b.getAttribute('data-manual-oauth2')); };
+    });
+  }
+
+  // ── OAuth2 一键授权 ────────────────────────────────────────
+  async function startOAuth2(kind) {
+    var r = await api('/oauth2/authorize', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: kind }) });
+    if (!r.status) { toast(r.msg || '启动授权失败', 'err'); return; }
+    var authUrl = r.data.auth_url;
+    // 打开授权页（新标签页/弹窗）
+    window.open(authUrl, '_blank', 'noopener');
+    toast('请在打开的页面中完成授权…', 'ok');
+    // 轮询等待回调完成
+    pollOAuthStatus(kind);
+  }
+
+  // 手动粘贴 Token（无标准发现的 OAuth2 兜底）
+  function openManualToken(kind) {
+    var token = prompt('请粘贴 ' + kind + ' 的 Access Token：');
+    if (!token) return;
+    saveManualToken(kind, token);
+  }
+  async function saveManualToken(kind, token) {
+    var r = await api('/oauth2/manual-token', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: kind, token: token }) });
+    if (r.status) { toast('已保存', 'ok'); loadInstances(); }
+    else toast(r.msg || '保存失败', 'err');
+  }
+
+  // 轮询 OAuth 授权状态（简单版：轮询 status 看是否有新实例）
+  function pollOAuthStatus(kind) {
+    var tries = 0;
+    var timer = setInterval(async function () {
+      tries++;
+      var res = await api('/oauth2/status');
+      if (res.data && res.data.token_cache_kinds && res.data.token_cache_kinds.indexOf(kind) >= 0) {
+        clearInterval(timer);
+        toast('授权成功 🎉', 'ok');
+        loadInstances();
+        switchTab('instances');
+      } else if (tries > 60) {
+        clearInterval(timer);
+        toast('授权超时，请重试', 'err');
+      }
+    }, 2000);
   }
 
   // ── 我的连接器 ────────────────────────────────────────────

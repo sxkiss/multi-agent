@@ -86,6 +86,9 @@ PUBLIC_PREFIX = (
     # 中间件放行，安全性由路由内部 verify_internal_token 校验保证。
     "/api/internal/mcp",
     "/api/v2/connectors/internal/mcp",
+    # OAuth2 授权回调：厂商授权页重定向回本服务时浏览器不会携带用户 Bearer，
+    # 故必须免鉴权放行；安全性由回调内部校验 state + 交换 token 保证。
+    "/api/v2/connectors/oauth2",
     "/favicon.png",
     "/static/",
     "/assets/",
