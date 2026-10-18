@@ -139,6 +139,14 @@ def _build_platform_kinds() -> dict[str, dict[str, Any]]:
                     {"value": "opencode", "label": "opencode"},
                 ],
             }]
+        # 每通道追加可选"默认工作目录"字段（发起对话时传给 chat_start）
+        if not any(f.get("name") == "workspace" for f in meta["config_fields"]):
+            meta["config_fields"] = list(meta["config_fields"]) + [{
+                "name": "workspace",
+                "type": "string",
+                "required": False,
+                "placeholder": "Agent 默认工作目录（绝对路径），留空用全局默认",
+            }]
         kinds[kind] = meta
     return kinds
 
@@ -173,6 +181,63 @@ def _set_gateway_cfg(cfg: dict[str, Any]) -> None:
     _save_config(full)
 
 
+# ── 自动启动状态持久化（重启后恢复手动启动过的通道）──────────────
+# 用户手动启动通道后，把 kind 记入配置的 _auto_start 列表；服务重启时
+# 自动重新启动这些通道。手动停止则从列表移除，之后不会自动恢复。
+def _auto_start_list() -> list[str]:
+    g = _gateway_cfg()
+    raw = g.get("_auto_start", [])
+    if not isinstance(raw, list):
+        return []
+    return [str(k) for k in raw if str(k) in PLATFORM_KINDS]
+
+
+def _set_auto_start_list(kinds: list[str]) -> None:
+    g = _gateway_cfg()
+    g["_auto_start"] = [k for k in kinds if k in PLATFORM_KINDS]
+    _set_gateway_cfg(g)
+
+
+def mark_auto_start(kind: str) -> None:
+    cur = _auto_start_list()
+    if kind not in cur:
+        cur.append(kind)
+        _set_auto_start_list(cur)
+
+
+def unmark_auto_start(kind: str) -> None:
+    cur = _auto_start_list()
+    if kind in cur:
+        cur.remove(kind)
+        _set_auto_start_list(cur)
+
+
+async def restore_auto_start_channels() -> None:
+    """服务重启后自动启动用户手动启动过、且未手动停止的通道。"""
+    kinds = _auto_start_list()
+    if not kinds:
+        return
+    logger.info("[gateway] 检测到 %d 个需自动恢复的通道: %s", len(kinds), kinds)
+    for kind in kinds:
+        try:
+            cfg = _gateway_cfg().get(kind, {})
+            if not cfg.get("configured"):
+                logger.warning("[gateway] 通道 %s 已标记自动启动但未完成配置，跳过", kind)
+                continue
+            if not _sdk_available(kind):
+                logger.warning("[gateway] 通道 %s SDK 不可用，跳过自动恢复", kind)
+                continue
+            ok, dep_msg = _ensure_deps(kind)
+            if not ok:
+                logger.warning("[gateway] 通道 %s 依赖未就绪，跳过自动恢复: %s", kind, dep_msg)
+                continue
+            channel_cfg = {k: v for k, v in cfg.items() if k not in ("configured", "template", "mode")}
+            cid = await _start_channel(kind, channel_cfg)
+            logger.info("[gateway] 通道 %s 已自动恢复 (channel_id=%s)", kind, cid)
+        except Exception as e:
+            logger.warning("[gateway] 自动恢复通道 %s 失败: %s", kind, e)
+
+
 def _sdk_available(kind: str) -> bool:
     if kind not in PLATFORM_KINDS:
         return False
@@ -192,9 +257,9 @@ def _norm_cfg(kind: str, cfg: dict[str, Any]) -> dict[str, Any]:
       - weixin：扁平 {token, account_id, base_url} → accounts[] 列表
       - mqtt：port 字符串 → int
     template 是配置元数据（仅用于对话提示词），mode 是对话模式（single/group/claude），
-    均不传给 SDK，统一剔除。
+    workspace 是对话默认工作目录，均不传给 SDK，统一剔除。
     """
-    cfg = {k: v for k, v in cfg.items() if k not in ("template", "mode")}
+    cfg = {k: v for k, v in cfg.items() if k not in ("template", "mode", "workspace")}
     if kind == "weixin":
         token = str(cfg.get("token") or "").strip()
         account_id = str(cfg.get("account_id") or "").strip()
@@ -480,6 +545,7 @@ async def gateway_start(kind: str) -> JSONResponse:
         # 去掉配置管理字段，只传平台所需字段
         channel_cfg = {k: v for k, v in cfg.items() if k != "configured"}
         cid = await _start_channel(kind, channel_cfg)
+        mark_auto_start(kind)  # 记录为"手动启动"，重启后自动恢复
         return _ok({
             "kind": kind,
             "channel_id": cid,
@@ -505,6 +571,7 @@ async def gateway_stop(kind: str) -> JSONResponse:
             _manager_kind_of.pop(cid, None)
         if kind in _manager_kinds:
             _manager_kinds.discard(kind)
+        unmark_auto_start(kind)  # 手动停止后不再自动恢复
         # 若已无运行通道，停止 manager 释放资源
         if not _manager_kinds and _manager_running:
             await _manager.stop()

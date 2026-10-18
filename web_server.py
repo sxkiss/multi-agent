@@ -3303,11 +3303,22 @@ async def _lifespan(_app):
     _cleanup_task = asyncio.create_task(_periodic_job_cleanup())
     # 会话目录同样只增不删，周期清理超过 3 天的旧会话
     _session_cleanup_task = asyncio.create_task(_periodic_session_cleanup())
+    # 恢复"手动启动过且未手动停止"的通道（服务重启后自动拉起）
+    _gw_restore_task = None
+    try:
+        from platform_ext.gateway import restore_auto_start_channels
+
+        _gw_restore_task = asyncio.create_task(restore_auto_start_channels())
+    except Exception:
+        _gw_restore_task = None
+        logger.warning("[startup] gateway 自动恢复任务创建失败", exc_info=True)
     try:
         yield
     finally:
         _cleanup_task.cancel()
         _session_cleanup_task.cancel()
+        if _gw_restore_task is not None:
+            _gw_restore_task.cancel()
         # 进程退出时优雅停止仍在运行的任务，避免 agent 数据丢失
         # （原先只在 __main__ 路径注册 atexit，uvicorn 启动时不会生效）
         running = [j for j in chat_jobs._jobs.values() if j.is_running]
