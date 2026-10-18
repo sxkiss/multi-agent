@@ -62,6 +62,7 @@
   .badge.ok { background: rgba(7,193,96,.15); color: var(--bt-primary); }
   .badge.no { background: rgba(239,68,68,.12); color: var(--bt-danger); }
   .badge.run { background: rgba(59,130,246,.15); color: var(--bt-accent); }
+  .badge.stop { background: rgba(148,163,184,.15); color: var(--bt-text-2); }
   .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
   .btn {
     border: 1px solid var(--bt-border); background: var(--bt-surface); color: var(--bt-text);
@@ -187,7 +188,7 @@
     el.innerHTML = '<div class="grid">' + gatewayChannels.map(function (c) {
       var cfgBadge = c.configured ? '<span class="badge ok">已配置</span>' : '<span class="badge no">未配置</span>'
       var sdkBadge = c.sdk_installed ? '<span class="badge ok">SDK✓</span>' : '<span class="badge no">SDK 未装</span>'
-      var runBadge = c.running ? '<span class="badge run">运行中</span>' : ''
+      var runBadge = c.running ? '<span class="badge run">运行中</span>' : '<span class="badge stop">已停止</span>'
       return '<div class="ch-card" data-kind="' + esc(c.kind) + '">' +
         '<div class="hd"><div class="nm">' + esc(c.label) + '</div><div class="spacer"></div>' + cfgBadge + ' ' + sdkBadge + ' ' + runBadge + '</div>' +
         '<div class="note">' + esc(c.note) + '</div>' +
