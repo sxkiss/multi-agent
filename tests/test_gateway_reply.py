@@ -22,6 +22,17 @@ def test_extract_sse_data_bare_text():
     assert out["data"]["content"] == "你好世界"
 
 
+def test_extract_sse_data_bare_text_unescapes_newline():
+    """BT sse_pack 把真实换行转成字面 \\n，解析时应还原成真实换行，
+    避免通道收到字面 '\\n' 两个字符而不换行（与前端 App.vue 行为对齐）。"""
+    from platform_ext.gateway_processor import _extract_sse_data
+
+    # data 行里的 \\n 是字面反斜杠+n（SSE data 行不能含裸换行）
+    out = _extract_sse_data("id: 1\nevent: message\ndata: 第一行\\n第二行\\n第三行\n\n")
+    assert out["data"]["content"] == "第一行\n第二行\n第三行"
+    assert "\n" in out["data"]["content"]
+
+
 def test_extract_sse_data_json_dict():
     """JSON dict data（如 error 事件）应带 event 字段。"""
     from platform_ext.gateway_processor import _extract_sse_data

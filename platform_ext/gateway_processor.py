@@ -90,8 +90,10 @@ def _extract_sse_data(sse) -> dict[str, Any]:
                 data_line = line[5:].strip()
     parsed = _parse_sse_data(data_line)
     if parsed is None:
-        # 裸文本：BT sse_pack 对字符串 data 不做 JSON 化，直接作为消息内容
-        parsed = {"content": data_line}
+        # 裸文本：BT sse_pack 把真实换行转成字面 \n（data 行不能含裸换行），
+        # 这里还原成真实换行，避免通道收到字面 \n 两个字符而不换行。
+        # 与 BT 前端 App.vue 的 .replace(/\\n/g, '\n') 行为对齐。
+        parsed = {"content": data_line.replace("\\n", "\n")}
     elif not isinstance(parsed, dict):
         # data 行是纯数字/列表（如序列号等），防御性包装成消息内容
         parsed = {"content": str(parsed)}
