@@ -5139,6 +5139,18 @@ static_dir = os.path.join(BASE_DIR, "static")
 if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# 功能面板等核心页面禁止缓存，避免浏览器继续使用旧版（扫码显示修复等）。
+# 用中间件确保无论路由顺序如何，都注入 no-cache 响应头。
+if os.path.exists(static_dir):
+    @app.middleware("http")
+    async def _no_cache_static_panel(request, call_next):
+        response = await call_next(request)
+        if request.url.path in ("/static/platform_panel.html", "/static/connectors.html", "/static/browser.html"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
 
 if __name__ == '__main__':
     import argparse
