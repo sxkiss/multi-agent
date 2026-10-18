@@ -50,30 +50,52 @@ def _extract_text(message) -> str:
             return ""
 
 
-def _parse_sse_data(data_payload: str) -> dict[str, Any]:
-    """解析 chat_events SSE 的 data 行（JSON 字符串）。"""
+def _parse_sse_data(data_payload: str) -> Any:
+    """解析 chat_events SSE 的 data 行（JSON 字符串）。
+
+    BT 的 sse_pack 对字符串 data 直接输出裸文本（``data: <text>``，不 JSON 化），
+    对非字符串 data 才输出 JSON（``data: <json>``）。这里只做纯 JSON 解析：
+
+    - JSON 可解析 → 返回解析后的值（dict / list / int / str）
+    - 不可解析（裸文本 / 空）→ 返回 ``None``，由调用方按裸文本处理
+    """
     if not data_payload:
-        return {}
+        return None
     try:
         import json
 
         return json.loads(data_payload)
     except Exception:  # noqa: BLE001
-        return {}
+        return None
 
 
-def _extract_sse_data(sse: str) -> dict[str, Any]:
-    """从 SSE 文本中提取 data 字段并解析 JSON。"""
+def _extract_sse_data(sse) -> dict[str, Any]:
+    """从 SSE 文本中提取 event/data 并解析为 dict（供 processor 读 event/data）。
+
+    兼容三种输入：
+    - str（SSE 文本）：同时解析 ``event:`` 与 ``data:`` 行；
+    - dict（某些封装直接返回事件对象）：原样返回；
+    - data 行是纯数字/列表（json.loads 得到非 dict）→ 防御性包装成 message 事件，
+      避免 ``data_payload.get("event")`` 在 int 上崩溃（此前报 'int' object has no attribute 'get'）。
+    """
+    if isinstance(sse, dict):
+        return sse
+    event = ""
     data_line = ""
     if isinstance(sse, str):
         for line in sse.splitlines():
-            if line.startswith("data:"):
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
                 data_line = line[5:].strip()
-                break
-    elif isinstance(sse, dict):
-        # 某些封装直接返回 dict
-        return sse
-    return _parse_sse_data(data_line)
+    parsed = _parse_sse_data(data_line)
+    if parsed is None:
+        # 裸文本：BT sse_pack 对字符串 data 不做 JSON 化，直接作为消息内容
+        parsed = {"content": data_line}
+    elif not isinstance(parsed, dict):
+        # data 行是纯数字/列表（如序列号等），防御性包装成消息内容
+        parsed = {"content": str(parsed)}
+    return {"event": event, "data": parsed}
 
 
 def _cancel_running_tasks(web_server, sid: str) -> None:
@@ -130,6 +152,19 @@ def _channel_mode(gateway, channel_type: str, default: str = "single") -> str:
     except Exception:  # noqa: BLE001
         pass
     return default
+
+
+def _channel_workspace(gateway, channel_type: str) -> str:
+    """读取该通道配置的默认工作目录（可选）。
+
+    面板可在每通道配置里设 workspace 字段；发起对话时传给 chat_start，
+    让该通道的 agent 以指定目录为默认 cwd。留空则回退 BT 全局默认。
+    """
+    try:
+        cfg = gateway._gateway_cfg()
+        return str((cfg.get(channel_type, {}) or {}).get("workspace", "") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def make_processor(agent_main=None, chat_jobs=None, gateway=None):
@@ -191,13 +226,15 @@ def make_processor(agent_main=None, chat_jobs=None, gateway=None):
             _cancel_running_tasks_with(ws, ag, sid)
             _wait_tasks_stopped(ws, sid)
 
-        # 每通道模板/模式：从通道配置读取（可选）
+        # 每通道模板/模式/工作目录：从通道配置读取（可选）
         tpl = ""
         mode = "single"
+        workspace = ""
         gw = _get_gateway()
         if gw is not None:
             tpl = _channel_template(gw, channel_type)
             mode = _channel_mode(gw, channel_type, default="single")
+            workspace = _channel_workspace(gw, channel_type)
 
         # 启动后台对话任务（复用 BT 现有 agent 体系）
         start_params: dict[str, Any] = {
@@ -207,6 +244,8 @@ def make_processor(agent_main=None, chat_jobs=None, gateway=None):
         }
         if tpl:
             start_params["template"] = tpl
+        if workspace:
+            start_params["workspace"] = workspace
         try:
             start_res = ag.chat_start(start_params)
         except Exception as e:  # noqa: BLE001
@@ -230,6 +269,17 @@ def make_processor(agent_main=None, chat_jobs=None, gateway=None):
                     content = str(data.get("content") or data.get("text") or "")
                     if content:
                         yield MessageEvent.delta(content)
+                elif event == "error":
+                    msg = ""
+                    if isinstance(data, dict):
+                        msg = str(data.get("msg") or data.get("content") or "")
+                    elif data is not None:
+                        msg = str(data)
+                    if msg:
+                        yield MessageEvent.error_event(msg)
+                    else:
+                        yield MessageEvent.completed()
+                    return
                 elif event == "message_end":
                     yield MessageEvent.completed()
                     return
