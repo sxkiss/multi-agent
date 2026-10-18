@@ -15,6 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
+# 触发 vendor 加入 sys.path（octop_gateway / octop_memory 随仓库携带在 vendor/ 下）
+import platform_ext  # noqa: E402
+
 
 class TestPlatformMetaAligned:
     """config_fields 必须能映射到底层 SDK 的 required_credentials。"""
@@ -151,3 +154,118 @@ class TestGatewayProcessor:
             content=[TextContent(text="hello")],
         )
         assert _extract_text(msg) == "hello"
+
+    def test_channel_template_read(self):
+        from platform_ext.gateway_processor import _channel_template
+
+        class FakeGateway:
+            @staticmethod
+            def _gateway_cfg():
+                return {"weixin": {"template": "hermes"}}
+
+        assert _channel_template(FakeGateway(), "weixin") == "hermes"
+        assert _channel_template(FakeGateway(), "qq") == ""
+
+    def test_processor_passes_template(self):
+        """processor 发起对话时把通道 template 传给 chat_start。"""
+        import asyncio
+
+        from octop_gateway.models import InboundMessage, TextContent
+        from platform_ext.gateway_processor import make_processor
+
+        captured = {}
+
+        class FakeAgentMain:
+            def chat_start(self, params):
+                captured.update(params)
+                return {"status": True, "data": {}}
+
+            async def chat_events(self, params):
+                yield 'event: message\ndata: {"event":"message","data":{"content":"ok"}}\n\n'
+                yield 'event: message_end\ndata: {"event":"message_end"}\n\n'
+
+        class FakeGateway:
+            @staticmethod
+            def _gateway_cfg():
+                return {"weixin": {"template": "gpt5.5"}}
+
+        msg = InboundMessage(
+            channel_id="c1",
+            channel_type="weixin",
+            content=[TextContent(text="hi")],
+        )
+
+        async def run():
+            proc = make_processor(agent_main=FakeAgentMain(), gateway=FakeGateway())
+            async for _ in proc(msg):
+                pass
+
+        asyncio.run(run())
+        assert captured.get("template") == "gpt5.5"
+        assert captured.get("session_id", "").startswith("gw_weixin_")
+
+    def test_processor_cancels_running_before_start(self):
+        """连续对话：会话有运行中任务时先取消再发新消息。"""
+        import asyncio
+
+        from octop_gateway.models import InboundMessage, TextContent
+        from platform_ext.gateway_processor import make_processor
+
+        calls = []
+
+        class FakeJob:
+            is_running = True
+
+        class FakeChatJobs:
+            def __init__(self):
+                self._jobs = {"k": FakeJob()}
+
+            def active_for_session(self, sid):
+                return [("k", self._jobs["k"])]
+
+        class FakeAgentMain:
+            def chat_stop(self, params):
+                calls.append(("stop", params.get("session_id")))
+                self._stopped = True
+
+            def chat_start(self, params):
+                calls.append(("start", params.get("session_id")))
+                return {"status": True, "data": {}}
+
+            async def chat_events(self, params):
+                yield 'event: message\ndata: {"event":"message","data":{"content":"ok"}}\n\n'
+                yield 'event: message_end\ndata: {"event":"message_end"}\n\n'
+
+        # 覆盖 _wait_tasks_stopped：让 FakeJob 在 stop 后不再 running
+        import platform_ext.gateway_processor as gp
+
+        orig_wait = gp._wait_tasks_stopped
+
+        def fake_wait(ws, sid, timeout=5.0):
+            ws._jobs["k"].is_running = False
+
+        gp._wait_tasks_stopped = fake_wait
+
+        msg = InboundMessage(
+            channel_id="c1",
+            channel_type="weixin",
+            content=[TextContent(text="hi")],
+        )
+
+        async def run():
+            proc = make_processor(
+                agent_main=FakeAgentMain(),
+                chat_jobs=FakeChatJobs(),
+                gateway=None,
+            )
+            async for _ in proc(msg):
+                pass
+
+        try:
+            asyncio.run(run())
+        finally:
+            gp._wait_tasks_stopped = orig_wait
+
+        # 先 stop 后 start
+        assert calls[0][0] == "stop"
+        assert calls[1][0] == "start"
