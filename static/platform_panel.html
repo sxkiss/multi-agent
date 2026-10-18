@@ -201,13 +201,13 @@
         '</div>' +
       '</div>'
     }).join('') + '</div>'
-    // 渲染每个平台的配置字段
+    // 渲染每个平台的配置字段（用后端返回的 saved_value 回填）
     gatewayChannels.forEach(function (c) {
       var box = $('fields-' + c.kind)
       if (!box) return
-      var saved = window.__gwSavedConfigs && window.__gwSavedConfigs[c.kind]
       box.innerHTML = (c.config_fields || []).map(function (f) {
-        var val = (saved && saved[f.name]) || ''
+        var val = f.saved_value || ''
+        var saved = !!f.saved
         var id = 'cfg-' + c.kind + '-' + f.name
         if (f.name === 'template') {
           var opts = ['<option value=""' + (!val ? ' selected' : '') + '>（默认模板）</option>']
@@ -218,8 +218,12 @@
             '<select id="' + id + '">' + opts.join('') + '</select></div>'
         }
         var isPwd = f.type === 'password'
-        return '<div><label>' + esc(f.name) + (f.required ? ' *' : '') + '</label>' +
-          '<input id="' + id + '" type="' + (isPwd ? 'password' : 'text') + '" value="' + esc(val) + '" placeholder="' + esc(f.placeholder || f.name) + '"></div>'
+        // 敏感字段已设置时不回显明文，显示"已设置"占位
+        var ph = saved && isPwd ? '（已设置）' : (f.placeholder || f.name)
+        var inputVal = saved && isPwd ? '' : val
+        return '<div><label>' + esc(f.name) + (f.required ? ' *' : '') +
+          (saved && isPwd ? ' <span class="badge ok">已设置</span>' : '') + '</label>' +
+          '<input id="' + id + '" type="' + (isPwd ? 'password' : 'text') + '" value="' + esc(inputVal) + '" placeholder="' + esc(ph) + '"></div>'
       }).join('') +
       '<div class="row"><button class="btn" onclick="gwSaveConfig(\'' + esc(c.kind) + '\')">保存配置</button></div>'
     })
@@ -257,7 +261,11 @@
     var body = {}
     ;(c.config_fields || []).forEach(function (f) {
       var v = $('cfg-' + kind + '-' + f.name)
-      if (v) body[f.name] = v.value.trim()
+      if (!v) return
+      var val = v.value.trim()
+      // 敏感字段留空（占位"已设置"）视为不修改，保留后端原值
+      if (f.type === 'password' && !val) return
+      body[f.name] = val
     })
     try {
       var res = await api('/gateway/channels/' + kind + '/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })

@@ -205,6 +205,77 @@ def _norm_cfg(kind: str, cfg: dict[str, Any]) -> dict[str, Any]:
     return dict(cfg)
 
 
+# 各通道运行时需要的第三方依赖（import 模块名 -> pip 包名）
+# 这些库是延迟导入的：通道模块本身能 import（_sdk_available=True），
+# 但真正启动连接时才需要它们。启动前自检，缺失则自动 pip 安装。
+_RUNTIME_DEPS: dict[str, dict[str, str]] = {
+    "dingtalk": {"dingtalk_stream": "dingtalk-stream"},
+    "discord": {"discord": "discord.py"},
+    "feishu": {"lark_oapi": "lark-oapi"},
+    "mqtt": {"paho.mqtt": "paho-mqtt"},
+    "wecom": {"wecom_aibot_sdk": "wecom-aibot-sdk"},
+    "telegram": {"telegram": "python-telegram-bot"},
+}
+
+
+def _missing_deps(kind: str) -> list[str]:
+    """返回该通道缺失的 pip 包名列表（按 _RUNTIME_DEPS 检测）。"""
+    missing: list[str] = []
+    for mod, pkg in (_RUNTIME_DEPS.get(kind) or {}).items():
+        try:
+            import importlib.util
+
+            if importlib.util.find_spec(mod) is None:
+                missing.append(pkg)
+        except (ImportError, ValueError, AttributeError):
+            missing.append(pkg)
+    return missing
+
+
+def _install_deps(kind: str, pkgs: list[str]) -> tuple[bool, str]:
+    """自动安装指定通道缺失的第三方依赖（装到项目 vendor 目录）。
+
+    返回 (成功与否, 错误信息或成功提示)。
+    """
+    import subprocess
+
+    target = os.path.join(PROJECT_ROOT, "vendor")
+    pip = os.path.join(PROJECT_ROOT, ".venv", "bin", "pip")
+    if not os.path.exists(pip):
+        pip = "pip"  # 回退到系统 pip
+    cmd = [pip, "install", "--quiet", "--disable-pip-version-check", "--target", target] + pkgs
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if proc.returncode != 0:
+            return False, (proc.stderr or proc.stdout or "").strip()[-800:]
+        return True, "已安装: " + ", ".join(pkgs)
+    except subprocess.TimeoutExpired:
+        return False, f"安装依赖超时: {', '.join(pkgs)}"
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
+def _ensure_deps(kind: str) -> tuple[bool, str]:
+    """确保通道运行依赖就绪：缺失则自动安装。返回 (是否就绪, 提示/错误)。"""
+    missing = _missing_deps(kind)
+    if not missing:
+        return True, ""
+    logger.info("[gateway] %s 缺失依赖 %s，尝试自动安装", kind, ", ".join(missing))
+    ok, msg = _install_deps(kind, missing)
+    if not ok:
+        return False, f"自动安装 {kind} 依赖失败: {msg}"
+    # 安装后再确认一次
+    still = _missing_deps(kind)
+    if still:
+        return False, f"安装后仍缺失: {', '.join(still)}"
+    return True, msg
+
+
 # 运行中的 ChannelManager 单例（惰性）
 _manager = None
 _manager_kinds: set[str] = set()
@@ -255,22 +326,50 @@ def _err(msg: str) -> JSONResponse:
     return JSONResponse(public.returnMsg(False, msg))
 
 
+# 敏感字段（密码/密钥类），回显时不返回明文，只标记是否已设置
+_SENSITIVE_FIELDS = {
+    "token", "secret", "password", "app_secret", "bot_token",
+    "client_secret", "encrypt_key",
+}
+
+
 @router.get("/gateway/channels")
 async def gateway_list_channels() -> JSONResponse:
-    """列出支持的平台通道与激活状态。"""
+    """列出支持的平台通道与激活状态。
+
+    对已配置的通道，config_fields 附带 saved_value（非敏感字段回填真实值，
+    敏感字段仅标记 saved=True，不回显明文），供面板回显与编辑。
+    """
     cfg = _gateway_cfg()
     out = []
     for kind, meta in PLATFORM_KINDS.items():
         saved = cfg.get(kind, {})
         sdk_ok = _sdk_available(kind)
+        configured = bool(saved.get("configured"))
+        fields = []
+        for f in meta.get("config_fields", []):
+            name = f.get("name")
+            item = dict(f)
+            if configured and name in saved:
+                is_sensitive = name in _SENSITIVE_FIELDS or f.get("type") == "password"
+                if is_sensitive:
+                    item["saved"] = bool(saved.get(name))
+                    item["saved_value"] = ""
+                else:
+                    item["saved"] = True
+                    item["saved_value"] = str(saved.get(name) or "")
+            else:
+                item["saved"] = False
+                item["saved_value"] = ""
+            fields.append(item)
         out.append({
             "kind": kind,
             "label": meta["label"],
             "note": meta["note"],
-            "configured": bool(saved.get("configured")),
+            "configured": configured,
             "sdk_installed": sdk_ok,
             "running": kind in _manager_kinds,
-            "config_fields": meta["config_fields"],
+            "config_fields": fields,
         })
     return _ok({"channels": out})
 
@@ -344,23 +443,34 @@ async def gateway_save_config(kind: str, request: Request) -> JSONResponse:
 
 @router.post("/gateway/channels/{kind}/start")
 async def gateway_start(kind: str) -> JSONResponse:
-    """启动某平台通道。SDK 缺失时返回清晰错误。"""
+    """启动某平台通道。缺运行依赖时自动安装；未配置时返回清晰错误。"""
     if kind not in PLATFORM_KINDS:
         return _err(f"未知平台: {kind}")
     cfg = _gateway_cfg().get(kind, {})
     if not cfg.get("configured"):
         return _err(f"平台 {kind} 未配置，请先 POST /api/v2/gateway/channels/{kind}/config")
+
+    # 通道模块本身是否可加载（基础 SDK 能力）
     if not _sdk_available(kind):
         return _err(
-            f"平台 {kind} 的 SDK 未安装。请在 BT 虚拟环境安装 vendor/octop-gateway 的对应依赖：\n"
-            f"  .venv/bin/pip install --target vendor/octop-gateway <sdk>\n"
-            f"（详见 docs/plan-octop-gateway-memory.md）"
+            f"平台 {kind} 的通道 SDK 不可用（底层库缺失）。请检查 vendor/octop-gateway 是否完整。"
         )
+
+    # 自动安装运行时缺失的第三方依赖（discord/lark/dingtalk-stream 等）
+    ok, dep_msg = _ensure_deps(kind)
+    if not ok:
+        return _err(dep_msg)
+
     try:
         # 去掉配置管理字段，只传平台所需字段
         channel_cfg = {k: v for k, v in cfg.items() if k != "configured"}
         cid = await _start_channel(kind, channel_cfg)
-        return _ok({"kind": kind, "channel_id": cid, "running": True})
+        return _ok({
+            "kind": kind,
+            "channel_id": cid,
+            "running": True,
+            "deps": dep_msg,
+        })
     except Exception as e:  # noqa: BLE001
         logger.exception("[gateway] 启动 %s 失败", kind)
         return _err(f"启动 {kind} 失败: {e}")

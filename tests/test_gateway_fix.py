@@ -269,3 +269,60 @@ class TestGatewayProcessor:
         # 先 stop 后 start
         assert calls[0][0] == "stop"
         assert calls[1][0] == "start"
+
+class TestRuntimeDepsAndFillback:
+    def test_missing_deps_qq_none(self):
+        from platform_ext import gateway
+
+        assert gateway._missing_deps("qq") == []
+
+    def test_missing_deps_discord(self):
+        from platform_ext import gateway
+
+        missing = gateway._missing_deps("discord")
+        assert "discord.py" in missing
+
+    def test_missing_deps_wecom(self):
+        from platform_ext import gateway
+
+        missing = gateway._missing_deps("wecom")
+        assert "wecom-aibot-sdk" in missing
+
+    def test_norm_cfg_strips_template(self):
+        from platform_ext import gateway
+
+        out = gateway._norm_cfg("feishu", {"app_id": "a", "app_secret": "s", "template": "hermes"})
+        assert "template" not in out
+        assert out["app_id"] == "a"
+
+    def test_norm_cfg_weixin_strips_template(self):
+        from platform_ext import gateway
+
+        out = gateway._norm_cfg("weixin", {"token": "t", "account_id": "a", "template": "hermes"})
+        assert "template" not in out
+        assert out["accounts"][0]["token"] == "t"
+
+    def test_list_channels_fills_saved_value(self, tmp_path, monkeypatch):
+        """已配置通道的非敏感字段应回填 saved_value，敏感字段不返回明文。"""
+        import json
+
+        from platform_ext import gateway
+
+        cfg = {"wecom": {"bot_id": "real_bot", "secret": "SECRET", "configured": True}}
+        monkeypatch.setattr(gateway, "_config_path", lambda: str(tmp_path / "config.json"))
+        with open(tmp_path / "config.json", "w", encoding="utf-8") as fh:
+            json.dump({"platform_ext": {"gateway": cfg}}, fh, ensure_ascii=False)
+
+        import asyncio
+
+        res = asyncio.run(gateway.gateway_list_channels())
+        body = json.loads(res.body.decode("utf-8"))
+        assert body["status"] is True
+        wecom = next(c for c in body["data"]["channels"] if c["kind"] == "wecom")
+        fields = {f["name"]: f for f in wecom["config_fields"]}
+        # 非敏感字段回填
+        assert fields["bot_id"]["saved"] is True
+        assert fields["bot_id"]["saved_value"] == "real_bot"
+        # 敏感字段不回显明文
+        assert fields["secret"]["saved"] is True
+        assert fields["secret"]["saved_value"] == ""
