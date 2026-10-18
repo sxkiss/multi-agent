@@ -218,6 +218,13 @@
           return '<div><label>提示词模板</label>' +
             '<select id="' + id + '">' + opts.join('') + '</select></div>'
         }
+        if (f.type === 'select') {
+          var sopts = (f.options || []).map(function (o) {
+            return '<option value="' + esc(o.value || '') + '"' + (String(val) === String(o.value) ? ' selected' : '') + '>' + esc(o.label || o.value) + '</option>'
+          })
+          return '<div><label>' + esc(f.name) + '</label>' +
+            '<select id="' + id + '">' + sopts.join('') + '</select></div>'
+        }
         var isPwd = f.type === 'password'
         // 敏感字段已设置时不回显明文，显示"已设置"占位
         var ph = saved && isPwd ? '（已设置）' : (f.placeholder || f.name)
