@@ -4,6 +4,9 @@
 sessions/
 __pycache__/
 *.pyc
+# SQLite 运行时临时文件（共享内存/预写日志）
+*.sqlite-shm
+*.sqlite-wal
 
 # ===== 环境 / 依赖 =====
 .venv/
