@@ -1,13 +1,14 @@
 """多平台 IM 通道桥。
 
-封装 `octop_gateway.manager.ChannelManager`，为 BT 提供统一的多平台
-IM 通道注册/启停/状态管理。
+封装底层 IM 通道管理器，为 BT 提供统一的多平台通道注册/启停/状态管理，
+并把收到的消息桥接到 BT 现有 agent 对话体系。
 
 设计（不破坏现有 API）：
 - 所有路由走 /api/v2/gateway/* 前缀；
 - 配置存 config.json 的 platform_ext.gateway 段；
 - 平台 SDK 按需安装（vendor/octop-gateway），未装 SDK 的平台 start 时返回清晰错误；
-- BT 现有微信小程序/clawbot/869 通道逻辑原样保留，本模块只新增真实 IM 平台通道。
+- BT 现有微信小程序/clawbot/869 通道逻辑原样保留，本模块只新增真实 IM 平台通道；
+- 通道消息经 gateway_processor 进入 BT 对话（session 形如 gw_<channel>_<subject>）。
 
 API：
   GET  /api/v2/gateway/channels  列出支持的平台通道与激活状态
@@ -34,68 +35,76 @@ logger = logging.getLogger("platform-ext-gateway")
 
 router = APIRouter()
 
-# 支持的平台（对齐 octop_gateway.channels.SUPPORTED_CHANNEL_KINDS 的常用子集）
-# 平台标签与配置说明（用于增强 SUPPORTED_CHANNEL_KINDS 的展示）
+# 支持的平台（对齐底层通道 SDK 的 SUPPORTED_CHANNEL_KINDS 常用子集）
+# config_fields 的 name 严格对齐各平台 ChannelConfig 的真实凭据字段，
+# 确保手动配置、扫码绑定、SDK 启动三者字段一致。
 _PLATFORM_META: dict[str, dict[str, Any]] = {
     "weixin": {
         "label": "微信 (iLink)",
-        "config_fields": [{"name": "token", "type": "string", "required": True, "placeholder": "iLink Bot token"},
+        "config_fields": [{"name": "token", "type": "password", "required": True, "placeholder": "iLink Bot token"},
                           {"name": "account_id", "type": "string", "required": False, "placeholder": "账号 ID / bot_uin"},
                           {"name": "base_url", "type": "string", "required": False, "placeholder": "默认 https://ilinkai.weixin.qq.com"}],
+        "note": "微信 iLink Bot",
     },
     "feishu": {
         "label": "飞书",
         "config_fields": [{"name": "app_id", "type": "string", "required": True},
-                          {"name": "app_secret", "type": "string", "required": True}],
+                          {"name": "app_secret", "type": "password", "required": True}],
         "note": "需 lark-oapi SDK",
     },
     "telegram": {
         "label": "Telegram",
-        "config_fields": [{"name": "bot_token", "type": "string", "required": True}],
+        "config_fields": [{"name": "bot_token", "type": "password", "required": True}],
         "note": "需 python-telegram-bot SDK",
     },
     "qq": {
         "label": "QQ",
-        "config_fields": [{"name": "account", "type": "string", "required": True}],
-        "note": "QQ 协议通道",
+        "config_fields": [{"name": "app_id", "type": "string", "required": True, "placeholder": "QQ 开放平台 AppID"},
+                          {"name": "secret", "type": "password", "required": True, "placeholder": "AppSecret（用于签名校验）"},
+                          {"name": "token", "type": "password", "required": False, "placeholder": "Bot token（可选）"}],
+        "note": "QQ 机器人通道",
     },
     "dingtalk": {
         "label": "钉钉",
         "config_fields": [{"name": "app_key", "type": "string", "required": True},
-                          {"name": "app_secret", "type": "string", "required": True}],
+                          {"name": "app_secret", "type": "password", "required": True}],
         "note": "需 dingtalk-stream SDK",
     },
     "wecom": {
         "label": "企业微信",
-        "config_fields": [{"name": "corp_id", "type": "string", "required": True},
-                          {"name": "secret", "type": "string", "required": True}],
-        "note": "需 wecom-aibot-sdk",
+        "config_fields": [{"name": "bot_id", "type": "string", "required": True, "placeholder": "企业微信 AI Bot ID"},
+                          {"name": "secret", "type": "password", "required": True}],
+        "note": "需企业微信 AI Bot SDK",
     },
     "discord": {
         "label": "Discord",
-        "config_fields": [{"name": "bot_token", "type": "string", "required": True}],
+        "config_fields": [{"name": "bot_token", "type": "password", "required": True}],
         "note": "需 discord-py SDK",
     },
     "yuanbao": {
         "label": "元宝",
-        "config_fields": [{"name": "token", "type": "string", "required": True}],
+        "config_fields": [{"name": "token", "type": "password", "required": True}],
         "note": "元宝开放平台",
     },
     "xiaoyi": {
         "label": "小一 (xiaoyi)",
-        "config_fields": [{"name": "token", "type": "string", "required": True}],
+        "config_fields": [{"name": "token", "type": "password", "required": True}],
         "note": "小一智能助手",
     },
     "mqtt": {
         "label": "MQTT",
-        "config_fields": [{"name": "broker", "type": "string", "required": True},
-                          {"name": "topic", "type": "string", "required": True}],
+        "config_fields": [{"name": "host", "type": "string", "required": True, "placeholder": "broker 主机名"},
+                          {"name": "port", "type": "number", "required": False, "placeholder": "端口，默认 8883"},
+                          {"name": "subscribe_topic", "type": "string", "required": True, "placeholder": "订阅主题（入站）"},
+                          {"name": "publish_topic", "type": "string", "required": False, "placeholder": "发布主题模板（出站）"},
+                          {"name": "username", "type": "string", "required": False},
+                          {"name": "password", "type": "password", "required": False}],
         "note": "MQTT 协议通道，需 paho-mqtt SDK",
     },
 }
 
-# 对齐 octop-gateway 官方 SUPPORTED_CHANNEL_KINDS（动态枚举，自动同步新平台）
-# 这样 octop-gateway 升级新增平台时，本模块自动跟随。
+# 对齐底层通道 SDK 的 SUPPORTED_CHANNEL_KINDS（动态枚举，自动同步新平台）
+# 这样底层通道库升级新增平台时，本模块自动跟随。
 def _build_platform_kinds() -> dict[str, dict[str, Any]]:
     kinds = {}
     try:
@@ -145,7 +154,7 @@ def _set_gateway_cfg(cfg: dict[str, Any]) -> None:
 def _sdk_available(kind: str) -> bool:
     if kind not in PLATFORM_KINDS:
         return False
-    # 平台 SDK 模块路径：octop_gateway.channels.<kind>（对齐官方 _CHANNEL_MAP）
+    # 平台 SDK 模块路径：octop_gateway.channels.<kind>（对齐底层 _CHANNEL_MAP）
     try:
         __import__(f"octop_gateway.channels.{kind}", fromlist=["*"])
         return True
@@ -153,32 +162,77 @@ def _sdk_available(kind: str) -> bool:
         return False
 
 
+def _norm_cfg(kind: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    """把前端扁平配置（config_fields 字段名）归一化为底层 SDK 期望的结构。
+
+    多数平台字段名已对齐（app_id/app_secret/bot_token/bot_id 等），直接透传；
+    少数平台需要特殊转换：
+      - weixin：扁平 {token, account_id, base_url} → accounts[] 列表
+      - mqtt：port 字符串 → int
+    """
+    if kind == "weixin":
+        token = str(cfg.get("token") or "").strip()
+        account_id = str(cfg.get("account_id") or "").strip()
+        base_url = str(cfg.get("base_url") or "").strip() or "https://ilinkai.weixin.qq.com"
+        if token and account_id:
+            return {
+                "accounts": [{
+                    "account_id": account_id,
+                    "token": token,
+                    "base_url": base_url,
+                }]
+            }
+        return {"accounts": []}
+    if kind == "mqtt":
+        out = dict(cfg)
+        if out.get("port"):
+            try:
+                out["port"] = int(out["port"])
+            except (TypeError, ValueError):
+                out["port"] = 8883
+        return out
+    # 其余平台字段已对齐，直接透传
+    return dict(cfg)
+
+
 # 运行中的 ChannelManager 单例（惰性）
 _manager = None
 _manager_kinds: set[str] = set()
+_manager_kind_of: dict[str, str] = {}  # channel_id -> kind
 _manager_running = False
 
 
 def _get_manager():
-    """懒加载 octop_gateway.ChannelManager。"""
+    """懒加载底层 ChannelManager，并绑定对话桥接处理器。"""
     global _manager
     if _manager is not None:
         return _manager
     from octop_gateway import ChannelManager
-    _manager = ChannelManager(workers_per_channel=2, queue_maxsize=200)
+    from platform_ext.gateway_processor import make_processor
+
+    _manager = ChannelManager(
+        workers_per_channel=2,
+        queue_maxsize=200,
+        processor=make_processor(),
+    )
     return _manager
 
 
 async def _start_channel(kind: str, cfg: dict[str, Any]) -> str:
-    """启动一个平台通道，返回 channel_id。"""
+    """启动一个平台通道，返回 channel_id。
+
+    先把前端扁平配置归一化为底层 SDK 期望结构，再注册通道；
+    底层 manager 自带对话桥接处理器，消息进入 BT 对话体系。
+    """
     global _manager_running
     mgr = _get_manager()
     if not _manager_running:
         await mgr.start()
         _manager_running = True
-    # 通过 add_channel 统一注册（便捷 add_* 方法依赖具体 SDK 类型）
-    channel_id = await mgr.add_channel(channel_type=kind, config=cfg)
+    norm_cfg = _norm_cfg(kind, cfg)
+    channel_id = await mgr.add_channel(channel_type=kind, config=norm_cfg)
     _manager_kinds.add(kind)
+    _manager_kind_of[channel_id] = kind
     return channel_id
 
 
@@ -280,16 +334,18 @@ async def gateway_start(kind: str) -> JSONResponse:
 @router.post("/gateway/channels/{kind}/stop")
 async def gateway_stop(kind: str) -> JSONResponse:
     """停止某平台通道。"""
-    global _manager_running
+    global _manager_running, _manager_kinds, _manager_kind_of
     if _manager is None:
         return _ok({"kind": kind, "running": False})
     try:
-        # 找到该 kind 对应的 channel 并移除
-        cids = [cid for cid in _manager.channel_ids() if cid in _manager_kinds]
-        for cid in cids:
-            if kind in _manager_kinds:
-                await _manager.remove_channel(cid)
-                _manager_kinds.discard(kind)
+        # 精确找到该 kind 对应的 channel（channel_ids 是属性，非方法）
+        target = [cid for cid in _manager.channel_ids if _manager_kind_of.get(cid) == kind]
+        for cid in target:
+            await _manager.remove_channel(cid)
+            _manager_kind_of.pop(cid, None)
+        if kind in _manager_kinds:
+            _manager_kinds.discard(kind)
+        # 若已无运行通道，停止 manager 释放资源
         if not _manager_kinds and _manager_running:
             await _manager.stop()
             _manager_running = False

@@ -3,9 +3,9 @@
 支持：weixin(iLink Bot)/qq/wecom/dingtalk 四平台扫码绑定，
 生成二维码 -> 轮询结果 -> 成功自动保存配置到 config.json。
 
-- weixin/qq   复用 octop-gateway 的 login_qr（WeixinQRLogin / QQBotQRLogin）
-- wecom       复用 infra/gateway/channels/qr_bind.py 的 httpx 调用
-- dingtalk    复用 infra/gateway/channels/dingtalk_registration.py 的 Device Flow
+- weixin/qq   复用底层通道库的 login_qr（WeixinQRLogin / QQBotQRLogin）
+- wecom       直连企业微信公开接口完成扫码授权
+- dingtalk    走钉钉开放平台的 Device Flow 注册流程
 """
 
 from __future__ import annotations
