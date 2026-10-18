@@ -125,6 +125,20 @@ def _build_platform_kinds() -> dict[str, dict[str, Any]]:
                 "required": False,
                 "placeholder": "提示词模板名（default/gpt5.5/hermes/unrestricted_jeli），留空用全局默认",
             }]
+        # 每通道追加可选"对话模式"字段（默认单 Agent）
+        if not any(f.get("name") == "mode" for f in meta["config_fields"]):
+            meta["config_fields"] = list(meta["config_fields"]) + [{
+                "name": "mode",
+                "type": "select",
+                "required": False,
+                "placeholder": "单 Agent（默认）",
+                "options": [
+                    {"value": "", "label": "单 Agent（默认）"},
+                    {"value": "group", "label": "集团模式"},
+                    {"value": "claude", "label": "Claude CLI"},
+                    {"value": "opencode", "label": "opencode"},
+                ],
+            }]
         kinds[kind] = meta
     return kinds
 
@@ -177,9 +191,10 @@ def _norm_cfg(kind: str, cfg: dict[str, Any]) -> dict[str, Any]:
     少数平台需要特殊转换：
       - weixin：扁平 {token, account_id, base_url} → accounts[] 列表
       - mqtt：port 字符串 → int
-    template 是配置元数据（仅用于对话提示词），不传给 SDK，统一剔除。
+    template 是配置元数据（仅用于对话提示词），mode 是对话模式（single/group/claude），
+    均不传给 SDK，统一剔除。
     """
-    cfg = {k: v for k, v in cfg.items() if k != "template"}
+    cfg = {k: v for k, v in cfg.items() if k not in ("template", "mode")}
     if kind == "weixin":
         token = str(cfg.get("token") or "").strip()
         account_id = str(cfg.get("account_id") or "").strip()

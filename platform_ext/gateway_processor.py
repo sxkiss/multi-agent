@@ -116,6 +116,22 @@ def _channel_template(gateway, channel_type: str) -> str:
         return ""
 
 
+def _channel_mode(gateway, channel_type: str, default: str = "single") -> str:
+    """读取该通道配置的对话模式（single/group/claude 等，可选）。
+
+    通道对话默认走 BT 单 Agent（single）；如需集团编排或 Claude CLI，
+    可在通道配置里设 mode 字段（面板保存配置时写入）。
+    """
+    try:
+        cfg = gateway._gateway_cfg()
+        val = str((cfg.get(channel_type, {}) or {}).get("mode", "") or "").strip()
+        if val:
+            return val
+    except Exception:  # noqa: BLE001
+        pass
+    return default
+
+
 def make_processor(agent_main=None, chat_jobs=None, gateway=None):
     """构造 MessageProcessor（async generator）。
 
@@ -175,17 +191,19 @@ def make_processor(agent_main=None, chat_jobs=None, gateway=None):
             _cancel_running_tasks_with(ws, ag, sid)
             _wait_tasks_stopped(ws, sid)
 
-        # 每通道模板：从通道配置读取 template（可选）
+        # 每通道模板/模式：从通道配置读取（可选）
         tpl = ""
+        mode = "single"
         gw = _get_gateway()
         if gw is not None:
             tpl = _channel_template(gw, channel_type)
+            mode = _channel_mode(gw, channel_type, default="single")
 
         # 启动后台对话任务（复用 BT 现有 agent 体系）
         start_params: dict[str, Any] = {
             "session_id": sid,
             "message": text,
-            "mode": "claude",
+            "mode": mode,
         }
         if tpl:
             start_params["template"] = tpl
