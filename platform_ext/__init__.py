@@ -29,6 +29,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 把随仓库携带的 vendor 包加入 sys.path（octop-gateway / octop-memory 官方包）
 _VENDOR_DIR = os.path.join(PROJECT_ROOT, "vendor")
+# 优先把 vendor 根目录加入 sys.path，使自动安装到 vendor/ 的第三方依赖
+# （如 paho-mqtt、discord.py、lark-oapi 等）也能被 import。
+if os.path.isdir(_VENDOR_DIR) and _VENDOR_DIR not in sys.path:
+    sys.path.insert(0, _VENDOR_DIR)
 for _v in ("octop-gateway", "octop-memory"):
     _p = os.path.join(_VENDOR_DIR, _v)
     if os.path.isdir(_p) and _p not in sys.path:

@@ -1,0 +1,7 @@
+# vendor/ 下只跟踪官方随仓库携带的包（octop-gateway / octop-memory）。
+# 其余目录是运行时自动安装的第三方依赖（paho-mqtt、discord.py、lark-oapi 等），
+# 不应入库，由各通道启动时按需安装。
+*
+!octop-gateway/
+!octop-memory/
+!.gitignore
