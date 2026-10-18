@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FutureTimeout
 from typing import Any, get_type_hints
 
-from .base import _xml_response, inject_tool_name, inject_duration  # noqa: F401  (工具结果统一封装)
+from .base import _xml_response, inject_tool_name, inject_duration, tool_result_for_model  # noqa: F401  (工具结果统一封装)
 
 # 项目根目录（chat_client 的上一级），作为所有工具的默认工作目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
