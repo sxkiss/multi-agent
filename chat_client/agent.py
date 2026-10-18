@@ -1284,6 +1284,32 @@ Here is some useful information about the environment you are running in:
                     self._repeat_content = None
                     self._repeat_content_streak = 0
 
+                # 兜底解析（2026-10-18 恢复）：模型未走标准 function_call，而是把工具
+                # 调用写成 <invoke>/<skill name> 文本（Claude Code 风格）时，解析为真实
+                # 工具调用执行，避免"只回文本不调工具"导致任务卡死。同时剥离正文中的
+                # 伪调用块，防止历史污染。
+                if not tool_call_chunks and current_response_content:
+                    try:
+                        _invoke_tcs = self._parse_invoke_tool_calls(current_response_content)
+                    except Exception:
+                        _invoke_tcs = []
+                    if _invoke_tcs:
+                        logger.warning(
+                            "[ToolInvoke] 检测到 %d 个 <invoke>/<skill> 文本工具调用，已转标准工具执行: %s",
+                            len(_invoke_tcs), [t[0] for t in _invoke_tcs],
+                        )
+                        current_response_content = self._strip_invoke_blocks(current_response_content)
+                        full_response_content = current_response_content
+                        tool_call_chunks = {}
+                        for _i, (_nm, _args) in enumerate(_invoke_tcs):
+                            tool_call_chunks[_i] = {
+                                "id": f"invoke_{_i}",
+                                "function": {
+                                    "name": _nm,
+                                    "arguments": json.dumps(_args, ensure_ascii=False),
+                                },
+                            }
+
                 # 如果没有工具调用，结束循环
                 if not tool_call_chunks:
                     # 结束前先等后台任务：工具转后台后模型往往"无话可说"直接结束，
@@ -1410,8 +1436,10 @@ Here is some useful information about the environment you are running in:
                 if current_reasoning_content:
                     assistant_msg_kwargs["reasoning_content"] = current_reasoning_content
 
-                # 保存助手工具调用消息（模型输出什么就存什么）
-                self.memory.add_message("assistant", current_response_content, id=ai_msg_id, **assistant_msg_kwargs)
+                # 源头防污染（2026-10-18 恢复）：保存历史前剥离 <invoke>/<skill> 伪工具
+                # 调用文本。否则历史里残留伪调用块，后续请求会持续诱导模型模仿。
+                _saved_content = Agent._strip_invoke_blocks(current_response_content)
+                self.memory.add_message("assistant", _saved_content, id=ai_msg_id, **assistant_msg_kwargs)
 
                 messages.append({
                     "role": "assistant",
@@ -1664,9 +1692,10 @@ Here is some useful information about the environment you are running in:
                      kwargs["reasoning_content"] = full_reasoning_content
                  
                  # 使用预生成的 ai_msg_id
+                 # 源头防污染：保存历史前剥离 <invoke>/<skill> 文本（同上）
                  ai_msg = self.memory.add_message(
                      "assistant",
-                     full_response_content,
+                     Agent._strip_invoke_blocks(full_response_content),
                      id=ai_msg_id,
                      **kwargs,
                  )
@@ -1722,6 +1751,115 @@ Here is some useful information about the environment you are running in:
                 _xml_response("error", f"Error executing tool: {e!s}"),
                 func_name)
 
+    # ── <invoke>/<skill name> 文本工具调用兜底解析（2026-10-18 恢复）─────────
+    # 模型（尤其 GLM/自研系）在长会话中会输出 Claude Code 风格的 <invoke> 文本
+    # 工具调用，还会退化成 <skill name="X"> / <parameter name="..."> 形式。若不
+    # 解析，模型以为自己在调工具、实际只发了文本 → 任务卡死/中断；同时这类
+    # 文本会残留在历史里持续诱导模型模仿，形成污染循环。因此：
+    #   1. _strip_invoke_blocks：从发送/保存的历史中剥离伪工具调用块
+    #   2. _parse_invoke_tool_calls：把正文中的伪工具调用转成标准 tool_calls 执行
+    # 兼容闭合/不闭合/畸形标签前缀（标签名前可穿插特殊 token，如 <｜U2｜parameter>）。
+    _TAG_PREFIX = r"(?:\｜[^\s\>]*?)?"
+    # 开标签兼容两种实测形态：<invoke name="X"> 与退化形式 <skill name="X">
+    # （模型把 <invoke> 误写成 <skill>，后跟同样的 <parameter> 参数块）。
+    _INVOKE_OPEN_TAG = r"<(?:invoke|skill)\b[^>]*\bname\s*=\s*\"([^\"]+)\"[^>]*>"
+    _INVOKE_RE = re.compile(
+        r"<(?:invoke|skill)\b[^>]*>.*?</(?:invoke|skill)" + _TAG_PREFIX + r">",
+        re.DOTALL,
+    )
+    _INVOKE_OPEN_RE = re.compile(
+        r'<(?:invoke|skill)\b[^>]*>(?:(?!<(?:invoke|skill)\b).)*',
+        re.DOTALL,
+    )
+    _INVOKE_NAME_RE = re.compile(_INVOKE_OPEN_TAG, re.DOTALL)
+    _PARAM_RE = re.compile(
+        r'<parameter' + _TAG_PREFIX + r'\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</parameter' + _TAG_PREFIX + r'>',
+        re.DOTALL,
+    )
+    _PARAM_OPEN_RE = re.compile(
+        r'<parameter' + _TAG_PREFIX + r'\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(?:(?!</parameter|<parameter\b|<(?:invoke|skill)\b).)*',
+        re.DOTALL,
+    )
+
+    @staticmethod
+    def _strip_invoke_blocks(content: Any) -> Any:
+        """从文本/消息 content 中剥离 <invoke>/<skill name> 伪工具调用块。
+
+        只处理字符串 content 与 list[text 块]；其余原样返回。剥离后保留正文，
+        避免模型在历史里继续看到/模仿伪工具调用格式。
+
+        兼容不闭合的 <invoke> 块（模型模仿退化漏掉 </invoke>）：闭合块优先，
+        未闭合的用 _INVOKE_OPEN_RE 匹配到「下一个 <invoke / 文本结尾」。
+        """
+        def _strip(text: str) -> str:
+            out = Agent._INVOKE_RE.sub("", text)
+            out = Agent._INVOKE_OPEN_RE.sub("", out)
+            return out
+
+        if isinstance(content, str):
+            return _strip(content)
+        if isinstance(content, list):
+            out = []
+            for p in content:
+                if isinstance(p, dict):
+                    p = dict(p)
+                    if p.get("type") in ("text", "output_text", "input_text") and isinstance(p.get("text"), str):
+                        p["text"] = _strip(p["text"])
+                out.append(p)
+            return out
+        return content
+
+    @staticmethod
+    def _parse_invoke_tool_calls(content: str) -> list[tuple[str, dict[str, Any]]]:
+        """解析正文中混入的 <invoke name="X"> / <skill name="X"> 文本工具调用。
+
+        返回 [(工具名, 参数字典), ...]；无伪调用时返回空列表。
+        参数值会做 HTML 实体反转义（模型可能输出 &quot; &amp; 等）。
+
+        兼容「不闭合」的 <invoke> 块（模型模仿历史时漏掉 </invoke>）：
+        - <parameter name="x">v</parameter> 标准闭合形式
+        - <parameter name="x">v 后直接结束/遇到下一个标签（不闭合退化形式）
+        """
+        import html as _html
+        parsed: list[tuple[str, dict[str, Any]]] = []
+        seen_ranges: list[tuple[int, int]] = []
+
+        def _parse_block(blk: str) -> None:
+            name_m = Agent._INVOKE_NAME_RE.search(blk)
+            if not name_m:
+                return
+            name = _html.unescape(name_m.group(1).strip())
+            if not name:
+                return
+            args: dict[str, Any] = {}
+            for pm in Agent._PARAM_RE.finditer(blk):
+                pname = _html.unescape(pm.group(1).strip())
+                pval = _html.unescape(pm.group(2).strip())
+                if pname:
+                    args[pname] = pval
+            if not args:
+                for pm in Agent._PARAM_OPEN_RE.finditer(blk):
+                    pname = _html.unescape(pm.group(1).strip())
+                    pval = _html.unescape(pm.group(2).strip())
+                    if pname:
+                        args[pname] = pval
+            parsed.append((name, args))
+
+        for m in Agent._INVOKE_RE.finditer(content or ""):
+            _parse_block(m.group(0))
+            seen_ranges.append(m.span())
+
+        for m in Agent._INVOKE_OPEN_RE.finditer(content or ""):
+            start, end = m.span()
+            if any(s <= start and end <= e for s, e in seen_ranges):
+                continue
+            if any(start < e and s < end for s, e in seen_ranges):
+                continue
+            _parse_block(m.group(0))
+            seen_ranges.append((start, end))
+
+        return parsed
+
     def _mark_unexecuted_tools(self, tool_calls: list[dict], messages: list[dict], ai_msg_id: str):
         """任务被停止时，为未执行/未回填结果的 tool_call 补齐"未执行"结果。
 
@@ -1771,6 +1909,11 @@ Here is some useful information about the environment you are running in:
 
         for msg in messages:
             msg = dict(msg)
+
+            # 发送前剥离历史中混入的 <invoke>/<skill> 伪工具调用块（2026-10-18 恢复），
+            # 阻断模型在历史中持续自模仿的污染循环。
+            if msg.get("content") is not None:
+                msg["content"] = Agent._strip_invoke_blocks(msg["content"])
 
             if "tool_calls" in msg:
                 clean_tcs = []
@@ -1967,6 +2110,11 @@ Here is some useful information about the environment you are running in:
         window = self.memory.get_sliding_window()
         # 获取完整历史用于压缩（参考 opencode：压缩完整历史而非滑动窗口）
         full_history = self.memory.get_full_history()
+
+        # 剥离历史中的 <invoke>/<skill> 伪工具调用块（2026-10-18 恢复）：
+        # 窗口/全文统一清洗，避免模型在上下文中继续看到伪调用格式而自模仿。
+        window = [dict(m, content=Agent._strip_invoke_blocks(m.get("content"))) for m in window]
+        full_history = [dict(m, content=Agent._strip_invoke_blocks(m.get("content"))) for m in full_history]
 
         messages = [{"role": "system", "content": system_prompt}]
         
