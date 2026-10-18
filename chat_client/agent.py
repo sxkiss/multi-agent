@@ -31,7 +31,7 @@ from chat_client.memory import MemoryManager
 from chat_client.retrieval import ExternalRAGService, RAGService, Mem0Service
 
 from .tools import registry, set_session_allow_high, get_background_manager
-from .tools.base import _xml_response, inject_tool_name
+from .tools.base import _xml_response, inject_tool_name, tool_result_for_model
 from .tools import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
@@ -1669,7 +1669,10 @@ Here is some useful information about the environment you are running in:
                     except Exception as _arch_err:
                         logger.debug(f"工具结果归档失败（按原样返回）: {_arch_err!s}")
 
-                    content_structure = [{"type": "text", "text": result_str}]
+                    content_structure = [{
+                        "type": "text",
+                        "text": self._tool_content_for_model(result_str),
+                    }]
                     self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
                     messages.append({
                         "role": "tool",
@@ -1810,6 +1813,26 @@ Here is some useful information about the environment you are running in:
         return content
 
     @staticmethod
+    def _tool_content_for_model(content: Any) -> Any:
+        """把 role=tool 的 content 归一化为纯文本（兼容字符串与 text 块列表）。
+
+        工具结果内部用 <tool> XML 封装；回灌给模型时去掉外壳，避免模型把
+        工具结果格式误当成工具调用格式。归档/展示不受影响。
+        """
+        if isinstance(content, str):
+            return tool_result_for_model(content)
+        if isinstance(content, list):
+            out = []
+            for p in content:
+                if isinstance(p, dict):
+                    p = dict(p)
+                    if p.get("type") in ("text", "input_text", "output_text") and isinstance(p.get("text"), str):
+                        p["text"] = tool_result_for_model(p["text"])
+                out.append(p)
+            return out
+        return content
+
+    @staticmethod
     def _parse_invoke_tool_calls(content: str) -> list[tuple[str, dict[str, Any]]]:
         """解析正文中混入的 <invoke name="X"> / <skill name="X"> 文本工具调用。
 
@@ -1874,7 +1897,8 @@ Here is some useful information about the environment you are running in:
                 continue
             content_structure = [{
                 "type": "text",
-                "text": _xml_response("error", "任务被用户停止，该工具未执行。"),
+                "text": self._tool_content_for_model(
+                    _xml_response("error", "任务被用户停止，该工具未执行。")),
             }]
             self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
             messages.append({
@@ -1954,6 +1978,7 @@ Here is some useful information about the environment you are running in:
 
             # tool 消息：如果对应的 tool_call 已被清理掉，也跳过
             if msg.get("role") == "tool":
+                msg["content"] = Agent._tool_content_for_model(msg.get("content"))
                 tcid = msg.get("tool_call_id", "")
                 if tcid and tcid not in valid_tool_call_ids:
                     if tcid not in all_tc_ids:
@@ -1990,10 +2015,10 @@ Here is some useful information about the environment you are running in:
                 "tool_call_id": tid,
                 "content": [{
                     "type": "text",
-                    "text": _xml_response(
+                    "text": Agent._tool_content_for_model(_xml_response(
                         "error",
                         "工具未执行：该调用在上一次执行中断（进程退出或服务重启），无可用结果。",
-                    ),
+                    )),
                 }],
             }
 
@@ -2397,6 +2422,9 @@ Here is some useful information about the environment you are running in:
             if _i_idx != _last_user_idx:
                 content = _drop_image_blocks(content)
             content = _truncate_content(content)
+            if reconstructed["role"] == "tool":
+                # 兼容旧会话：历史里可能已存有 <tool> XML 结果，发送前统一归一化。
+                content = self._tool_content_for_model(content)
 
             m = {"role": reconstructed["role"], "content": content}
             if "tool_calls" in reconstructed:
