@@ -95,6 +95,21 @@
   .toast.err { background: var(--bt-danger); }
   a.link { color: var(--bt-accent); text-decoration: none; font-size: 13px; }
   a.link:hover { text-decoration: underline; }
+
+  /* 扫码绑定弹窗 */
+  .qr-modal {
+    position: fixed; inset: 0; background: rgba(15,17,21,.55); z-index: 1000;
+    display: none; align-items: center; justify-content: center; padding: 20px;
+  }
+  .qr-modal.show { display: flex; }
+  .qr-modal-box {
+    background: var(--bt-surface); border: 1px solid var(--bt-border); border-radius: var(--bt-radius);
+    padding: 20px; width: 100%; max-width: 360px; box-shadow: var(--bt-shadow-lg);
+  }
+  .qr-modal-hd {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
+  }
+  .qr-modal-hd strong { font-size: 15px; }
 </style>
 </head>
 <body>
@@ -238,9 +253,14 @@
   async function loadMemory() {
     var el = $('tab-memory')
     try {
-      var res = await api('/memory/status')
-      if (!res.status) throw new Error(res.msg || '加载失败')
-      memData = res.data || {}
+      // status 只含统计（total_nodes/topics），列表需另调 /memory/list
+      var [st, ls] = await Promise.all([
+        api('/memory/status'),
+        api('/memory/list?limit=100')
+      ])
+      if (!st.status) throw new Error(st.msg || '加载失败')
+      if (!ls.status) throw new Error(ls.msg || '列表加载失败')
+      memData = Object.assign({}, st.data, { nodes: ls.data.nodes || [] })
       el.innerHTML =
         '<div class="card">' +
           '<h3>📝 新增记忆</h3>' +
