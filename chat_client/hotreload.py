@@ -28,18 +28,30 @@ log = logging.getLogger("hotreload")
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 参与重载的工具模块（__init__ 与 scheduler 除外）
-_TOOL_MODULES = [
-    "chat_client.tools.agent_tools",
-    "chat_client.tools.edit",
-    "chat_client.tools.terminal",
-    "chat_client.tools.sys_ops",
-    "chat_client.tools.webfetch",
-    "chat_client.tools.skill",
-    "chat_client.tools.todo",
-    "chat_client.tools.summary",
-    "chat_client.tools.task",
-]
+# 自动发现参与重载的工具模块（__init__/base 是基础设施，scheduler 持有后台线程状态，都不参与）。
+# 每次调用 _tool_modules() 都重新扫描目录，因此新增工具文件后无需改任何清单，
+# 触发一次 HotReload(target="tools") 就会把新工具加载进来。
+_TOOL_MODULE_EXCLUDES = {"__init__", "base", "scheduler"}
+
+
+def _tool_modules() -> list[str]:
+    """扫描 chat_client/tools/*.py，返回可热重载的模块全名列表。"""
+    tools_dir = os.path.join(_PROJECT_ROOT, "chat_client", "tools")
+    names = []
+    try:
+        for fn in sorted(os.listdir(tools_dir)):
+            if not fn.endswith(".py"):
+                continue
+            stem = fn[:-3]
+            if stem in _TOOL_MODULE_EXCLUDES:
+                continue
+            names.append(f"chat_client.tools.{stem}")
+    except OSError:
+        pass
+    return names
+
+
+_TOOL_MODULES = _tool_modules()
 
 _WATCH_FILES = {
     "tools": [os.path.join(_PROJECT_ROOT, "chat_client", "tools", m.rsplit(".", 1)[1] + ".py")
@@ -98,7 +110,7 @@ def reload_tools() -> str:
             r._schemas.clear()
             r._metadata.clear()
         import sys
-        for mod_name in _TOOL_MODULES:
+        for mod_name in _tool_modules():  # 每次重载重新扫描，新增工具自动纳入
             mod = sys.modules.get(mod_name)
             if mod is None:
                 importlib.import_module(mod_name)
