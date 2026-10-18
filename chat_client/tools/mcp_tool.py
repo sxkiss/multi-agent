@@ -11,9 +11,10 @@ from . import register_tool
 from .base import _xml_response
 
 
-def MCP(action: str = "list", name: str = "", config: str = "", overwrite: bool = False):
+def MCP(action: str = "list", name: str = "", config: str = "", overwrite: bool = False,
+         server: str = "", tool: str = "", arguments: str = "{}"):
     """
-    MCP Server 配置管理（读写项目 mcp/config.json，不触碰生产配置的其它条目）。
+    MCP Server 配置管理 + 工具调用（读写项目 mcp/config.json，不触碰生产配置的其它条目）。
 
     action:
     - list (默认): 列出 mcp/config.json 已配置的 MCP servers
@@ -22,6 +23,9 @@ def MCP(action: str = "list", name: str = "", config: str = "", overwrite: bool 
     - market: 从 GitHub 官方 MCP 市场（api.mcp.github.com）拉取可用 server 清单
       条目包含 packages (stdio: npx/uvx/docker) 或 remotes (http streamable)。
       可通过 install_from_market(name) 一键生成可执行配置。
+    - call: 直接调用已配置 MCP server 暴露的工具。server=server 名称（如 chub__tencent-news__xxx），
+      tool=工具名（如 search_news），arguments=JSON 参数对象（如 {"query":"AI"}）。
+      支持 stdio 与 http 两种 transport。返回工具真实执行结果。
     """
     action = (action or "list").strip().lower()
 
@@ -90,7 +94,31 @@ def MCP(action: str = "list", name: str = "", config: str = "", overwrite: bool 
         lines.append("注意：远程 HTTP server（如 github-mcp）需手动补充 Authorization header")
         return _xml_response("done", "\n".join(lines))
 
-    return _xml_response("error", f"未知 action: {action}。可用: list/add/remove/market")
+    if action == "call":
+        if not server:
+            return _xml_response("error", "call 需要 server（MCP server 名称，可用 action='list' 查看）")
+        if not tool:
+            return _xml_response("error", "call 需要 tool（要调用的工具名）")
+        try:
+            args = json.loads(arguments) if isinstance(arguments, str) else arguments
+            if not isinstance(args, dict):
+                raise ValueError("arguments 必须是 JSON 对象")
+        except Exception as e:
+            return _xml_response("error", f"arguments 解析失败: {e}")
+        try:
+            from ..mcp_client import get_mcp_client
+            mcp_client = get_mcp_client()
+            if not mcp_client.is_loaded():
+                from ..mcp_client import ensure_mcp_loaded
+                mcp_client = ensure_mcp_loaded()
+            if not mcp_client.is_loaded():
+                return _xml_response("error", "MCP 客户端未加载完成，请稍后重试")
+            result = mcp_client.call_tool(tool, args, server_name=server)
+            return _xml_response("done", str(result))
+        except Exception as e:
+            return _xml_response("error", f"调用 MCP 工具失败: {e}")
+
+    return _xml_response("error", f"未知 action: {action}。可用: list/add/remove/market/call")
 
 
 # 注册工具
