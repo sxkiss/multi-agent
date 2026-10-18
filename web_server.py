@@ -636,6 +636,50 @@ class ChatJobManager:
         for k in stale:
             self._jobs.pop(k, None)
 
+    # 内存回收单批上限：避免一次性清理上千僵尸任务卡住事件循环
+    MEMORY_PRUNE_BATCH = int(os.environ.get("AI_AGENT_MEMORY_PRUNE_BATCH", "500"))
+
+    def prune_memory_jobs(self, max_batch: int | None = None):
+        """周期性回收内存 _jobs 中已终结的僵尸任务，并释放 agent 引用。
+
+        背景：内存增长主因是"对话后再也不活跃"的会话，其已完成 job 永久驻留
+        _jobs 字典——_prune_locked 只在 create_if_idle（新消息到来）时触发，
+        对长期静默的会话从不生效。job.agent 持有 MemoryManager.history 全量
+        历史（sessions.json + journal），只要 job 不被移除，这些 Python 大对象
+        就永远不会被 GC 回收，导致 RSS 越用越大。
+
+        这里独立周期扫描：终结（done/stopped/error）且超过 JOB_TTL 的 job 直接
+        移除，并置空 agent/events 引用，让 GC 及时回收历史与事件缓存。
+        任务正 running 或仍在 TTL 内的 job 保留（用户可能续播）。
+        """
+        ttl = self.JOB_TTL
+        if ttl <= 0:
+            return 0
+        batch = self.MEMORY_PRUNE_BATCH if max_batch is None else max_batch
+        now = time.time()
+        removed = 0
+        with self._lock:
+            stale = [k for k, j in self._jobs.items()
+                     if not j.is_running and now - j.created_at > ttl]
+            for k in stale:
+                j = self._jobs.pop(k, None)
+                if j is None:
+                    continue
+                # 释放大对象引用，帮助 GC 及时回收历史/事件缓存
+                try:
+                    if j.agent is not None:
+                        j.agent.close()
+                except Exception:
+                    logger.warning("[ChatJob] 内存回收 agent.close 失败", exc_info=True)
+                j.agent = None
+                j.events = []
+                removed += 1
+                if removed >= batch:
+                    break
+        if removed:
+            logger.info("[ChatJob] 内存回收 %d 个已终结僵尸任务", removed)
+        return removed
+
     # 磁盘上 sessions/ 会话目录的保留时长（秒）。默认 3 天。
     # sessions/ 只增不删（每个会话一个目录，含 sessions.json / journal / meta），
     # 历史会话大量堆积占用磁盘，按目录 mtime 回收。0 或负 = 不清理。
@@ -3243,20 +3287,32 @@ class AgentMain:
 # ============================================================
 
 async def _periodic_job_cleanup():
-    """周期性回收 jobs/ 下过期文件（服务长期运行时持续写入）。
+    """周期性回收 jobs/ 下过期文件 + 内存中已终结的僵尸任务。
 
-    prune_job_files 是同步阻塞 I/O（glob + stat + unlink），用 to_thread
-    丢到线程池，避免卡住事件循环。
+    服务长期运行会持续写入 jobs/（磁盘）并在 _jobs 字典驻留已终结 job
+    （内存）。两者都是同步阻塞 I/O / CPU 操作，统一用 to_thread 丢到线程池。
     """
-    interval = ChatJobManager.JOB_FILE_TTL
-    if interval <= 0:
-        return
-    # 清理间隔：TTL 的 1/4，但不少于 1 小时、不超过 24 小时
-    interval = max(3600, min(24 * 3600, interval // 4))
+    # 磁盘清理间隔：由 JOB_FILE_TTL 推导（TTL 的 1/4，1h~24h）
+    file_interval = ChatJobManager.JOB_FILE_TTL
+    # 内存回收间隔：独立且更短（默认 1 小时），与磁盘 TTL 解耦，
+    # 因为内存里"对话后不再活跃"的僵尸任务需要更快被回收，而非等 7 天。
+    mem_interval = int(os.environ.get("AI_AGENT_MEMORY_PRUNE_INTERVAL", str(3600)))
+    if file_interval > 0:
+        file_interval = max(3600, min(24 * 3600, file_interval // 4))
+    else:
+        # 磁盘清理被禁用时，仍保证内存回收有独立的合理间隔
+        file_interval = mem_interval
+    # 内存回收单批上限（避免一次性清上千任务卡住）
+    mem_batch = ChatJobManager.MEMORY_PRUNE_BATCH
     while True:
         try:
-            await asyncio.sleep(interval)
-            await asyncio.to_thread(chat_jobs.prune_job_files)
+            await asyncio.sleep(mem_interval)
+            # 内存回收：释放已终结僵尸 job 的 agent/events，让 GC 回收历史
+            await asyncio.to_thread(chat_jobs.prune_memory_jobs, mem_batch)
+            # 磁盘回收：与内存回收同频即可（file_interval 已 ≥ mem_interval
+            # 的合理值），文件清理不要求精确频率
+            if ChatJobManager.JOB_FILE_TTL > 0:
+                await asyncio.to_thread(chat_jobs.prune_job_files)
         except asyncio.CancelledError:
             return
         except Exception:
@@ -3299,6 +3355,12 @@ async def _lifespan(_app):
         chat_jobs.recover_all()
     except Exception:
         logger.warning("[startup] job 恢复失败", exc_info=True)
+    # 启动时先清一轮内存僵尸任务（recover 会把中断任务置为 stopped，
+    # 超过 JOB_TTL 的即可释放 agent/历史，避免上次进程遗留的大对象堆积）
+    try:
+        chat_jobs.prune_memory_jobs()
+    except Exception:
+        logger.warning("[startup] 内存僵尸任务清理失败", exc_info=True)
     # 长期运行的服务只靠启动清理不够：jobs/ 持续写入，需要周期性回收
     _cleanup_task = asyncio.create_task(_periodic_job_cleanup())
     # 会话目录同样只增不删，周期清理超过 3 天的旧会话
