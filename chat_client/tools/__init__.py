@@ -1146,4 +1146,5 @@ from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注�
     webfetch,
     websearch,
     wechat_media,
+    gateway_media_send,  # 统一出站媒体发送工具
 )
