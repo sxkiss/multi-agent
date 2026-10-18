@@ -117,6 +117,14 @@ def _build_platform_kinds() -> dict[str, dict[str, Any]]:
         meta.setdefault("label", kind.title())
         meta.setdefault("config_fields", [])
         meta.setdefault("note", "SDK 通道，按需安装依赖")
+        # 每通道追加可选"提示词模板"字段（连续对话时传给 chat_start）
+        if not any(f.get("name") == "template" for f in meta["config_fields"]):
+            meta["config_fields"] = list(meta["config_fields"]) + [{
+                "name": "template",
+                "type": "string",
+                "required": False,
+                "placeholder": "提示词模板名（default/gpt5.5/hermes/unrestricted_jeli），留空用全局默认",
+            }]
         kinds[kind] = meta
     return kinds
 
@@ -169,7 +177,9 @@ def _norm_cfg(kind: str, cfg: dict[str, Any]) -> dict[str, Any]:
     少数平台需要特殊转换：
       - weixin：扁平 {token, account_id, base_url} → accounts[] 列表
       - mqtt：port 字符串 → int
+    template 是配置元数据（仅用于对话提示词），不传给 SDK，统一剔除。
     """
+    cfg = {k: v for k, v in cfg.items() if k != "template"}
     if kind == "weixin":
         token = str(cfg.get("token") or "").strip()
         account_id = str(cfg.get("account_id") or "").strip()
@@ -281,6 +291,31 @@ async def gateway_status() -> JSONResponse:
         "queue_len": queue_len,
         "sdk_missing": [k for k in PLATFORM_KINDS if not _sdk_available(k)],
     })
+
+
+@router.get("/gateway/templates")
+async def gateway_templates() -> JSONResponse:
+    """列出可用的提示词模板名，供每通道模板配置选择。"""
+    templates = []
+    try:
+        from chat_client.opencode_templates import OPENCODE_TEMPLATES
+        templates = sorted(OPENCODE_TEMPLATES.keys())
+    except Exception:  # noqa: BLE001
+        templates = []
+    # 合并自定义模板
+    try:
+        from platform_ext import PROJECT_ROOT
+        import json as _json
+        with open(os.path.join(PROJECT_ROOT, "config.json"), "r", encoding="utf-8") as fh:
+            cfg = _json.load(fh)
+        for key in ("opencode", "claude", "single"):
+            custom = ((cfg.get(key, {}) or {}).get("templates", {}) or {})
+            for name in custom.keys():
+                if name not in templates:
+                    templates.append(name)
+    except Exception:  # noqa: BLE001
+        pass
+    return _ok({"templates": templates})
 
 
 @router.post("/gateway/channels/{kind}/config")

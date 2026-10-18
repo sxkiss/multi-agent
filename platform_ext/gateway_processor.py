@@ -3,7 +3,8 @@
 把通道收到的 InboundMessage 桥接到 BT 现有 agent 对话体系：
 
 - 用 channel_subject.subject_id 生成稳定 session_id（gw_<channel_type>_<subject>）；
-- 调用 agent_main.chat_start 启动后台对话任务；
+- 连续对话：若该会话已有任务在运行，先取消，再发起新消息（避免任务排队堆积）；
+- 每通道模板：读取该通道配置的 template，发起对话时传给 chat_start；
 - 异步迭代 agent_main.chat_events 读取流式回复；
 - 把文本增量 yield 成 MessageEvent.delta，结束时 completed()。
 
@@ -12,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any, AsyncIterator
@@ -60,10 +62,64 @@ def _parse_sse_data(data_payload: str) -> dict[str, Any]:
         return {}
 
 
-def make_processor(agent_main=None):
+def _extract_sse_data(sse: str) -> dict[str, Any]:
+    """从 SSE 文本中提取 data 字段并解析 JSON。"""
+    data_line = ""
+    if isinstance(sse, str):
+        for line in sse.splitlines():
+            if line.startswith("data:"):
+                data_line = line[5:].strip()
+                break
+    elif isinstance(sse, dict):
+        # 某些封装直接返回 dict
+        return sse
+    return _parse_sse_data(data_line)
+
+
+def _cancel_running_tasks(web_server, sid: str) -> None:
+    """取消指定会话所有运行中的任务（连续对话：先取消再发新消息）。
+
+    通过 chat_jobs 精确判断是否有 running 任务，避免误伤已完成任务。
+    """
+    try:
+        active = web_server.chat_jobs.active_for_session(sid)
+        running = [(k, j) for k, j in active if j.is_running]
+        if not running:
+            return
+        logger.info("[gw-proc] 会话 %s 有 %d 个运行中任务，先取消", sid, len(running))
+        # chat_stop 会 request_stop + 置 stopped + close agent
+        web_server.agent_main.chat_stop({"session_id": sid})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[gw-proc] 取消运行中任务失败（忽略）: %s", e)
+
+
+def _wait_tasks_stopped(web_server, sid: str, timeout: float = 5.0) -> None:
+    """等待会话内所有任务退出运行态，避免新旧任务并发。"""
+    try:
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            active = web_server.chat_jobs.active_for_session(sid)
+            if not any(j.is_running for _, j in active):
+                return
+            asyncio.sleep(0.15)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[gw-proc] 等待任务停止超时/失败: %s", e)
+
+
+def _channel_template(gateway, channel_type: str) -> str:
+    """读取该通道配置的 template（可选）。"""
+    try:
+        cfg = gateway._gateway_cfg()
+        return str((cfg.get(channel_type, {}) or {}).get("template", "") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def make_processor(agent_main=None, chat_jobs=None, gateway=None):
     """构造 MessageProcessor（async generator）。
 
-    agent_main 可显式注入（便于测试）；默认懒加载 web_server.agent_main。
+    可显式注入依赖（便于测试）；默认懒加载 web_server 的对应对象。
     """
 
     def _get_agent_main():
@@ -73,6 +129,26 @@ def make_processor(agent_main=None):
             import web_server
 
             return web_server.agent_main
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _get_chat_jobs():
+        if chat_jobs is not None:
+            return chat_jobs
+        try:
+            import web_server
+
+            return web_server.chat_jobs
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _get_gateway():
+        if gateway is not None:
+            return gateway
+        try:
+            from platform_ext import gateway as gw
+
+            return gw
         except Exception:  # noqa: BLE001
             return None
 
@@ -92,14 +168,29 @@ def make_processor(agent_main=None):
         if ag is None:
             yield MessageEvent.error_event("BT agent_main 不可用")
             return
+        ws = _get_chat_jobs()
+
+        # 连续对话：先取消该会话运行中的任务，等其退出，再发新消息
+        if ws is not None:
+            _cancel_running_tasks_with(ws, ag, sid)
+            _wait_tasks_stopped(ws, sid)
+
+        # 每通道模板：从通道配置读取 template（可选）
+        tpl = ""
+        gw = _get_gateway()
+        if gw is not None:
+            tpl = _channel_template(gw, channel_type)
 
         # 启动后台对话任务（复用 BT 现有 agent 体系）
+        start_params: dict[str, Any] = {
+            "session_id": sid,
+            "message": text,
+            "mode": "claude",
+        }
+        if tpl:
+            start_params["template"] = tpl
         try:
-            start_res = ag.chat_start({
-                "session_id": sid,
-                "message": text,
-                "mode": "claude",
-            })
+            start_res = ag.chat_start(start_params)
         except Exception as e:  # noqa: BLE001
             logger.exception("[gw-proc] chat_start 失败")
             yield MessageEvent.error_event(f"启动对话失败: {e}")
@@ -131,15 +222,28 @@ def make_processor(agent_main=None):
     return processor
 
 
-def _extract_sse_data(sse: str) -> dict[str, Any]:
-    """从 SSE 文本中提取 data 字段并解析 JSON。"""
-    data_line = ""
-    if isinstance(sse, str):
-        for line in sse.splitlines():
-            if line.startswith("data:"):
-                data_line = line[5:].strip()
-                break
-    elif isinstance(sse, dict):
-        # 某些封装直接返回 dict
-        return sse
-    return _parse_sse_data(data_line)
+def _cancel_running_tasks_with(ws, ag, sid: str) -> None:
+    """取消指定会话所有运行中任务（连续对话：先取消再发新消息）。"""
+    try:
+        active = ws.active_for_session(sid)
+        running = [(k, j) for k, j in active if j.is_running]
+        if not running:
+            return
+        logger.info("[gw-proc] 会话 %s 有 %d 个运行中任务，先取消", sid, len(running))
+        ag.chat_stop({"session_id": sid})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[gw-proc] 取消运行中任务失败（忽略）: %s", e)
+
+
+def _wait_tasks_stopped(ws, sid: str, timeout: float = 5.0) -> None:
+    """等待会话内所有任务退出运行态，避免新旧任务并发。"""
+    try:
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            active = ws.active_for_session(sid)
+            if not any(j.is_running for _, j in active):
+                return
+            asyncio.sleep(0.15)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[gw-proc] 等待任务停止超时/失败: %s", e)
