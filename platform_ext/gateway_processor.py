@@ -100,20 +100,6 @@ def _extract_sse_data(sse) -> dict[str, Any]:
     return {"event": event, "data": parsed}
 
 
-def _media_events_from(tool: str, result: str, workspace: str = "") -> list[Any]:
-    """调用 gateway_media 从工具结果提取媒体事件（延迟导入，避免耦合）。"""
-    try:
-        from platform_ext.gateway_media import media_events_from_tool_result
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[gw-proc] gateway_media 导入失败: %s", e)
-        return []
-    try:
-        return media_events_from_tool_result(tool, result, workspace or None)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[gw-proc] 媒体提取失败 tool=%s: %s", tool, e)
-        return []
-
-
 def _cancel_running_tasks(web_server, sid: str) -> None:
     """取消指定会话所有运行中的任务（连续对话：先取消再发新消息）。
 
@@ -285,14 +271,6 @@ def make_processor(agent_main=None, chat_jobs=None, gateway=None):
                     content = str(data.get("content") or data.get("text") or "")
                     if content:
                         yield MessageEvent.delta(content)
-                elif event == "tool_result" and isinstance(data, dict):
-                    # 富媒体桥接：从白名单工具结果里提取图片/视频/音频/文件，
-                    # yield MESSAGE 事件由通道 _send_media 发到 IM 平台。
-                    tool = str(data.get("tool") or "")
-                    result = str(data.get("result") or "")
-                    if tool and result:
-                        for media_ev in _media_events_from(tool, result, workspace):
-                            yield media_ev
                 elif event == "error":
                     msg = ""
                     if isinstance(data, dict):
