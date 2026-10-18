@@ -37,6 +37,9 @@ MEDIA_PUSH_TOOL_SUFFIXES: frozenset[str] = frozenset(
         "generate_video",
         "generate_audio",
         "image",
+        # BT 内置浏览器工具：screenshot action 返回的图片路径靠下方路径提取兜底，
+        # 非截图 action（navigate/click/type）结果无图片路径，自动不产出事件。
+        "browser_use",
     }
 )
 
