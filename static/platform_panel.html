@@ -467,8 +467,8 @@
   }
   function renderQrBody(d) {
     var html = ''
-    if (d.qrcode_url && d.qrcode_url.indexOf('data:') === 0) {
-      html = '<div style="text-align:center;padding:8px"><img src="' + d.qrcode_url + '" style="width:220px;height:220px;border-radius:8px;border:1px solid var(--bt-border)"></div>'
+    if (d.qrcode_url && (d.qrcode_url.indexOf('data:') === 0 || /^https?:\/\//.test(d.qrcode_url))) {
+      html = '<div style="text-align:center;padding:8px"><img src="' + esc(d.qrcode_url) + '" style="width:220px;height:220px;border-radius:8px;border:1px solid var(--bt-border)"></div>'
       html += '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">请用手机扫码绑定</div>'
     } else if (d.auth_url) {
       html = '<div style="text-align:center;padding:8px"><a href="' + esc(d.auth_url) + '" target="_blank" class="link">点击打开授权页面扫码</a></div>'
