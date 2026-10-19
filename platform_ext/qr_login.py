@@ -37,16 +37,46 @@ def _set_gateway_cfg(cfg: dict[str, Any]) -> None:
     config_files.save_section("gateway", cfg, _config_path())
 
 
-def save_channel_config(kind: str, config: dict[str, Any]) -> None:
-    """把扫码拿到的凭据写入配置（自动标记 configured，并同步 legacy 实例）。"""
+def save_channel_config(kind: str, config: dict[str, Any], instance_id: str | None = None) -> None:
+    """把扫码拿到的凭据写入配置（自动标记 configured）。
+
+    - 不传 instance_id：保持旧行为，写入 g[kind] 扁平配置，并同步
+      instance_id == kind 的 legacy 实例（兼容老接口）。
+    - 传入 instance_id：只把凭据写入该指定实例（instances 列表对应条目），
+      用于「添加/编辑实例页」扫码绑定到具体新实例。若该实例恰好是 legacy
+      实例（instance_id == kind），同时同步 g[kind] 扁平配置。
+    """
     g = _gateway_cfg()
+    instances = g.get("instances")
+    if instance_id:
+        # 指定实例：只写 instances 列表中的目标条目
+        if isinstance(instances, list):
+            target = next((it for it in instances if it.get("instance_id") == instance_id), None)
+            if target is None:
+                # 目标实例尚未创建时自动补一条待配置实例（扫码先于创建保存）
+                target = {"instance_id": instance_id, "kind": kind, "enabled": True}
+                instances.append(target)
+            target.update({k: v for k, v in config.items() if v})
+            target["instance_id"] = instance_id
+            target["kind"] = kind
+            target["configured"] = True
+            g["instances"] = instances
+        # legacy 实例（id == kind）同步扁平键，保持老接口 /gateway/channels 可读
+        if instance_id == kind:
+            existing = dict(g.get(kind, {}))
+            existing.update({k: v for k, v in config.items() if v})
+            existing["configured"] = True
+            g[kind] = existing
+        _set_gateway_cfg(g)
+        return
+
+    # 旧行为：写入 g[kind] 并同步 legacy 实例
     existing = dict(g.get(kind, {}))
     existing.update({k: v for k, v in config.items() if v})
     existing["configured"] = True
     g[kind] = existing
     # 同步 instance_id == kind 的 legacy 实例，避免实例面板与扫码结果脱节。
     # instances 尚未生成时交由 gateway 的首次读取迁移处理（会从 g[kind] 建实例）。
-    instances = g.get("instances")
     if isinstance(instances, list):
         target = next((it for it in instances if it.get("instance_id") == kind), None)
         if target is None:
@@ -222,8 +252,8 @@ async def generate(kind: str, session_id: str = "") -> dict[str, Any]:
     return result
 
 
-async def poll(kind: str, token: str, session_id: str = "") -> dict[str, Any]:
-    """轮询扫码结果；成功后自动把凭据写入 config.json。"""
+async def poll(kind: str, token: str, session_id: str = "", instance_id: str | None = None) -> dict[str, Any]:
+    """轮询扫码结果；成功后自动把凭据写入 config.json（可绑定到指定实例）。"""
     if kind == "weixin":
         result = await weixin_poll(token)
     elif kind == "qq":
@@ -242,22 +272,22 @@ async def poll(kind: str, token: str, session_id: str = "") -> dict[str, Any]:
                 "account_id": result.get("account_id", ""),
                 "token": result.get("token", ""),
                 "base_url": result.get("base_url") or "https://ilinkai.weixin.qq.com",
-            })
+            }, instance_id=instance_id)
         elif kind == "qq":
             save_channel_config("qq", {
                 "app_id": result.get("app_id", ""),
                 "secret": result.get("secret", ""),
                 "user_openid": result.get("user_openid", ""),
-            })
+            }, instance_id=instance_id)
         elif kind == "wecom":
             save_channel_config("wecom", {
                 "bot_id": result.get("bot_id", ""),
                 "secret": result.get("secret", ""),
-            })
+            }, instance_id=instance_id)
         elif kind == "dingtalk":
             save_channel_config("dingtalk", {
                 "device_code": token,
-            })
+            }, instance_id=instance_id)
     # 清理已结束的会话
     if session_id:
         _sessions.pop(f"{session_id}:{kind}", None)

@@ -77,6 +77,43 @@ class TestQrLogin:
         assert legacy["account_id"] == "a1"
         assert legacy["configured"] is True
 
+    def test_save_channel_config_to_instance(self, isolated_config):
+        from platform_ext import qr_login
+        qr_login._set_gateway_cfg({
+            "instances": [{"instance_id": "weixin_b", "kind": "weixin", "configured": False}],
+        })
+        qr_login.save_channel_config("weixin", {"token": "abc", "account_id": "a1"}, instance_id="weixin_b")
+        g = qr_login._gateway_cfg()
+        # 指定实例被写入，且不污染 g["weixin"] 扁平键
+        assert "weixin" not in g
+        target = next(i for i in g["instances"] if i["instance_id"] == "weixin_b")
+        assert target["token"] == "abc"
+        assert target["account_id"] == "a1"
+        assert target["configured"] is True
+
+    def test_save_channel_config_to_legacy_instance_syncs_flat(self, isolated_config):
+        from platform_ext import qr_login
+        qr_login._set_gateway_cfg({
+            "weixin": {"configured": False},
+            "instances": [{"instance_id": "weixin", "kind": "weixin", "configured": False}],
+        })
+        qr_login.save_channel_config("weixin", {"token": "abc"}, instance_id="weixin")
+        g = qr_login._gateway_cfg()
+        assert g["weixin"]["token"] == "abc"
+        assert g["weixin"]["configured"] is True
+        legacy = next(i for i in g["instances"] if i["instance_id"] == "weixin")
+        assert legacy["token"] == "abc"
+
+    def test_save_channel_config_to_new_instance_auto_creates(self, isolated_config):
+        from platform_ext import qr_login
+        qr_login._set_gateway_cfg({"instances": []})
+        qr_login.save_channel_config("wecom", {"bot_id": "b1", "secret": "s1"}, instance_id="wecom_b")
+        g = qr_login._gateway_cfg()
+        target = next(i for i in g["instances"] if i["instance_id"] == "wecom_b")
+        assert target["kind"] == "wecom"
+        assert target["bot_id"] == "b1"
+        assert target["configured"] is True
+
     def test_gateway_generate_unsupported(self):
         from platform_ext import gateway
         res = asyncio.run(gateway.gateway_qrcode_generate("feishu", None))  # type: ignore[arg-type]
