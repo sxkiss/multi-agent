@@ -12,6 +12,7 @@ mail_servers / builder 等模块。BT 没有这些，这里提供最小本地实
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -141,6 +142,13 @@ def resolve_cli_config_key(creds: dict[str, Any]) -> str:
         val = str(creds.get(field) or "").strip()
         if val:
             return val
+    # 测试凭据等场景尚未生成 instance_id：用唯一标识派生稳定 key，
+    # 使「测试」与实际保存共用同一 CLI 配置目录（可复现、不污染）。
+    for field in ("app_id", "client_id", "bot_id", "api_key", "email", "token"):
+        val = str(creds.get(field) or "").strip()
+        if val:
+            digest = hashlib.sha256(val.encode("utf-8")).hexdigest()[:16]
+            return f"cred-{digest}"
     raise ValueError("cli_config_key or instance_id is required")
 
 
@@ -157,10 +165,69 @@ def sanitize_plugin_tool_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "_", name)
 
 
-def prepare_feishu_cli_env(*args: Any, **kwargs: Any):
-    raise _ExternalCliRequired(
-        "feishu-cli（lark-cli）尚未就绪。请先在「连接器」面板安装 CLI，再完成飞书登录授权。"
-    )
+def prepare_feishu_cli_env(config_dir, *, app_id=None, app_secret=None, default_as="bot"):
+    """在隔离目录下初始化/复用 lark-cli 配置，返回 (binary, env)。
+
+    lark-cli 把配置写到 $HOME/.lark-cli。这里设置 HOME=config_dir，
+    使每个连接器实例使用独立配置目录，互不污染、也避免动全局配置。
+    """
+    binary = resolve_binary("lark-cli")
+    import pathlib
+    config_dir = pathlib.Path(config_dir)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    cfg_file = config_dir / ".lark-cli" / "config.json"
+
+    env = os.environ.copy()
+    env["HOME"] = str(config_dir)
+
+    # 已初始化过则直接复用（不覆盖已有 profile / token）
+    if not cfg_file.exists():
+        if not app_id or not app_secret:
+            raise _ExternalCliRequired(
+                "飞书 CLI 配置尚未初始化。请在「连接器」面板填写 App ID / App Secret 后保存并测试。"
+            )
+        # 用 --app-secret-stdin 避免 app_secret 出现在进程列表
+        init_args = [
+            binary, "config", "init",
+            "--app-id", str(app_id),
+            "--app-secret-stdin",
+            "--name", "default",
+            "--force-init",
+        ]
+        try:
+            completed = subprocess.run(
+                init_args,
+                input=str(app_secret) + "\n",
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=60.0,
+                cwd=str(config_dir),
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise _ExternalCliRequired("飞书 CLI 配置初始化超时，请重试") from None
+        if completed.returncode != 0:
+            err = (completed.stderr or completed.stdout or "").strip()
+            raise _ExternalCliRequired(
+                f"飞书 CLI 配置初始化失败：{err[:300] or '未知错误'}"
+            )
+    else:
+        # 已初始化：校验 app_id 匹配，避免用错实例目录
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            apps = cfg.get("apps") or []
+            if app_id and apps and str(apps[0].get("appId")) != str(app_id):
+                raise _ExternalCliRequired(
+                    f"飞书 CLI 配置已存在但 App ID 不匹配（{apps[0].get('appId')} != {app_id}）。"
+                    "请清理该连接器实例后重建。"
+                )
+        except _ExternalCliRequired:
+            raise
+        except Exception:  # noqa: BLE001
+            pass  # 配置解析失败时不做强校验，让 auth status 自行报错
+
+    return binary, env
 
 
 def materialize_wecom_bot_config(*args: Any, **kwargs: Any):
@@ -191,6 +258,15 @@ class PathLayout:
     def connector_cli_instance_dir(self, kind: str, key: str):
         import pathlib
         return pathlib.Path.home() / ".bt-connector-hub" / "connector-cli" / kind / key
+
+    def ensure_connector_cli_instance_dir(self, kind: str, key: str):
+        """确保 CLI 实例配置目录存在并返回其路径（对齐上游 PathLayout 接口）。"""
+        d = self.connector_cli_instance_dir(kind, key)
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return d
 
 
 # ── i18n 翻译占位（原 adapter 引用上游 i18n 模块）────────
