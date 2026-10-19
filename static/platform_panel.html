@@ -237,6 +237,31 @@
     loadTemplatesIfNeeded()
   }
 
+  // 拉取可用提示词模板（只拉一次，用于实例编辑弹窗的模板下拉）
+  var __tplLoaded = false
+  function loadTemplatesIfNeeded() {
+    if (__tplLoaded) return
+    __tplLoaded = true
+    api('/gateway/templates').then(function (res) {
+      if (res && res.status) {
+        window.__gwTemplates = (res.data && res.data.templates) || []
+        // 已有模板下拉的页面，重新渲染以显示选项
+        var sels = document.querySelectorAll('select[id^="gwf-template"]')
+        sels.forEach(function (sel) {
+          if (window.__gwTemplates.length && sel.options.length <= 1) {
+            var cur = sel.value
+            var opts = ['<option value=""' + (!cur ? ' selected' : '') + '>（默认模板）</option>']
+            window.__gwTemplates.forEach(function (t) {
+              opts.push('<option value="' + esc(t) + '"' + (cur === t ? ' selected' : '') + '>' + esc(t) + '</option>')
+            })
+            sel.innerHTML = opts.join('')
+            if (cur) sel.value = cur
+          }
+        })
+      }
+    }).catch(function () { /* 拉取失败静默 */ })
+  }
+
   function kindOptions(selected) {
     return Object.keys(gwMeta).sort().map(function (k) {
       var m = gwMeta[k]
