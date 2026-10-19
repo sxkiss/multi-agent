@@ -526,6 +526,9 @@ async def gateway_start(kind: str) -> JSONResponse:
     """启动某平台通道。缺运行依赖时自动安装；未配置时返回清晰错误。"""
     if kind not in PLATFORM_KINDS:
         return _err(f"未知平台: {kind}")
+    # 防重：已在运行中的通道直接返回，避免重复注册导致消息重复处理
+    if kind in _manager_kinds:
+        return _ok({"kind": kind, "running": True, "msg": "通道已在运行中"})
     cfg = _gateway_cfg().get(kind, {})
     if not cfg.get("configured"):
         return _err(f"平台 {kind} 未配置，请先 POST /api/v2/gateway/channels/{kind}/config")
