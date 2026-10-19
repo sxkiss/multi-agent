@@ -210,7 +210,7 @@
 (function () {
   'use strict';
   var API = '/api/v2/connectors';
-  var catalog = [], currentKind = null, editingId = null, configuredMap = {};
+  var catalog = [], currentKind = null, editingId = null, configuredMap = {}, currentManualOAuth2 = false;
   var $ = function (s) { return document.querySelector(s); };
   var AF = (window.PanelAuth && window.PanelAuth.authFetch) ? window.PanelAuth.authFetch : window.fetch;
 
@@ -289,7 +289,7 @@
       b.onclick = function () { startOAuth2(b.getAttribute('data-oauth2')); };
     });
     document.querySelectorAll('[data-manual-oauth2]').forEach(function (b) {
-      b.onclick = function () { openManualToken(b.getAttribute('data-manual-oauth2')); };
+      b.onclick = function () { openModal(b.getAttribute('data-manual-oauth2'), null, true); };
     });
   }
 
@@ -395,10 +395,10 @@
   }
 
   // ── 弹窗 ─────────────────────────────────────────────────
-  function openModal(kind, instanceId) {
+  function openModal(kind, instanceId, manualOAuth2) {
     var e = catalog.find(function (c) { return c.kind === kind; });
     if (!e) return;
-    currentKind = kind; editingId = instanceId || null;
+    currentKind = kind; editingId = instanceId || null; currentManualOAuth2 = !!manualOAuth2;
     $('#mTitle').textContent = (instanceId ? '编辑' : '添加') + '：' + e.name;
     $('#mIcon').style.background = colorOf(e);
     $('#mIcon').textContent = initial(e);
@@ -433,15 +433,18 @@
     if (e.auth_kind === 'personal_token') {
       // 与上游一致：Token 字段
       body += fieldHtml('token', '访问 Token', {
-        placeholder: '粘贴 Token', secret: true, required: true,
-        help: '打开授权页获取 Token 后粘贴到此处',
+        placeholder: e.kind === 'tencent-weiyun' ? '粘贴 MCP Token 或 WyHeader 片段' : '粘贴 Token',
+        secret: true, required: true,
+        help: e.kind === 'tencent-weiyun'
+          ? '支持直接粘贴 MCP Token，也支持粘贴含 mcp_token=xxx 或 WEIYUN_MCP_TOKEN=xxx 的 env/WyHeader 片段，后端会自动提取'
+          : '打开授权页获取 Token 后粘贴到此处',
       });
     } else if (e.auth_kind === 'api_key') {
       if (e.kind === 'feishu-cli') {
         // 飞书 CLI：App ID + App Secret（+ 飞书账号授权在下方单独处理）
         body += fieldHtml('app_id', 'App ID', {
           placeholder: '例如 cli_xxxxxxxx', required: true,
-          help: '在飞书开放平台创建应用并获取 App ID',
+          help: '在飞书开放平台创建应用并获取 App ID；文档搜索需再点「登录授权」',
         });
         body += fieldHtml('app_secret', 'App Secret', {
           placeholder: '飞书应用 App Secret', secret: true, required: true,
@@ -450,10 +453,11 @@
         // 企业微信 CLI：Bot ID + Secret
         body += fieldHtml('bot_id', 'Bot ID', {
           placeholder: '企业微信智能机器人 Bot ID', required: true,
-          help: '在企业微信开放平台获取智能机器人 Bot ID / Secret',
+          help: '在企业微信开放平台获取长连接智能机器人 Bot ID',
         });
         body += fieldHtml('bot_secret', 'Secret', {
           placeholder: '企业微信机器人 Secret', secret: true, required: true,
+          help: '主机需已安装 @wecom/cli（wecom-cli）',
         });
       } else {
         body += fieldHtml('api_key', 'API Key', {
@@ -499,9 +503,17 @@
       });
     } else if (e.auth_kind === 'oauth2') {
       // OAuth2：提示走一键授权（卡片上有「一键授权」按钮）
+      var manualSupported = (e.kind === 'openalex' || e.kind === 'qcc');
       body += '<div class="hint" style="padding:12px;background:var(--bt-surface-2);border-radius:8px">' +
-        '该连接器使用 OAuth2 授权。请在连接器卡片上点击「⚡ 一键授权」完成授权；如需手动粘贴 Token，请使用「手动粘贴 Token」。' +
+        '该连接器使用 OAuth2 授权。请在连接器卡片上点击「⚡ 一键授权」完成授权。' +
+        (manualSupported ? '也可在下方手动粘贴 Access Token 保存。' : '当前连接器不支持手动粘贴 Token。') +
         '</div>';
+      if (manualSupported && currentManualOAuth2) {
+        body += fieldHtml('manual_token', 'Access Token', {
+          placeholder: '粘贴 Access Token', secret: true, required: true,
+          help: '手动粘贴的 Token 会作为 OAuth2 凭据保存',
+        });
+      }
     } else {
       // 兜底：通用 Token 输入
       body += '<div class="field"><label>凭据 <span class="req">*</span></label><textarea id="f_creds" rows="2" placeholder="粘贴 Token / API Key"></textarea>' +
@@ -510,7 +522,7 @@
     $('#mBody').innerHTML = body;
     $('#modalBg').classList.add('show');
   }
-  function closeModal() { $('#modalBg').classList.remove('show'); currentKind = null; editingId = null; }
+  function closeModal() { $('#modalBg').classList.remove('show'); currentKind = null; editingId = null; currentManualOAuth2 = false; }
 
   function collectCreds() {
     var creds = {};
@@ -546,7 +558,11 @@
     }
     var creds = collectCreds();
     var r;
-    if (editingId) {
+    // OAuth2 手动粘贴 Token 走专用接口（创建实例 + 保存 token_cache）
+    if (currentManualOAuth2 && creds.manual_token) {
+      r = await api('/oauth2/manual-token', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: currentKind, token: creds.manual_token }) });
+    } else if (editingId) {
       r = await api('/instances/' + editingId, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name, credentials: creds }) });
     } else {

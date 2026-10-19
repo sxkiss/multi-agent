@@ -371,6 +371,42 @@ class TestCredentialNormalization:
         with pytest.raises(ValueError):
             svc.normalize_credentials("tencent-news", e, {})
 
+    def test_feishu_cli_keeps_app_fields(self):
+        """飞书 CLI 归一化必须保留 app_id/app_secret，供适配器使用。"""
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("feishu-cli")
+        out = svc.normalize_credentials(
+            "feishu-cli", e,
+            {"app_id": "cli_abc", "app_secret": "secret"}
+        )
+        assert out["app_id"] == "cli_abc"
+        assert out["app_secret"] == "secret"
+        assert "api_key" not in out
+
+    def test_feishu_cli_missing_secret_raises(self):
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("feishu-cli")
+        with pytest.raises(ValueError):
+            svc.normalize_credentials("feishu-cli", e, {"app_id": "cli_abc"})
+
+    def test_wecom_cli_keeps_bot_fields(self):
+        """企业微信 CLI 归一化必须保留 bot_id/bot_secret。"""
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("wecom-cli")
+        out = svc.normalize_credentials(
+            "wecom-cli", e,
+            {"bot_id": "bot1", "bot_secret": "s3cret"}
+        )
+        assert out["bot_id"] == "bot1"
+        assert out["bot_secret"] == "s3cret"
+        assert "api_key" not in out
+
+    def test_wecom_cli_missing_bot_raises(self):
+        from connector_hub import connectors_service as svc, connectors_catalog as cat
+        e = cat.get_catalog_entry("wecom-cli")
+        with pytest.raises(ValueError):
+            svc.normalize_credentials("wecom-cli", e, {"bot_id": "bot1"})
+
 
 class TestInternalMcpRoute:
     def test_route_mounted_under_v2_prefix(self):

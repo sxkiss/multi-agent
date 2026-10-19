@@ -187,7 +187,9 @@ def _remote_spec_for(
         mcp_url = str(getattr(entry, "mcp_url", "") or "").strip()
         if not mcp_url:
             return None
-        access_token = str(creds.get("access_token") or creds.get("token") or "").strip()
+        access_token = str(
+            creds.get("access_token") or creds.get("token") or creds.get("manual_token") or ""
+        ).strip()
         if not access_token:
             return None
         # 自动刷新：从 oauth_manager 的 token_cache 取有效 token
@@ -339,13 +341,17 @@ def normalize_credentials(kind: str, entry: Any, creds: dict[str, Any]) -> dict[
         return {"token": token}
 
     if auth == "api_key":
-        # 兼容前端兜底提交的 token 字段
+        # CLI 类连接器用专用字段（app_id/app_secret、bot_id/bot_secret），
+        # 不需要通用 api_key；其余连接器兼容前端兜底提交的 token 字段。
+        is_cli_kind = kind in ("feishu-cli", "wecom-cli")
         api_key = str(creds.get("api_key") or creds.get("token") or "").strip()
-        if not api_key:
+        if not api_key and not is_cli_kind:
             raise ValueError("请填写 API Key")
         # 前缀格式校验由各 gateway 适配器在 probe/调用时执行（qq-music qmk-、
         # wechat-reading wrk-、yuandian sk_），创建时只做非空校验。
-        out: dict[str, Any] = {"api_key": api_key}
+        out: dict[str, Any] = {}
+        if api_key:
+            out["api_key"] = api_key
         if kind == "tencent-ima":
             client_id = str(creds.get("client_id") or "").strip()
             if not client_id:
@@ -356,6 +362,21 @@ def normalize_credentials(kind: str, entry: Any, creds: dict[str, Any]) -> dict[
             if not company:
                 raise ValueError("乐享需要填写 company_from")
             out["company_from"] = company
+        # CLI 类连接器的额外字段必须原样保留，否则适配器拿不到 app_secret/bot_secret
+        if kind == "feishu-cli":
+            app_id = str(creds.get("app_id") or creds.get("client_id") or "").strip()
+            app_secret = str(creds.get("app_secret") or "").strip()
+            if not app_id or not app_secret:
+                raise ValueError("飞书 CLI 需要填写 app_id 与 app_secret")
+            out["app_id"] = app_id
+            out["app_secret"] = app_secret
+        if kind == "wecom-cli":
+            bot_id = str(creds.get("bot_id") or "").strip()
+            bot_secret = str(creds.get("bot_secret") or creds.get("api_key") or "").strip()
+            if not bot_id or not bot_secret:
+                raise ValueError("企业微信 CLI 需要填写 bot_id 与 bot_secret")
+            out["bot_id"] = bot_id
+            out["bot_secret"] = bot_secret
         return out
 
     if auth == "imap_app_password":

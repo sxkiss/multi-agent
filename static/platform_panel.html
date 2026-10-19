@@ -97,6 +97,14 @@
   a.link { color: var(--bt-accent); text-decoration: none; font-size: 13px; }
   a.link:hover { text-decoration: underline; }
 
+  /* 通道多实例管理：列表 / 表单视图切换 */
+  .gw-view { display: none; }
+  .gw-view.active { display: block; }
+  .gw-form-card { max-width: 640px; }
+  .gw-form-actions { display: flex; gap: 10px; margin-top: 16px; }
+  .gw-form-actions .btn { padding: 8px 20px; font-size: 13.5px; }
+  .gw-back { margin-bottom: 14px; }
+
   /* 扫码绑定弹窗 */
   .qr-modal {
     position: fixed; inset: 0; background: rgba(15,17,21,.55); z-index: 1000;
@@ -132,7 +140,20 @@
     <button class="tab" data-tab="usage" onclick="switchTab('usage')">📊 用量</button>
   </div>
 
-  <div id="tab-gateway" class="panel active"></div>
+  <div id="tab-gateway" class="panel active">
+    <div id="gwListView" class="gw-view active"></div>
+    <div id="gwFormView" class="gw-view">
+      <div class="card gw-form-card">
+        <div class="row gw-back"><button class="btn" onclick="gwCloseInstanceModal()">← 返回实例列表</button></div>
+        <h3 id="gwFormTitle" style="margin-bottom:14px">添加实例</h3>
+        <div id="gwInstFields"></div>
+        <div class="gw-form-actions">
+          <button class="btn pri" onclick="gwSaveInstance()">保存</button>
+          <button class="btn" onclick="gwCloseInstanceModal()">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="tab-memory" class="panel"></div>
   <div id="tab-usage" class="panel"></div>
 </div>
@@ -172,9 +193,9 @@
   var gwInstances = []
   var gwEditing = null // {instance_id, kind}
   var gwMeta = {}
-
   async function loadGateway() {
-    var el = $('tab-gateway')
+    var el = $('gwListView')
+    if (!el) return
     try {
       var [instRes, metaRes] = await Promise.all([
         api('/gateway/instances'),
@@ -202,7 +223,8 @@
   }
 
   function renderGateway() {
-    var el = $('tab-gateway')
+    var el = $('gwListView')
+    if (!el) return
     if (!gwInstances.length) {
       el.innerHTML = '<div class="card"><div class="empty">暂无实例</div>' +
         '<div style="text-align:center;padding-top:8px"><button class="btn pri" onclick="gwAddInstance()">+ 添加实例</button></div></div>'
@@ -237,7 +259,7 @@
     loadTemplatesIfNeeded()
   }
 
-  // 拉取可用提示词模板（只拉一次，用于实例编辑弹窗的模板下拉）
+  // 拉取可用提示词模板（只拉一次，用于实例编辑表单的模板下拉）
   var __tplLoaded = false
   function loadTemplatesIfNeeded() {
     if (__tplLoaded) return
@@ -310,6 +332,18 @@
     return html
   }
 
+  function showGatewayList() {
+    $('gwListView').classList.add('active')
+    $('gwFormView').classList.remove('active')
+    try { sessionStorage.setItem('gwView', 'list') } catch (e) {}
+    loadGateway()
+  }
+  function showGatewayForm() {
+    $('gwListView').classList.remove('active')
+    $('gwFormView').classList.add('active')
+    try { sessionStorage.setItem('gwView', 'form') } catch (e) {}
+  }
+
   window.gwInstKindChanged = function () {
     var kind = $('gwInstKind').value
     var meta = gwMeta[kind] || {}
@@ -323,23 +357,26 @@
     var firstKind = Object.keys(gwMeta).sort()[0] || ''
     var meta = gwMeta[firstKind] || {}
     var fake = { kind: firstKind, name: '', config_fields: meta.config_fields || [], enabled: true }
-    $('gwModalTitle').textContent = '+ 添加实例'
+    $('gwFormTitle').textContent = '+ 添加实例'
     $('gwInstFields').innerHTML = renderInstanceForm(fake)
-    $('gwModal').classList.add('show')
+    try { sessionStorage.removeItem('gwEditingId') } catch (e) {}
+    showGatewayForm()
   }
 
   window.gwEditInstance = function (instance_id) {
     var i = gwInstances.find(function (x) { return x.instance_id === instance_id })
     if (!i) return
     gwEditing = i
-    $('gwModalTitle').textContent = '编辑实例'
+    $('gwFormTitle').textContent = '编辑实例'
     $('gwInstFields').innerHTML = renderInstanceForm(i)
-    $('gwModal').classList.add('show')
+    try { sessionStorage.setItem('gwEditingId', instance_id) } catch (e) {}
+    showGatewayForm()
   }
 
   window.gwCloseInstanceModal = function () {
-    $('gwModal').classList.remove('show')
     gwEditing = null
+    try { sessionStorage.removeItem('gwEditingId') } catch (e) {}
+    showGatewayList()
   }
 
   window.gwSaveInstance = async function () {
@@ -368,8 +405,9 @@
       })
       if (!res.status) throw new Error(res.msg || '保存失败')
       toast('实例已保存')
-      gwCloseInstanceModal()
-      loadGateway()
+      gwEditing = null
+      try { sessionStorage.removeItem('gwEditingId') } catch (e) {}
+      showGatewayList()
     } catch (e) { toast(e.message, 'err') }
   }
 
@@ -548,6 +586,18 @@
     loadGateway()
     loadMemory()
     loadUsage()
+    // 刷新后停留当前视图：若之前正在编辑实例，恢复编辑表单
+    try {
+      if (sessionStorage.getItem('gwView') === 'form') {
+        var editingId = sessionStorage.getItem('gwEditingId')
+        if (editingId) {
+          var i = gwInstances.find(function (x) { return x.instance_id === editingId })
+          if (i) { gwEditInstance(editingId); return }
+        }
+        // 无编辑目标则回列表
+        sessionStorage.setItem('gwView', 'list')
+      }
+    } catch (e) {}
   })
 
   var qrTimer = null
@@ -634,21 +684,6 @@
     <div id="qrStatus" style="text-align:center;font-size:13px;color:var(--bt-text-2);min-height:20px"></div>
     <div style="text-align:center;padding-top:8px"><button class="btn" onclick="gwQrClose()">关闭</button></div>
   </div>
-
-<!-- 实例编辑弹窗 -->
-<div id="gwModal" class="qr-modal">
-  <div class="qr-modal-box" style="max-width:480px;max-height:86vh;overflow-y:auto">
-    <div class="qr-modal-hd">
-      <strong id="gwModalTitle">编辑实例</strong>
-      <button class="btn" onclick="gwCloseInstanceModal()" style="border:none;background:transparent;font-size:16px">✕</button>
-    </div>
-    <div id="gwInstFields"></div>
-    <div style="text-align:center;padding-top:10px">
-      <button class="btn pri" onclick="gwSaveInstance()">保存</button>
-      <button class="btn" onclick="gwCloseInstanceModal()">取消</button>
-    </div>
-  </div>
-</div>
 
 </body>
 </html>
