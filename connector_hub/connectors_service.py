@@ -21,6 +21,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet
 
+from config_store import load_config, save_config, update_config
 from connector_hub import PROJECT_ROOT
 from connector_hub.connectors_catalog import (
     GATEWAY_KINDS,
@@ -72,18 +73,11 @@ def decrypt_credentials(token: str) -> dict[str, Any]:
 
 # ── config.json 读写 ────────────────────────────────────────
 def _read_config() -> dict[str, Any]:
-    if not os.path.exists(CONFIG_FILE):
-        return {}
-    with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
-        try:
-            return json.load(fh)
-        except json.JSONDecodeError:
-            return {}
+    return load_config(CONFIG_FILE)
 
 
 def _write_config(cfg: dict[str, Any]) -> None:
-    with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, ensure_ascii=False, indent=2)
+    save_config(CONFIG_FILE, cfg)
 
 
 def _instances() -> list[dict[str, Any]]:
@@ -94,9 +88,10 @@ def _instances() -> list[dict[str, Any]]:
 
 
 def _save_instances(instances: list[dict[str, Any]]) -> None:
-    cfg = _read_config()
-    cfg.setdefault("connector_hub", {}).setdefault("connectors", {})["instances"] = instances
-    _write_config(cfg)
+    def _apply(cfg: dict[str, Any]) -> None:
+        cfg.setdefault("connector_hub", {}).setdefault("connectors", {})["instances"] = instances
+
+    update_config(CONFIG_FILE, _apply)
 
 
 # ── spec 生成（remote / gateway / internal）────────────────
@@ -284,13 +279,7 @@ def sync_to_mcp_config(dry_run: bool = False) -> dict[str, Any]:
     返回 {added, removed, kept} 统计。
     """
     instances = _instances()
-    mcp_cfg = {}
-    if os.path.exists(MCP_CONFIG_FILE):
-        try:
-            with open(MCP_CONFIG_FILE, "r", encoding="utf-8") as fh:
-                mcp_cfg = json.load(fh)
-        except json.JSONDecodeError:
-            mcp_cfg = {}
+    mcp_cfg = load_config(MCP_CONFIG_FILE)
     servers = mcp_cfg.setdefault("mcpServers", {})
 
     desired: dict[str, dict[str, Any]] = {}
@@ -311,9 +300,7 @@ def sync_to_mcp_config(dry_run: bool = False) -> dict[str, Any]:
         for k in removed:
             servers.pop(k, None)
         servers.update(desired)
-        os.makedirs(os.path.dirname(MCP_CONFIG_FILE), exist_ok=True)
-        with open(MCP_CONFIG_FILE, "w", encoding="utf-8") as fh:
-            json.dump(mcp_cfg, fh, ensure_ascii=False, indent=2)
+        save_config(MCP_CONFIG_FILE, mcp_cfg)
     return {"added": added, "removed": removed, "kept": kept}
 
 

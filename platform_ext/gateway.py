@@ -20,7 +20,6 @@ API：
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import Any
@@ -29,6 +28,7 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 
 import public
+from config_store import load_config, update_config
 from platform_ext import PROJECT_ROOT
 
 logger = logging.getLogger("platform-ext-gateway")
@@ -159,16 +159,7 @@ def _config_path() -> str:
 
 
 def _load_config() -> dict[str, Any]:
-    try:
-        with open(_config_path(), "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:  # noqa: BLE001
-        return {}
-
-
-def _save_config(cfg: dict[str, Any]) -> None:
-    with open(_config_path(), "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, ensure_ascii=False, indent=2)
+    return load_config(_config_path())
 
 
 def _gateway_cfg() -> dict[str, Any]:
@@ -176,9 +167,10 @@ def _gateway_cfg() -> dict[str, Any]:
 
 
 def _set_gateway_cfg(cfg: dict[str, Any]) -> None:
-    full = _load_config()
-    full.setdefault("platform_ext", {})["gateway"] = cfg
-    _save_config(full)
+    def _apply(full: dict[str, Any]) -> None:
+        full.setdefault("platform_ext", {})["gateway"] = cfg
+
+    update_config(_config_path(), _apply)
 
 
 # ── 自动启动状态持久化（重启后恢复手动启动过的通道）──────────────

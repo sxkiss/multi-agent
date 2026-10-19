@@ -2461,8 +2461,10 @@ class AgentMain:
         self.config['opencode'] = new_oc
         path = os.path.join(self.plugin_path, 'config.json')
         try:
-            with open(path, 'w', encoding='utf-8') as f:
+            tmp = path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
         except Exception as e:
             return public.returnMsg(False, f"保存配置失败: {e!s}")
         return public.return_data(True, data=self.config['opencode'])
