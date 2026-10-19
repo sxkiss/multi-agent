@@ -137,7 +137,7 @@ def call_tool(creds: dict[str, Any], name: str, args: dict[str, Any]) -> str:
         if (domain, tokens[0]) in _USER_ONLY_SHORTCUTS and str(
             creds.get("default_as") or ""
         ).strip().lower() != "user":
-            # Octop has not recorded a completed user OAuth yet.
+            # No completed user OAuth has been recorded yet.
             raise ValueError(_USER_AUTH_REQUIRED_MSG)
         env = _prepare_env(creds, prefer_identity=identity)
         if (domain, tokens[0]) in _USER_ONLY_SHORTCUTS and not _has_user_scope(

@@ -437,3 +437,48 @@ class TestHttpMcpClientIntegration:
         # 不应是 "未连接"，而是真实发起请求后的连接错误
         assert "未连接" not in out
         assert "调用异常" in out or "失败" in out
+
+
+class TestEditKeepSecretAndConfiguredFields:
+    """编辑场景：secret 留空表示不修改；返回 configured_fields 标记已配置字段。"""
+
+    def _make(self, kind, creds):
+        from connector_hub.connectors_service import create_instance
+        return create_instance(kind, "test-" + kind, creds, True)
+
+    def _cleanup(self, iid):
+        from connector_hub.connectors_service import _instances, _save_instances
+        _save_instances([i for i in _instances() if i["instance_id"] != iid])
+
+    def test_configured_fields_marks_secret(self):
+        from connector_hub.connectors_service import create_instance
+        inst = create_instance("weknora", "cfg", {"base_url": "http://127.0.0.1:1", "api_key": "sk"}, True)
+        try:
+            assert "api_key" in inst.get("configured_fields", [])
+            assert "base_url" not in inst.get("configured_fields", [])  # 非 secret 不标记
+        finally:
+            self._cleanup(inst["instance_id"])
+
+    def test_update_keeps_secret_when_blank(self):
+        from connector_hub.connectors_service import create_instance, update_instance, get_instance
+        inst = create_instance("weknora", "k", {"base_url": "http://a:1", "api_key": "sk-old"}, True)
+        iid = inst["instance_id"]
+        try:
+            upd = update_instance(iid, name="k2", creds={"base_url": "http://b:2"})
+            assert "api_key" in upd.get("configured_fields", [])
+            detail = get_instance(iid, include_secrets=True)
+            assert detail["creds"].get("api_key") == "sk-old"
+            assert detail["creds"].get("base_url") == "http://b:2"
+        finally:
+            self._cleanup(iid)
+
+    def test_update_empty_creds_keeps_all(self):
+        from connector_hub.connectors_service import create_instance, update_instance, get_instance
+        inst = create_instance("qq-music", "m", {"api_key": "qmk-old"}, True)
+        iid = inst["instance_id"]
+        try:
+            update_instance(iid, name="m2", creds={})
+            detail = get_instance(iid, include_secrets=True)
+            assert detail["creds"].get("api_key") == "qmk-old"
+        finally:
+            self._cleanup(iid)
