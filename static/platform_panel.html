@@ -100,10 +100,17 @@
   /* 通道多实例管理：列表 / 表单视图切换 */
   .gw-view { display: none; }
   .gw-view.active { display: block; }
-  .gw-form-card { max-width: 640px; }
+  .gw-form-card { max-width: 680px; }
   .gw-form-actions { display: flex; gap: 10px; margin-top: 16px; }
   .gw-form-actions .btn { padding: 8px 20px; font-size: 13.5px; }
   .gw-back { margin-bottom: 14px; }
+  .gw-qr-inline {
+    margin-top: 14px; padding: 14px; border: 1px dashed var(--bt-primary);
+    background: var(--bt-primary-soft); border-radius: var(--bt-radius-sm);
+  }
+  .gw-qr-inline .qr-img { width: 200px; height: 200px; border-radius: 8px; border: 1px solid var(--bt-border); }
+  .gw-qr-status { font-size: 12.5px; color: var(--bt-text-2); min-height: 18px; margin-top: 6px; }
+  .gw-qr-auth { margin-top: 8px; }
 
   /* 扫码绑定弹窗 */
   .qr-modal {
@@ -141,15 +148,18 @@
   </div>
 
   <div id="tab-gateway" class="panel active">
+    <!-- 多实例列表视图：管理全部通道所有实例 -->
     <div id="gwListView" class="gw-view active"></div>
+    <!-- 添加/编辑实例视图：独立于列表，含扫码/授权绑定入口 -->
     <div id="gwFormView" class="gw-view">
+      <div class="gw-back"><button class="btn" onclick="gwCloseInstanceForm()">← 返回实例列表</button></div>
       <div class="card gw-form-card">
-        <div class="row gw-back"><button class="btn" onclick="gwCloseInstanceModal()">← 返回实例列表</button></div>
         <h3 id="gwFormTitle" style="margin-bottom:14px">添加实例</h3>
         <div id="gwInstFields"></div>
+        <div id="gwQrSection"></div>
         <div class="gw-form-actions">
           <button class="btn pri" onclick="gwSaveInstance()">保存</button>
-          <button class="btn" onclick="gwCloseInstanceModal()">取消</button>
+          <button class="btn" onclick="gwCloseInstanceForm()">取消</button>
         </div>
       </div>
     </div>
@@ -189,10 +199,15 @@
     document.querySelectorAll('.panel').forEach(function (p) { p.classList.toggle('active', p.id === 'tab-' + name) })
   }
 
-  // ── Gateway 实例管理 ─────────────────────
+  // ── Gateway 多实例管理 ─────────────────────
   var gwInstances = []
-  var gwEditing = null // {instance_id, kind}
-  var gwMeta = {}
+  var gwEditing = null          // 编辑中的实例对象
+  var gwMeta = {}               // kind -> 平台元数据（含 config_fields / supported_qr）
+  var gwDraftInstanceId = null  // 添加页扫码时先创建的实例 id
+  var gwQrTimer = null           // 表单页扫码轮询定时器
+  var gwListQrTimer = null       // 列表页扫码轮询定时器
+  var gwQrSession = null         // {kind, instance_id, token}
+
   async function loadGateway() {
     var el = $('gwListView')
     if (!el) return
@@ -225,22 +240,23 @@
   function renderGateway() {
     var el = $('gwListView')
     if (!el) return
+    var topBtn = '<div class="row" style="margin-bottom:14px"><button class="btn pri" onclick="gwAddInstance()">+ 添加实例</button></div>'
     if (!gwInstances.length) {
-      el.innerHTML = '<div class="card"><div class="empty">暂无实例</div>' +
+      el.innerHTML = topBtn + '<div class="card"><div class="empty">暂无实例</div>' +
         '<div style="text-align:center;padding-top:8px"><button class="btn pri" onclick="gwAddInstance()">+ 添加实例</button></div></div>'
       return
     }
     var groups = groupByKind(gwInstances)
-    var html = '<div class="row" style="margin-bottom:14px"><button class="btn pri" onclick="gwAddInstance()">+ 添加实例</button></div>'
+    var html = topBtn
     Object.keys(groups).sort().forEach(function (kind) {
       var meta = gwMeta[kind] || {}
       var items = groups[kind]
-      html += '<div class="card"><h3>' + esc(meta.label || kind) + ' <span class="badge ok">' + items.length + '</span></h3>' +
+      html += '<div class="card"><h3>' + esc(meta.label || kind) + ' <span class="badge ok">' + items.length + ' 个实例</span></h3>' +
         '<div class="grid">' + items.map(function (i) {
           var cfgBadge = i.configured ? '<span class="badge ok">已配置</span>' : '<span class="badge no">未配置</span>'
           var runBadge = i.running ? '<span class="badge run">运行中</span>' : '<span class="badge stop">已停止</span>'
           var sdkBadge = i.sdk_installed ? '<span class="badge ok">SDK✓</span>' : '<span class="badge no">SDK 未装</span>'
-          var qrBtn = i.supported_qr ? '<button class="btn" onclick="gwQrBind(\'' + esc(i.kind) + '\')">📱 扫码绑定</button>' : ''
+          var qrBtn = i.supported_qr ? '<button class="btn" onclick="gwQrBindFromList(\'' + esc(i.kind) + '\',\'' + esc(i.instance_id) + '\')">📱 扫码绑定</button>' : ''
           return '<div class="ch-card" data-instance="' + esc(i.instance_id) + '">' +
             '<div class="hd"><div class="nm">' + esc(i.name || i.label || i.instance_id) + '</div><div class="spacer"></div>' +
             cfgBadge + ' ' + sdkBadge + ' ' + runBadge + '</div>' +
@@ -267,7 +283,6 @@
     api('/gateway/templates').then(function (res) {
       if (res && res.status) {
         window.__gwTemplates = (res.data && res.data.templates) || []
-        // 已有模板下拉的页面，重新渲染以显示选项
         var sels = document.querySelectorAll('select[id^="gwf-template"]')
         sels.forEach(function (sel) {
           if (window.__gwTemplates.length && sel.options.length <= 1) {
@@ -291,9 +306,11 @@
     }).join('')
   }
 
+  function gwMetaFor(kind) { return gwMeta[kind] || {} }
+
   function renderInstanceForm(i) {
     var kind = i.kind
-    var meta = gwMeta[kind] || {}
+    var meta = gwMetaFor(kind)
     var fields = (i.config_fields && i.config_fields.length) ? i.config_fields : (meta.config_fields || [])
     var html = '<div><label>实例名称 *</label><input id="gwInstName" value="' + esc(i.name || '') + '" placeholder="实例名称"></div>'
     html += '<div><label>平台类型</label><select id="gwInstKind" onchange="gwInstKindChanged()">' + kindOptions(kind) + '</select></div>'
@@ -332,6 +349,27 @@
     return html
   }
 
+  function renderQrSection(i) {
+    var box = $('gwQrSection')
+    if (!box) return
+    var kind = i.kind
+    var meta = gwMetaFor(kind)
+    if (!meta.supported_qr) {
+      box.innerHTML = ''
+      return
+    }
+    var configured = i.configured ? '<span class="badge ok">已绑定凭据</span>' : '<span class="badge no">未绑定凭据</span>'
+    box.innerHTML = '<div class="gw-qr-inline">' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<strong>📱 扫码绑定</strong>' + configured +
+        '<span style="flex:1"></span>' +
+        '<button class="btn pri" id="gwQrStartBtn" onclick="gwStartQrBind()">扫码 / 授权</button>' +
+      '</div>' +
+      '<div id="gwQrBody" style="margin-top:10px"></div>' +
+      '<div id="gwQrStatus" class="gw-qr-status"></div>' +
+    '</div>'
+  }
+
   function showGatewayList() {
     $('gwListView').classList.add('active')
     $('gwFormView').classList.remove('active')
@@ -344,21 +382,32 @@
     try { sessionStorage.setItem('gwView', 'form') } catch (e) {}
   }
 
+  function gwResetDraft() {
+    gwDraftInstanceId = null
+    if (gwQrTimer) { clearInterval(gwQrTimer); gwQrTimer = null }
+    gwQrSession = null
+  }
+
   window.gwInstKindChanged = function () {
     var kind = $('gwInstKind').value
-    var meta = gwMeta[kind] || {}
-    var fake = { kind: kind, name: $('gwInstName').value || '', config_fields: meta.config_fields || [], enabled: true }
+    var meta = gwMetaFor(kind)
+    var fake = { kind: kind, name: $('gwInstName').value || '', config_fields: meta.config_fields || [], enabled: true, configured: false }
     var box = $('gwInstFields')
     if (box) box.innerHTML = renderInstanceForm(fake)
+    renderQrSection(fake)
+    if (gwQrTimer) { clearInterval(gwQrTimer); gwQrTimer = null }
+    gwQrSession = null
   }
 
   window.gwAddInstance = function () {
     gwEditing = null
+    gwResetDraft()
     var firstKind = Object.keys(gwMeta).sort()[0] || ''
     var meta = gwMeta[firstKind] || {}
-    var fake = { kind: firstKind, name: '', config_fields: meta.config_fields || [], enabled: true }
+    var fake = { kind: firstKind, name: '', config_fields: meta.config_fields || [], enabled: true, configured: false }
     $('gwFormTitle').textContent = '+ 添加实例'
     $('gwInstFields').innerHTML = renderInstanceForm(fake)
+    renderQrSection(fake)
     try { sessionStorage.removeItem('gwEditingId') } catch (e) {}
     showGatewayForm()
   }
@@ -367,25 +416,27 @@
     var i = gwInstances.find(function (x) { return x.instance_id === instance_id })
     if (!i) return
     gwEditing = i
+    gwResetDraft()
     $('gwFormTitle').textContent = '编辑实例'
     $('gwInstFields').innerHTML = renderInstanceForm(i)
+    renderQrSection(i)
     try { sessionStorage.setItem('gwEditingId', instance_id) } catch (e) {}
     showGatewayForm()
   }
 
-  window.gwCloseInstanceModal = function () {
+  window.gwCloseInstanceForm = function () {
     gwEditing = null
+    gwResetDraft()
     try { sessionStorage.removeItem('gwEditingId') } catch (e) {}
     showGatewayList()
   }
 
-  window.gwSaveInstance = async function () {
-    var isEdit = !!gwEditing
+  function gwCollectBody() {
     var kind = $('gwInstKind').value
     var name = $('gwInstName').value.trim()
-    if (!name) { toast('请填写实例名称', 'err'); return }
+    var meta = gwMetaFor(kind)
     var body = { kind: kind, name: name, enabled: $('gwInstEnabled').value === 'true' }
-    var meta = gwMeta[kind] || {}
+    var isEdit = !!gwEditing
     var fields = isEdit && gwEditing.config_fields && gwEditing.config_fields.length
       ? gwEditing.config_fields
       : (meta.config_fields || [])
@@ -396,16 +447,26 @@
       if (f.type === 'password' && !val) return // 留空表示不修改
       body[f.name] = val
     })
-    var path = isEdit ? '/gateway/instances/' + encodeURIComponent(gwEditing.instance_id) : '/gateway/instances'
+    return body
+  }
+
+  window.gwSaveInstance = async function () {
+    var isEdit = !!gwEditing
+    var body = gwCollectBody()
+    if (!body.name) { toast('请填写实例名称', 'err'); return }
+    var targetId = isEdit ? gwEditing.instance_id : gwDraftInstanceId
+    var path = targetId ? '/gateway/instances/' + encodeURIComponent(targetId) : '/gateway/instances'
+    var method = targetId ? 'PATCH' : 'POST'
     try {
       var res = await api(path, {
-        method: isEdit ? 'PATCH' : 'POST',
+        method: method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       })
       if (!res.status) throw new Error(res.msg || '保存失败')
       toast('实例已保存')
       gwEditing = null
+      gwResetDraft()
       try { sessionStorage.removeItem('gwEditingId') } catch (e) {}
       showGatewayList()
     } catch (e) { toast(e.message, 'err') }
@@ -435,6 +496,168 @@
       toast('实例已删除')
       loadGateway()
     } catch (e) { toast(e.message, 'err') }
+  }
+
+  // ── 扫码绑定（表单页：添加/编辑实例内嵌）────────────────
+  function qrContentHtml(d) {
+    if (d.qrcode_url && (d.qrcode_url.indexOf('data:') === 0 || /^https?:\/\//.test(d.qrcode_url))) {
+      return '<div style="text-align:center;padding:8px"><img src="' + esc(d.qrcode_url) + '" class="qr-img"></div>' +
+        '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">请用手机扫码绑定</div>'
+    }
+    if (d.auth_url) {
+      return '<div style="text-align:center;padding:8px"><a href="' + esc(d.auth_url) + '" target="_blank" class="link">点击打开授权页面扫码</a></div>' +
+        '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">在浏览器打开后扫码，或复制链接到手机</div>'
+    }
+    if (d.verification_uri_complete) {
+      var html = '<div style="text-align:center;padding:8px"><a href="' + esc(d.verification_uri_complete) + '" target="_blank" class="link">打开授权页面</a></div>'
+      if (d.user_code) html += '<div style="text-align:center;font-size:26px;font-weight:700;letter-spacing:4px;margin:10px 0">' + esc(d.user_code) + '</div>'
+      html += '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">输入上方用户码完成授权</div>'
+      return html
+    }
+    return '<div class="empty">二维码数据异常</div>'
+  }
+
+  window.gwStartQrBind = async function () {
+    var kind = $('gwInstKind').value
+    var name = $('gwInstName').value.trim()
+    if (!name) { toast('请先填写实例名称', 'err'); return }
+    var instance_id = gwEditing ? gwEditing.instance_id : gwDraftInstanceId
+    if (!instance_id) {
+      // 添加页：先创建「待配置」实例，拿到 instance_id 后再扫码绑定
+      try {
+        var createRes = await api('/gateway/instances', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: kind, name: name, enabled: false })
+        })
+        if (!createRes.status) throw new Error(createRes.msg || '创建实例失败')
+        instance_id = createRes.data.instance.instance_id
+        gwDraftInstanceId = instance_id
+      } catch (e) { toast(e.message, 'err'); return }
+    }
+    var body = $('gwQrBody')
+    var status = $('gwQrStatus')
+    body.innerHTML = '<div class="empty">正在生成二维码...</div>'
+    status.textContent = ''
+    try {
+      var res = await api('/gateway/channels/' + kind + '/qrcode/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: 'form', instance_id: instance_id })
+      })
+      if (!res.status) throw new Error(res.msg || '生成失败')
+      var d = res.data
+      var token = d.qrcode_token || d.scode || d.device_code || ''
+      gwQrSession = { kind: kind, instance_id: instance_id, token: token }
+      body.innerHTML = qrContentHtml(d)
+      if (gwQrTimer) clearInterval(gwQrTimer)
+      gwQrTimer = setInterval(function () { gwQrPollOnce() }, 3000)
+    } catch (e) {
+      body.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>'
+    }
+  }
+
+  window.gwQrPollOnce = async function () {
+    if (!gwQrSession || gwQrSession.done) return
+    var s = gwQrSession
+    var status = $('gwQrStatus')
+    try {
+      var res = await api('/gateway/channels/' + s.kind + '/qrcode/poll', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: s.token, session_id: 'form', instance_id: s.instance_id })
+      })
+      if (!res.status) throw new Error(res.msg || '轮询失败')
+      var d = res.data
+      if (d.status === 'success') {
+        s.done = true
+        if (gwQrTimer) { clearInterval(gwQrTimer); gwQrTimer = null }
+        status.innerHTML = '<span class="badge ok">✓ 绑定成功，凭据已写入实例 ' + esc(s.instance_id) + '</span>'
+        // 重新拉取实例数据，回显已绑定凭据
+        try {
+          var instRes = await api('/gateway/instances')
+          if (instRes.status) {
+            var updated = (instRes.data.instances || []).find(function (x) { return x.instance_id === s.instance_id })
+            if (updated) {
+              if (gwEditing && gwEditing.instance_id === s.instance_id) {
+                gwEditing = updated
+                $('gwInstFields').innerHTML = renderInstanceForm(updated)
+                renderQrSection(updated)
+              } else {
+                // 添加流程：把草稿实例回填到表单
+                gwDraftInstanceId = updated.instance_id
+                gwEditing = updated
+                $('gwFormTitle').textContent = '编辑实例（扫码已绑定）'
+                $('gwInstFields').innerHTML = renderInstanceForm(updated)
+                renderQrSection(updated)
+              }
+            }
+          }
+        } catch (e) { /* 刷新失败不影响绑定成功提示 */ }
+      } else if (d.status === 'error' || d.status === 'expired') {
+        s.done = true
+        if (gwQrTimer) { clearInterval(gwQrTimer); gwQrTimer = null }
+        status.innerHTML = '<span class="badge no">✗ ' + esc(d.message || '绑定失败') + '</span>'
+      } else {
+        status.textContent = '等待扫码...'
+      }
+    } catch (e) {
+      status.textContent = '轮询出错: ' + e.message
+    }
+  }
+
+  // ── 扫码绑定（列表页：为具体实例补绑定/重绑）────────────────
+  window.gwQrBindFromList = async function (kind, instance_id) {
+    var m = $('qrModal')
+    m.classList.add('show')
+    $('qrModalTitle').textContent = kind + ' 扫码绑定 ' + instance_id
+    $('qrBody').innerHTML = '<div class="empty">正在生成二维码...</div>'
+    $('qrStatus').textContent = ''
+    try {
+      var res = await api('/gateway/channels/' + kind + '/qrcode/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: 'list-' + instance_id, instance_id: instance_id })
+      })
+      if (!res.status) throw new Error(res.msg || '生成失败')
+      var d = res.data
+      var token = d.qrcode_token || d.scode || d.device_code || ''
+      window.__listQr = { kind: kind, instance_id: instance_id, token: token, done: false }
+      $('qrBody').innerHTML = qrContentHtml(d)
+      if (gwListQrTimer) clearInterval(gwListQrTimer)
+      gwListQrTimer = setInterval(function () { gwListQrPollOnce() }, 3000)
+    } catch (e) {
+      $('qrBody').innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>'
+    }
+  }
+
+  window.gwListQrPollOnce = async function () {
+    var s = window.__listQr
+    if (!s || s.done) return
+    try {
+      var res = await api('/gateway/channels/' + s.kind + '/qrcode/poll', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: s.token, session_id: 'list-' + s.instance_id, instance_id: s.instance_id })
+      })
+      if (!res.status) throw new Error(res.msg || '轮询失败')
+      var d = res.data
+      if (d.status === 'success') {
+        s.done = true
+        if (gwListQrTimer) { clearInterval(gwListQrTimer); gwListQrTimer = null }
+        $('qrStatus').innerHTML = '<span class="badge ok">✓ 绑定成功，凭据已写入实例 ' + esc(s.instance_id) + '</span>'
+        setTimeout(function () { $('qrModal').classList.remove('show'); loadGateway() }, 1200)
+      } else if (d.status === 'error' || d.status === 'expired') {
+        s.done = true
+        if (gwListQrTimer) { clearInterval(gwListQrTimer); gwListQrTimer = null }
+        $('qrStatus').innerHTML = '<span class="badge no">✗ ' + esc(d.message || '绑定失败') + '</span>'
+      } else {
+        $('qrStatus').textContent = '等待扫码...'
+      }
+    } catch (e) {
+      $('qrStatus').textContent = '轮询出错: ' + e.message
+    }
+  }
+  window.gwQrClose = function () {
+    if (gwListQrTimer) { clearInterval(gwListQrTimer); gwListQrTimer = null }
+    window.__listQr = null
+    $('qrModal').classList.remove('show')
   }
 
   // ── Memory 记忆 ─────────────────────────
@@ -599,76 +822,6 @@
       }
     } catch (e) {}
   })
-
-  var qrTimer = null
-  window.gwQrBind = async function (kind) {
-    var m = $('qrModal')
-    m.classList.add('show')
-    $('qrModalTitle').textContent = kind + ' 扫码绑定'
-    $('qrBody').innerHTML = '<div class="empty">正在生成二维码...</div>'
-    $('qrStatus').textContent = ''
-    try {
-      var res = await api('/gateway/channels/' + kind + '/qrcode/generate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: 'panel' })
-      })
-      if (!res.status) throw new Error(res.msg || '生成失败')
-      var d = res.data
-      var token = d.qrcode_token || d.scode || d.device_code || ''
-      window.__qr = { kind: kind, token: token, status: 'wait' }
-      renderQrBody(d)
-      if (qrTimer) clearInterval(qrTimer)
-      qrTimer = setInterval(function () { gwQrPollOnce(kind, token) }, 3000)
-    } catch (e) {
-      $('qrBody').innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>'
-    }
-  }
-  function renderQrBody(d) {
-    var html = ''
-    if (d.qrcode_url && (d.qrcode_url.indexOf('data:') === 0 || /^https?:\/\//.test(d.qrcode_url))) {
-      html = '<div style="text-align:center;padding:8px"><img src="' + esc(d.qrcode_url) + '" style="width:220px;height:220px;border-radius:8px;border:1px solid var(--bt-border)"></div>'
-      html += '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">请用手机扫码绑定</div>'
-    } else if (d.auth_url) {
-      html = '<div style="text-align:center;padding:8px"><a href="' + esc(d.auth_url) + '" target="_blank" class="link">点击打开授权页面扫码</a></div>'
-      html += '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">在浏览器打开后扫码，或复制链接到手机</div>'
-    } else if (d.verification_uri_complete) {
-      html = '<div style="text-align:center;padding:8px"><a href="' + esc(d.verification_uri_complete) + '" target="_blank" class="link">打开授权页面</a></div>'
-      if (d.user_code) html += '<div style="text-align:center;font-size:26px;font-weight:700;letter-spacing:4px;margin:10px 0">' + esc(d.user_code) + '</div>'
-      html += '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">输入上方用户码完成授权</div>'
-    } else {
-      html = '<div class="empty">二维码数据异常</div>'
-    }
-    $('qrBody').innerHTML = html
-    $('qrStatus').textContent = ''
-  }
-  window.gwQrPollOnce = async function (kind, token) {
-    if (!window.__qr || window.__qr.status === 'success' || window.__qr.status === 'error') return
-    try {
-      var res = await api('/gateway/channels/' + kind + '/qrcode/poll', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: token, session_id: 'panel' })
-      })
-      if (!res.status) throw new Error(res.msg || '轮询失败')
-      var d = res.data
-      if (d.status === 'success') {
-        window.__qr.status = 'success'
-        if (qrTimer) { clearInterval(qrTimer); qrTimer = null }
-        $('qrStatus').innerHTML = '<span class="badge ok">✓ 绑定成功，凭据已保存</span>'
-        setTimeout(function () { $('qrModal').classList.remove('show'); loadGateway() }, 1200)
-      } else if (d.status === 'error' || d.status === 'expired') {
-        window.__qr.status = 'error'
-        if (qrTimer) { clearInterval(qrTimer); qrTimer = null }
-        $('qrStatus').innerHTML = '<span class="badge no">✗ ' + esc(d.message || '绑定失败') + '</span>'
-      } else {
-        $('qrStatus').textContent = '等待扫码...'
-      }
-    } catch (e) {
-      $('qrStatus').textContent = '轮询出错: ' + e.message
-    }
-  }
-  window.gwQrClose = function () {
-    if (qrTimer) { clearInterval(qrTimer); qrTimer = null }
-    $('qrModal').classList.remove('show')
-  }
 
 })();
 </script>

@@ -331,3 +331,105 @@ class TestRuntimeDepsAndFillback:
         # 敏感字段不回显明文
         assert fields["secret"]["saved"] is True
         assert fields["secret"]["saved_value"] == ""
+
+
+class TestGatewayQrInstanceBinding:
+    """qrcode/generate 与 qrcode/poll 路由应透传 instance_id 并绑定到指定实例。"""
+
+    def test_generate_returns_instance_id(self, monkeypatch):
+        import asyncio
+        import json
+
+        from platform_ext import gateway
+
+        async def fake_generate(kind, session_id=""):
+            return {"qrcode_token": "tok", "qrcode_url": "data:image/png;base64,xx", "kind": kind, "session_id": session_id}
+
+        monkeypatch.setattr(gateway.qr_login, "generate", fake_generate)
+
+        class FakeRequest:
+            async def json(self):
+                return {"session_id": "s1", "instance_id": "weixin_b"}
+
+        res = asyncio.run(gateway.gateway_qrcode_generate("weixin", FakeRequest()))  # type: ignore[arg-type]
+        body = json.loads(res.body.decode("utf-8"))
+        assert body["status"] is True
+        assert body["data"]["instance_id"] == "weixin_b"
+        assert body["data"]["qrcode_token"] == "tok"
+
+    def test_poll_binds_to_instance(self, monkeypatch):
+        import asyncio
+        import json
+
+        from platform_ext import gateway, qr_login
+
+        saved = {}
+
+        def fake_save(kind, config, instance_id=None):
+            saved["kind"] = kind
+            saved["config"] = config
+            saved["instance_id"] = instance_id
+
+        async def fake_poll(kind, token, session_id="", instance_id=None):
+            # 模拟真实 poll 成功后的保存行为：把凭据写入指定实例
+            qr_login.save_channel_config(kind, {"token": "tok", "account_id": "a1", "base_url": "https://x"}, instance_id=instance_id)
+            return {"status": "success", "token": "tok", "account_id": "a1", "base_url": "https://x"}
+
+        monkeypatch.setattr(qr_login, "save_channel_config", fake_save)
+        monkeypatch.setattr(gateway.qr_login, "poll", fake_poll)
+
+        class FakeRequest:
+            async def json(self):
+                return {"token": "tok", "session_id": "s1", "instance_id": "weixin_b"}
+
+        res = asyncio.run(gateway.gateway_qrcode_poll("weixin", FakeRequest()))  # type: ignore[arg-type]
+        body = json.loads(res.body.decode("utf-8"))
+        assert body["status"] is True
+        assert body["data"]["status"] == "success"
+        assert body["data"]["instance_id"] == "weixin_b"
+        assert body["data"]["configured"] is True
+        assert saved["instance_id"] == "weixin_b"
+        assert saved["config"]["token"] == "tok"
+
+
+    def test_poll_success_writes_credentials_to_instance(self, tmp_path, monkeypatch):
+        """端到端：poll 成功应把凭据写入指定实例（真实 save_channel_config）。"""
+        import asyncio
+        import json
+
+        from platform_ext import gateway, qr_login
+
+        # 把 gateway 与 qr_login 的配置路径都重定向到临时文件
+        cfg = tmp_path / "config.json"
+        monkeypatch.setattr(qr_login, "_config_path", lambda: str(cfg))
+        monkeypatch.setattr(gateway, "_config_path", lambda: str(cfg))
+        qr_login._set_gateway_cfg({
+            "instances": [{"instance_id": "weixin_b", "kind": "weixin", "configured": False}],
+        })
+
+        async def fake_poll(kind, token, session_id="", instance_id=None):
+            # 复用真实保存逻辑，模拟 poll 成功
+            qr_login.save_channel_config(kind, {"token": "tok", "account_id": "a1", "base_url": "https://x"}, instance_id=instance_id)
+            return {"status": "success", "token": "tok", "account_id": "a1", "base_url": "https://x"}
+
+        monkeypatch.setattr(gateway.qr_login, "poll", fake_poll)
+
+        class FakeRequest:
+            async def json(self):
+                return {"token": "tok", "session_id": "s1", "instance_id": "weixin_b"}
+
+        res = asyncio.run(gateway.gateway_qrcode_poll("weixin", FakeRequest()))  # type: ignore[arg-type]
+        body = json.loads(res.body.decode("utf-8"))
+        assert body["status"] is True
+        assert body["data"]["instance_id"] == "weixin_b"
+        assert body["data"]["configured"] is True
+
+        # 实例列表应包含绑定后的实例，凭据真实写入
+        inst_res = asyncio.run(gateway.gateway_list_instances())
+        inst_body = json.loads(inst_res.body.decode("utf-8"))
+        target = next(i for i in inst_body["data"]["instances"] if i["instance_id"] == "weixin_b")
+        assert target["configured"] is True
+        # 敏感字段不回显明文
+        fields = {f["name"]: f for f in target["config_fields"]}
+        assert fields["token"]["saved"] is True
+        assert fields["token"]["saved_value"] == ""
