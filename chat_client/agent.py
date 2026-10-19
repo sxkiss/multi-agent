@@ -387,6 +387,23 @@ class Agent:
         self._repeat_content_streak = 0
         self._repeat_tool_sig = None
         self._repeat_tool_streak = 0
+        # reasoning 重复检测：同一轮思考里同一句话重复过多视为退化，
+        # 命中后丢弃本次响应并重新发起请求（不中断任务）。
+        # 默认：句子归一化后重复 >= 8 次触发；最多额外重试 1 次（共 2 次尝试）。
+        try:
+            self.reasoning_repeat_limit = max(3, int(
+                self.config.get("reasoning_repeat_limit")
+                or _agent_cfg.get("reasoning_repeat_limit", 8)
+            ))
+        except (TypeError, ValueError):
+            self.reasoning_repeat_limit = 8
+        try:
+            self.reasoning_repeat_retries = max(0, int(
+                self.config.get("reasoning_repeat_retries")
+                or _agent_cfg.get("reasoning_repeat_retries", 1)
+            ))
+        except (TypeError, ValueError):
+            self.reasoning_repeat_retries = 1
         # 轮询类工具允许同参数连续调用，不参与重复熔断
         self._repeat_exempt_tools = {"TaskStatus", "TaskList", "CheckCommandStatus"}
 
@@ -1105,11 +1122,18 @@ Here is some useful information about the environment you are running in:
 
                 attempt = 0
                 yielded_content = ""  # 本轮所有尝试中已实时推送给前端、不可撤回的正文
+                # reasoning 退化重试独立计数：只统计因重复退化触发的重试，
+                # 不被网络异常/空回复的 attempt 消耗。
+                reasoning_repeat_retry_count = 0
                 while True:
                     attempt += 1
                     tool_call_chunks = {}
                     current_response_content = ""
                     current_reasoning_content = ""
+                    # 已补发给前端的 reasoning 长度；reasoning 先缓冲，
+                    # 在正文/工具调用开始前或流结束时校验通过后一次性补发。
+                    reasoning_yielded_len = 0
+                    reasoning_checked_len = 0
                     reported_tool_indices = set()
                     try:
                         # 防御：清理可能含非法 JSON 的 tool_calls
@@ -1159,16 +1183,33 @@ Here is some useful information about the environment you are running in:
 
                             delta = chunk.choices[0].delta
 
-                            # 处理推理内容
+                            # 处理推理内容：先缓冲，不实时推送。每增长约 2000 字符
+                            # 做一次退化检测，命中后立即断流并重新请求，避免等整段
+                            # 退化思考生成完；校验通过的内容在正文之前补发，保证
+                            # 思维链顺序，也避免把大段重复思考刷给前端。
                             if getattr(delta, "reasoning_content", None):
                                 current_reasoning_content += delta.reasoning_content
-                                yield {
-                                    "type": "reasoning",
-                                    "response": delta.reasoning_content
-                                }
+                                if (len(current_reasoning_content) - reasoning_checked_len
+                                        >= 2000):
+                                    reasoning_checked_len = len(current_reasoning_content)
+                                    if self._reasoning_has_repeat(
+                                            current_reasoning_content, self.reasoning_repeat_limit):
+                                        _close_stream(response_stream)
+                                        break
 
                             # 处理正文内容
                             if delta.content:
+                                # 正文开始前补发已校验的思考内容（思考在前、正文在后）
+                                if len(current_reasoning_content) > reasoning_yielded_len:
+                                    if self._reasoning_has_repeat(
+                                            current_reasoning_content, self.reasoning_repeat_limit):
+                                        _close_stream(response_stream)
+                                        break
+                                    yield {
+                                        "type": "reasoning",
+                                        "response": current_reasoning_content[reasoning_yielded_len:]
+                                    }
+                                    reasoning_yielded_len = len(current_reasoning_content)
                                 current_response_content += delta.content
                                 yielded_content += delta.content
                                 yield {
@@ -1178,6 +1219,17 @@ Here is some useful information about the environment you are running in:
 
                             # 处理工具调用
                             if delta.tool_calls:
+                                # 工具调用占位事件之前同样先补发思考内容
+                                if len(current_reasoning_content) > reasoning_yielded_len:
+                                    if self._reasoning_has_repeat(
+                                            current_reasoning_content, self.reasoning_repeat_limit):
+                                        _close_stream(response_stream)
+                                        break
+                                    yield {
+                                        "type": "reasoning",
+                                        "response": current_reasoning_content[reasoning_yielded_len:]
+                                    }
+                                    reasoning_yielded_len = len(current_reasoning_content)
                                 for tc in delta.tool_calls:
                                     index = tc.index
                                     if index not in tool_call_chunks:
@@ -1210,6 +1262,33 @@ Here is some useful information about the environment you are running in:
                         # 本轮成功结束：每次尝试结果独立，不再拼接/续写已推送内容
                         # （断流有输出 → 直接结束本轮；无输出 → 完全重新请求，不携带任何正文）
 
+                        # reasoning 退化重复检测：同一句重复过多 → 丢弃本次响应并重新请求。
+                        # 命中时不结束任务，直接发起下一次尝试（不携带本次思考/正文）。
+                        if self._reasoning_has_repeat(current_reasoning_content, self.reasoning_repeat_limit):
+                            if reasoning_repeat_retry_count < self.reasoning_repeat_retries:
+                                reasoning_repeat_retry_count += 1
+                                logger.warning(
+                                    "[AI-Retry] reasoning 重复退化（第 %d/%d 次重试，句子重复超过 %d 次），"
+                                    "丢弃本次响应并重新请求: %d chars",
+                                    reasoning_repeat_retry_count, self.reasoning_repeat_retries,
+                                    self.reasoning_repeat_limit, len(current_reasoning_content),
+                                )
+                                # 清空本次已累积的工具调用，避免残留导致下一轮误判
+                                tool_call_chunks = {}
+                                reported_tool_indices = set()
+                                yield {
+                                    "type": "stream_reset",
+                                    "data": "reasoning_repeat",
+                                }
+                                if _sleep_interruptible(api_retry_base_wait):
+                                    return
+                                continue
+                            logger.warning(
+                                "[AI-Retry] reasoning 重复退化超过重试上限（已重试 %d 次），"
+                                "保留当前结果继续执行: %d chars",
+                                reasoning_repeat_retry_count, len(current_reasoning_content),
+                            )
+
                         # 空回复检测：API 返回 200 但无内容且无工具调用 → 重试
                         if not current_response_content and not tool_call_chunks:
                             if attempt <= api_max_retry:
@@ -1222,6 +1301,14 @@ Here is some useful information about the environment you are running in:
                             else:
                                 logger.warning("[AI-Retry] 多次空回复，放弃重试")
                                 break
+
+                        # 尾部残余思考（纯思考无正文/工具的轮次已在上面按空回复处理）
+                        if (len(current_reasoning_content) > reasoning_yielded_len):
+                            yield {
+                                "type": "reasoning",
+                                "response": current_reasoning_content[reasoning_yielded_len:]
+                            }
+                            reasoning_yielded_len = len(current_reasoning_content)
 
                         break
 
@@ -1831,6 +1918,38 @@ Here is some useful information about the environment you are running in:
                 out.append(p)
             return out
         return content
+
+    @staticmethod
+    def _normalize_reasoning_sentence(sentence: str) -> str:
+        """归一化句子：去首尾空白/标点、折叠空白、转小写，用于重复检测。"""
+        import re as _re
+        s = sentence.strip().lower()
+        s = _re.sub(r"[。．.!！?？;；,，:：\s]+", " ", s)
+        s = _re.sub(r"[\s]+", " ", s)
+        return s.strip()
+
+    @classmethod
+    def _reasoning_has_repeat(cls, reasoning: str, limit: int) -> bool:
+        """检测 reasoning 里是否存在同一句重复过多（退化死循环）。
+
+        按常见句子分隔符切句，归一化后计数；出现同一句 >= limit 次即判定退化。
+        仅在 reasoning 足够长时启用，避免误伤正常思考。
+        """
+        if not reasoning or len(reasoning) < 2000:
+            return False
+        import re as _re
+        # 同时按中英文句末标点和换行切句；英文句号只在后面跟空白时切，
+        # 避免把 chat_client/hotreload.py 这类点号标识符切碎造成误判。
+        parts = _re.split(r"(?<=[。！？!?；;])\s*|\n+|(?<=\.)\s+", reasoning)
+        counts: dict[str, int] = {}
+        for part in parts:
+            norm = cls._normalize_reasoning_sentence(part)
+            if len(norm) < 6:
+                continue
+            counts[norm] = counts.get(norm, 0) + 1
+            if counts[norm] >= limit:
+                return True
+        return False
 
     @staticmethod
     def _parse_invoke_tool_calls(content: str) -> list[tuple[str, dict[str, Any]]]:
