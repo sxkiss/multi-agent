@@ -210,7 +210,7 @@
 (function () {
   'use strict';
   var API = '/api/v2/connectors';
-  var catalog = [], currentKind = null, editingId = null;
+  var catalog = [], currentKind = null, editingId = null, configuredMap = {};
   var $ = function (s) { return document.querySelector(s); };
   var AF = (window.PanelAuth && window.PanelAuth.authFetch) ? window.PanelAuth.authFetch : window.fetch;
 
@@ -347,6 +347,7 @@
       return;
     }
     $('#instList').innerHTML = '<div class="grid">' + list.map(function (i) {
+      configuredMap[i.instance_id] = i.configured_fields || [];
       var e = catalog.find(function (c) { return c.kind === i.kind; }) || { name: i.kind, color: '#666', kind: i.kind };
       return '<div class="card inst">' +
         '<div class="hd"><div class="icon" style="background:' + colorOf(e) + '">' + initial(e) + '</div>' +
@@ -404,20 +405,27 @@
     var fields = e.credential_fields || [];
     var body = '';
     if (e.auth_hint) body += '<div class="hint" style="margin-bottom:14px;padding:10px;background:var(--bt-surface-2);border-radius:8px">💡 ' + esc(e.auth_hint) + '</div>';
-    body += '<div class="field"><label>实例名称</label><input id="f_name" placeholder="' + esc(e.name) + '" value="' + esc(e.name) + '"></div>';
+    body += '<div class="field"><label>实例名称</label><input id="f_name" placeholder="' + esc(e.name) + '" value="' + (instanceId ? '' : esc(e.name)) + '"></div>';
     if (!fields.length) {
       // 无字段定义：给一个通用 token 输入
       body += '<div class="field"><label>凭据 <span class="req">*</span></label><textarea id="f_creds" rows="2" placeholder="粘贴 Token / API Key"></textarea>' +
         '<div class="hint">该连接器未定义凭据字段，请粘贴完整凭据</div></div>';
     } else {
       fields.forEach(function (f) {
+        var isTags = f.field_type === 'tags';
+        var isUrl = f.field_type === 'url';
+        var isTextarea = isTags || (f.field_type === 'text' && f.help && /json|多行/i.test(f.help));
+        var hasStored = editingId && f.secret && (configuredMap[editingId] || []).indexOf(f.key) !== -1;
         body += '<div class="field"><label>' + esc(f.label) + (f.required ? ' <span class="req">*</span>' : '') + '</label>';
-        if (f.field_type === 'tags' || f.field_type === 'text' && f.help && /json|多行/i.test(f.help)) {
+        if (isTextarea) {
           body += '<textarea id="cf_' + esc(f.key) + '" rows="2" placeholder="' + esc(f.placeholder || '') + '"></textarea>';
         } else {
-          body += '<input id="cf_' + esc(f.key) + '" type="' + (f.secret ? 'password' : 'text') + '" placeholder="' + esc(f.placeholder || '') + '">';
+          body += '<input id="cf_' + esc(f.key) + '" type="' + (f.secret ? 'password' : isUrl ? 'url' : 'text') + '" placeholder="' +
+            (hasStored ? '留空表示不修改' : esc(f.placeholder || '')) + '">';
         }
         if (f.help) body += '<div class="hint">' + esc(f.help) + '</div>';
+        if (isTags) body += '<div class="hint">用逗号分隔多个值，例如 kb-123, kb-456</div>';
+        if (hasStored) body += '<div class="hint">已配置，留空表示不修改</div>';
         body += '</div>';
       });
     }
@@ -433,7 +441,11 @@
     if (generic) { creds.token = generic.value.trim(); return creds; }
     (e.credential_fields || []).forEach(function (f) {
       var el = $('#cf_' + f.key);
-      if (el && el.value.trim()) creds[f.key] = el.value.trim();
+      if (!el) return;
+      var v = el.value.trim();
+      // 编辑场景下，secret 字段留空表示「不修改」，跳过提交（后端会保留原值）
+      if (editingId && f.secret && !v) return;
+      if (v) creds[f.key] = v;
     });
     // 无字段定义时兜底
     if (!Object.keys(creds).length) {
@@ -444,7 +456,21 @@
   }
 
   async function saveInstance() {
+    var e = catalog.find(function (c) { return c.kind === currentKind; });
     var name = ($('#f_name') || {}).value || currentKind;
+    // url 字段校验
+    if (e) {
+      for (var i = 0; i < (e.credential_fields || []).length; i++) {
+        var f = e.credential_fields[i];
+        if (f.field_type !== 'url') continue;
+        var el = $('#cf_' + f.key);
+        var v = el ? el.value.trim() : '';
+        if (v && !/^https?:\/\/.+/i.test(v)) {
+          toast('「' + esc(f.label) + '」需为 http(s) 开头的完整 URL', 'err');
+          return;
+        }
+      }
+    }
     var creds = collectCreds();
     var r;
     if (editingId) {

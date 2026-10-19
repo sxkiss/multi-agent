@@ -179,7 +179,7 @@ def prepare_env(creds: dict[str, Any]) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if not key.startswith("AGENTLY_")}
     # CLI 1.0.18 forces workspace=default when CONFIG_DIR is set, while keychain
     # ignores that directory. Native workspaces isolate both config and keychain.
-    env["AGENTLY_WORKSPACE"] = "octop-" + hashlib.sha256(str(config_dir).encode()).hexdigest()[:24]
+    env["AGENTLY_WORKSPACE"] = "bt-" + hashlib.sha256(str(config_dir).encode()).hexdigest()[:24]
     return env
 
 

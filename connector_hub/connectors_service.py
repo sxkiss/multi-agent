@@ -436,10 +436,16 @@ def update_instance(instance_id: str, *, name: str | None = None,
                 inst["name"] = name
             if creds is not None:
                 entry = get_catalog_entry(inst["kind"])
-                if entry is not None:
-                    creds = normalize_credentials(inst["kind"], entry, creds)
-                # 保留已有 internal_token（gateway 连接器更新凭据时不重置）
+                # 编辑场景：前端 secret 留空表示不修改。
+                # 以旧凭据为底，用新提交的非空字段覆盖，这样未修改的 secret 得以保留。
                 old = decrypt_credentials(inst.get("creds_enc", "")) if inst.get("creds_enc") else {}
+                merged = dict(old)
+                merged.update(creds)
+                if entry is not None and merged:
+                    creds = normalize_credentials(inst["kind"], entry, merged)
+                else:
+                    creds = merged
+                # 保留已有 internal_token（gateway 连接器更新凭据时不重置）
                 if old.get("internal_token") and not creds.get("internal_token"):
                     creds["internal_token"] = old["internal_token"]
                 elif (
@@ -535,10 +541,27 @@ def test_instance(instance_id: str) -> dict[str, Any]:
 
 def _redact(inst: dict[str, Any], include_secrets: bool = False) -> dict[str, Any]:
     d = dict(inst)
+    creds: dict[str, Any] = {}
     if include_secrets:
         if inst.get("creds_enc"):
-            d["creds"] = decrypt_credentials(inst["creds_enc"])
+            creds = decrypt_credentials(inst["creds_enc"])
+            d["creds"] = creds
+    else:
+        # 不泄露明文，但标记哪些 secret 字段已配置（供前端「留空表示不修改」）
+        if inst.get("creds_enc"):
+            try:
+                creds = decrypt_credentials(inst["creds_enc"])
+            except Exception:  # noqa: BLE001
+                creds = {}
     d.pop("creds_enc", None)
+    # 计算已配置的 secret 字段名
+    configured: list[str] = []
+    entry = get_catalog_entry(inst.get("kind", ""))
+    if entry is not None:
+        for f in entry.credential_fields:
+            if getattr(f, "secret", False) and creds.get(f.key):
+                configured.append(f.key)
+    d["configured_fields"] = configured
     return d
 
 

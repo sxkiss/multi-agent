@@ -1,13 +1,13 @@
 """本地化补丁：为移植的 gateway 适配器提供最小依赖实现。
 
-原 adapter 引用了 octop.infra.utils.paths / cli_runner / cli_dirs /
-mail_servers / builder 等内部模块。BT 没有这些，这里提供最小本地实现：
+原 adapter 引用了上游内部的 paths / cli_runner / cli_dirs /
+mail_servers / builder 等模块。BT 没有这些，这里提供最小本地实现：
 - mail_servers：纯数据，直接移植
 - normalize_weknora_base_url：纯函数
 - cli_runner / cli_dirs：占位，调用时给出清晰错误（这些 adapter 需要外部 CLI 二进制）
 - cli_fingerprint：占位
 - feishu_creds / wecom_creds / sanitize_plugin_tool_name：占位
-这样既能让文件通过 import，又不引入 octop 依赖。
+这样既能让文件通过 import，又不引入上游依赖。
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ class _ExternalCliRequired(RuntimeError):
 
 def resolve_binary(name: str) -> str:
     # 先确保用户级 npm 全局 bin（~/.npm-global/bin）与 ~/.local/bin 在 PATH 中，
-    # 否则自动安装到用户级目录后 shutil.which 仍找不到（与 Octop 行为一致）。
+    # 否则自动安装到用户级目录后 shutil.which 仍找不到（与上游实现行为一致）。
     try:
         from connector_hub.gateway_adapters.cli_install import ensure_cli_path
         ensure_cli_path()
@@ -182,7 +182,7 @@ def locate_obsidian_binary() -> str:
     raise _ExternalCliRequired("obsidian-cli 二进制未安装")
 
 
-# PathLayout 占位（Octop 用它定位 CLI 实例目录；BT 不维护该目录）
+# PathLayout 占位（上游用它定位 CLI 实例目录；BT 不维护该目录）
 class PathLayout:
     @classmethod
     def from_env(cls) -> "PathLayout":
@@ -193,7 +193,7 @@ class PathLayout:
         return pathlib.Path.home() / ".bt-connector-hub" / "connector-cli" / kind / key
 
 
-# ── i18n 翻译占位（原 adapter 引用 octop.infra.i18n.tr）────────
+# ── i18n 翻译占位（原 adapter 引用上游 i18n 模块）────────
 # 这里提供最小 fallback：支持 tr(key) 与 tr(key, locale) 两种签名，
 # 找不到翻译时返回 key 最后一段（去除 "connector.agently." 等前缀），
 # 保证适配器逻辑（尤其是 *_cli 的 list_tools）可正常运行而不抛 NameError。
