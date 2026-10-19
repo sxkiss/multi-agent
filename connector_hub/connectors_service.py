@@ -21,8 +21,9 @@ from typing import Any
 
 from cryptography.fernet import Fernet
 
-from config_store import load_config, save_config, update_config
+from config_store import load_config, save_config
 from connector_hub import PROJECT_ROOT
+from platform_ext import config_files
 from connector_hub.connectors_catalog import (
     GATEWAY_KINDS,
     INTERNAL_KINDS,
@@ -32,7 +33,7 @@ from connector_hub.connectors_catalog import (
 
 logger = logging.getLogger("connector-hub-connectors")
 
-CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.json")
+CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.json")  # 兼容旧引用（oauth2 等）
 MCP_CONFIG_FILE = os.path.join(PROJECT_ROOT, "mcp", "config.json")
 _FERNET_KEY_FILE = os.path.join(PROJECT_ROOT, "connector_hub", ".fernet_key")
 
@@ -71,27 +72,26 @@ def decrypt_credentials(token: str) -> dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
-# ── config.json 读写 ────────────────────────────────────────
-def _read_config() -> dict[str, Any]:
-    return load_config(CONFIG_FILE)
+# ── 独立文件读写（connector_hub.json）────────────────────────
+# 实例与 oauth2 均存独立文件；_read_config/_write_config 已无调用方，不再保留。
+def _read_connector_config() -> dict[str, Any]:
+    return config_files.load_section("connector_hub", CONFIG_FILE)
 
 
-def _write_config(cfg: dict[str, Any]) -> None:
-    save_config(CONFIG_FILE, cfg)
+def _save_connector_config(cfg: dict[str, Any]) -> None:
+    config_files.save_section("connector_hub", cfg, CONFIG_FILE)
 
 
 def _instances() -> list[dict[str, Any]]:
-    cfg = _read_config()
-    br = cfg.setdefault("connector_hub", {})
-    conn = br.setdefault("connectors", {})
-    return conn.setdefault("instances", [])
+    cfg = _read_connector_config()
+    br = cfg.setdefault("connectors", {})
+    return br.setdefault("instances", [])
 
 
 def _save_instances(instances: list[dict[str, Any]]) -> None:
-    def _apply(cfg: dict[str, Any]) -> None:
-        cfg.setdefault("connector_hub", {}).setdefault("connectors", {})["instances"] = instances
-
-    update_config(CONFIG_FILE, _apply)
+    cfg = _read_connector_config()
+    cfg.setdefault("connectors", {})["instances"] = instances
+    _save_connector_config(cfg)
 
 
 # ── spec 生成（remote / gateway / internal）────────────────

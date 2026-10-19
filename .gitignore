@@ -109,6 +109,12 @@ AUDIT_REPORT.md
 # 新环境请复制 mcp/config.example.json 为 mcp/config.json 后填入自己的 key。
 mcp/config.json
 
+# 平台扩展/连接器独立配置（含真实凭据与加密密文，禁止入库）
+gateway.json
+connector_hub.json
+gateway.json.lock
+connector_hub.json.lock
+
 # auth.json 含管理员密码派生值与 JWT 签名密钥，绝不入库。
 # 新环境留空即可：首次登录会自动初始化密码与密钥。
 auth.json

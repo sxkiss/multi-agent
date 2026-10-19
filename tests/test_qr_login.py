@@ -61,6 +61,22 @@ class TestQrLogin:
         assert g["weixin"]["token"] == "def"
         assert g["weixin"]["base_url"] == "x"
 
+    def test_save_channel_config_syncs_legacy_instance(self, isolated_config):
+        from platform_ext import qr_login
+        # 先写入老式扁平配置并生成 instances 列表，模拟 gateway 已迁移的场景
+        qr_login._set_gateway_cfg({
+            "weixin": {"configured": False},
+            "instances": [{"instance_id": "weixin", "kind": "weixin", "configured": False}],
+        })
+        qr_login.save_channel_config("weixin", {"token": "abc", "account_id": "a1"})
+        g = qr_login._gateway_cfg()
+        assert g["weixin"]["token"] == "abc"
+        assert g["weixin"]["configured"] is True
+        legacy = next(i for i in g["instances"] if i["instance_id"] == "weixin")
+        assert legacy["token"] == "abc"
+        assert legacy["account_id"] == "a1"
+        assert legacy["configured"] is True
+
     def test_gateway_generate_unsupported(self):
         from platform_ext import gateway
         res = asyncio.run(gateway.gateway_qrcode_generate("feishu", None))  # type: ignore[arg-type]
