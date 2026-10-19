@@ -510,6 +510,21 @@ function unescapeSSEString(str) {
 let currentStreamController = null
 let eventSourceInstance = null
 
+// reasoning 退化重试：丢弃当前 attempt 已流出的块，保留此前已完成的工具调用。
+// 服务端随后会用新请求重新输出，任务不中断。
+function applyStreamReset() {
+  const blocks = streamingContentBlocks.value
+  let keep = blocks.length
+  while (keep > 0) {
+    const b = blocks[keep - 1]
+    if (b.type === 'tool_call' && b.status === 'completed') break
+    keep--
+  }
+  blocks.splice(keep)
+  streamingThinkCollapsed.value = false
+  resetThinkingTimer()
+}
+
 // 通用 SSE 行处理器：缓冲跨 chunk 残余行；捕获 id:（断点续传）/ event: / data:
 function createSSEProcessor(handlers) {
   let buffer = ''
@@ -538,6 +553,9 @@ function createSSEProcessor(handlers) {
             break
           case 'message':
             handlers.onChunk?.(unescapeSSEString(eventData))
+            break
+          case 'stream_reset':
+            applyStreamReset()
             break
           case 'tool_call':
             try {
@@ -623,6 +641,9 @@ function createSSEProcessor(handlers) {
       case 'message':
         handlers.onChunk?.(unescapeSSEString(eventData))
         break
+      case 'stream_reset':
+        applyStreamReset()
+        break
       case 'tool_call':
         try {
           const tcData = JSON.parse(eventData)
@@ -699,6 +720,7 @@ function createSSEProcessor(handlers) {
         switch (currentEventType) {
           case 'message_think': handlers.onThink?.(unescapeSSEString(eventData)); break
           case 'message': handlers.onChunk?.(unescapeSSEString(eventData)); break
+          case 'stream_reset': applyStreamReset(); break
           case 'tool_call':
             try {
               const tcData = JSON.parse(eventData)

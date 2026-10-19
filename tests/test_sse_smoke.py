@@ -102,6 +102,15 @@ class TestSSEGeneratorSmoke(unittest.TestCase):
         self.assertIn("message_think", kinds)
         self.assertIn("message", kinds)
 
+    def test_stream_reset_mapped_and_not_downgraded(self):
+        """reasoning 退化重试事件必须原样下发，不能被降级成 message"""
+        mapped = W._map_agent_chunk({"type": "stream_reset", "data": "reasoning_repeat"})
+        self.assertEqual(len(mapped), 1)
+        event, data = mapped[0]
+        self.assertEqual(event, "stream_reset")
+        self.assertEqual(data.get("reason"), "reasoning_repeat")
+        self.assertIn("stream_reset", W._KNOWN_SSE_EVENTS)
+
     def test_resume_from_last_id_no_duplicate(self):
         """断线续传：从 last_id 续播，不重不漏"""
         job = self._make_job()

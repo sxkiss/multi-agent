@@ -203,6 +203,7 @@ def _load_session_history(session_file: str) -> list:
 _KNOWN_SSE_EVENTS = {
     "content", "reasoning", "error", "stop", "meta_info",
     "tool_call", "tool_result", "message_end", "usage",
+    "stream_reset",
 }
 
 
@@ -247,7 +248,7 @@ def _is_terminal_channel(params) -> bool:
 # 注意：必须定义在模块级——chat_events 属于 AgentMain 类，此前误将常量放进
 # ChatJob 类，导致 self._HIDDEN... 抛 AttributeError、SSE 生成器整体崩溃、
 # 小程序收不到任何回复。
-HIDDEN_EVENTS_FOR_TERMINAL = {"message_think", "compact_summary"}
+HIDDEN_EVENTS_FOR_TERMINAL = {"message_think", "compact_summary", "stream_reset"}
 
 
 # 终端渠道（小程序 / clawbot）的输出约束：严禁泄露服务端内部信息。
@@ -302,6 +303,10 @@ def _map_agent_chunk(chunk):
         return [("message", str(chunk.get("response", "")))]
     if t == "reasoning":
         return [("message_think", str(chunk.get("response", "")))]
+    if t == "stream_reset":
+        # reasoning 退化重试：通知前端清空本轮已流出的正文/思考/工具占位块，
+        # 随后服务端会用新请求重新输出，不结束任务。
+        return [("stream_reset", {"reason": str(chunk.get("data", ""))})]
     if t == "error":
         return [("error", {"msg": str(chunk.get("data", ""))})]
     if t == "stop":
