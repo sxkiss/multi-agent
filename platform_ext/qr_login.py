@@ -11,13 +11,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
 from typing import Any
 
 import httpx
 
+from config_store import load_config, update_config
 from platform_ext import PROJECT_ROOT
 
 # 登录会话状态（内存，按 session_id 区分多并发扫码）
@@ -30,16 +30,7 @@ def _config_path() -> str:
 
 
 def _load_config() -> dict[str, Any]:
-    try:
-        with open(_config_path(), "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return {}
-
-
-def _save_config(cfg: dict[str, Any]) -> None:
-    with open(_config_path(), "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, ensure_ascii=False, indent=2)
+    return load_config(_config_path())
 
 
 def _gateway_cfg() -> dict[str, Any]:
@@ -47,9 +38,10 @@ def _gateway_cfg() -> dict[str, Any]:
 
 
 def _set_gateway_cfg(cfg: dict[str, Any]) -> None:
-    full = _load_config()
-    full.setdefault("platform_ext", {})["gateway"] = cfg
-    _save_config(full)
+    def _apply(full: dict[str, Any]) -> None:
+        full.setdefault("platform_ext", {})["gateway"] = cfg
+
+    update_config(_config_path(), _apply)
 
 
 def save_channel_config(kind: str, config: dict[str, Any]) -> None:

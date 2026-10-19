@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from config_store import load_config, update_config
 from platform_ext import PROJECT_ROOT
 
 CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.json")
@@ -44,18 +45,7 @@ DEFAULT_TEMPLATE = {
 
 
 def _load_config() -> dict[str, Any]:
-    if not os.path.exists(CONFIG_FILE):
-        return {}
-    with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
-        try:
-            return json.load(fh)
-        except json.JSONDecodeError:
-            return {}
-
-
-def _write_config(cfg: dict[str, Any]) -> None:
-    with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, ensure_ascii=False, indent=2)
+    return load_config(CONFIG_FILE)
 
 
 def _teams() -> list[dict[str, Any]]:
@@ -64,9 +54,10 @@ def _teams() -> list[dict[str, Any]]:
 
 
 def _save_teams(teams: list[dict[str, Any]]) -> None:
-    cfg = _load_config()
-    cfg.setdefault("platform_ext", {}).setdefault("teams", {})["teams"] = teams
-    _write_config(cfg)
+    def _apply(cfg: dict[str, Any]) -> None:
+        cfg.setdefault("platform_ext", {}).setdefault("teams", {})["teams"] = teams
+
+    update_config(CONFIG_FILE, _apply)
 
 
 def _known_member_names() -> set[str]:

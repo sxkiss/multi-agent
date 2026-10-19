@@ -47,6 +47,8 @@ index.html.backup
 logs/
 
 # ===== 运行时数据 =====
+config.json.lock
+.config-*.tmp
 uploads/
 fn_unpack/
 test_zips/
