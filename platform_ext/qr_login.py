@@ -17,8 +17,7 @@ from typing import Any
 
 import httpx
 
-from config_store import load_config, update_config
-from platform_ext import PROJECT_ROOT
+from platform_ext import PROJECT_ROOT, config_files
 
 # 登录会话状态（内存，按 session_id 区分多并发扫码）
 _sessions: dict[str, dict[str, Any]] = {}
@@ -26,31 +25,38 @@ _sessions: dict[str, dict[str, Any]] = {}
 
 # ── 配置读写（写入 config.json 的 platform_ext.gateway[<kind>]）──
 def _config_path() -> str:
-    return os.path.join(PROJECT_ROOT, "config.json")
-
-
-def _load_config() -> dict[str, Any]:
-    return load_config(_config_path())
+    """返回 gateway 独立配置文件路径（兼容测试 monkeypatch）。"""
+    return config_files.section_file("gateway")
 
 
 def _gateway_cfg() -> dict[str, Any]:
-    return _load_config().get("platform_ext", {}).get("gateway", {})
+    return config_files.load_section("gateway", _config_path())
 
 
 def _set_gateway_cfg(cfg: dict[str, Any]) -> None:
-    def _apply(full: dict[str, Any]) -> None:
-        full.setdefault("platform_ext", {})["gateway"] = cfg
-
-    update_config(_config_path(), _apply)
+    config_files.save_section("gateway", cfg, _config_path())
 
 
 def save_channel_config(kind: str, config: dict[str, Any]) -> None:
-    """把扫码拿到的凭据写入配置（自动标记 configured）。"""
+    """把扫码拿到的凭据写入配置（自动标记 configured，并同步 legacy 实例）。"""
     g = _gateway_cfg()
     existing = dict(g.get(kind, {}))
     existing.update({k: v for k, v in config.items() if v})
     existing["configured"] = True
     g[kind] = existing
+    # 同步 instance_id == kind 的 legacy 实例，避免实例面板与扫码结果脱节。
+    # instances 尚未生成时交由 gateway 的首次读取迁移处理（会从 g[kind] 建实例）。
+    instances = g.get("instances")
+    if isinstance(instances, list):
+        target = next((it for it in instances if it.get("instance_id") == kind), None)
+        if target is None:
+            target = {"instance_id": kind, "kind": kind, "enabled": True}
+            instances.append(target)
+        target.update({k: v for k, v in config.items() if v})
+        target["instance_id"] = kind
+        target["kind"] = kind
+        target["configured"] = True
+        g["instances"] = instances
     _set_gateway_cfg(g)
 
 

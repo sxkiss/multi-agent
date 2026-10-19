@@ -88,6 +88,8 @@ def test_sync_mcp_refuses_corrupt_mcp_config(tmp_path, monkeypatch):
 
 
 def test_platform_ext_writes_preserve_unrelated_keys(tmp_path, monkeypatch):
+    """配置分离后：storage/teams 仍写 config.json，gateway 写独立 gateway.json，
+    且各模块写入不互相覆盖、不破坏 config.json 其它键。"""
     from platform_ext import gateway as gw
     from platform_ext import storage as st
     from platform_ext import teams as tm
@@ -97,16 +99,21 @@ def test_platform_ext_writes_preserve_unrelated_keys(tmp_path, monkeypatch):
         json.dumps({"api_key": "secret", "platform_ext": {"gateway": {"_auto_start": ["weixin"]}}}),
         encoding="utf-8",
     )
+    gw_path = tmp_path / "gateway.json"
     monkeypatch.setattr(st, "CONFIG_FILE", str(path))
     monkeypatch.setattr(tm, "CONFIG_FILE", str(path))
-    monkeypatch.setattr(gw, "_config_path", lambda: str(path))
+    monkeypatch.setattr(gw, "_config_path", lambda: str(gw_path))
 
     st._save_backends([])
     tm._save_teams([])
     gw._set_gateway_cfg({"weixin": {"token": "t"}})
 
     data = json.loads(path.read_text(encoding="utf-8"))
+    gw_data = json.loads(gw_path.read_text(encoding="utf-8"))
     assert data["api_key"] == "secret"
     assert data["platform_ext"]["storage"]["backends"] == []
     assert data["platform_ext"]["teams"]["teams"] == []
-    assert data["platform_ext"]["gateway"] == {"weixin": {"token": "t"}}
+    # config.json 中 gateway 段保持原样（不因 gateway 写入而清空）
+    assert data["platform_ext"]["gateway"] == {"_auto_start": ["weixin"]}
+    # gateway 数据写入独立文件
+    assert gw_data == {"weixin": {"token": "t"}}

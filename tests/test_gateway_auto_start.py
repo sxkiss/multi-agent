@@ -33,6 +33,7 @@ def test_auto_start_list_filters_unknown_kind(monkeypatch):
 
     cfg = {"_auto_start": ["weixin", "not-a-real-channel"]}
     monkeypatch.setattr(gw, "_gateway_cfg", lambda: cfg)
+    monkeypatch.setattr(gw, "_set_gateway_cfg", lambda c: cfg.update(c))
     assert gw._auto_start_list() == ["weixin"]
 
 
@@ -52,6 +53,7 @@ async def test_restore_auto_start_only_configured(monkeypatch):
         "_auto_start": ["weixin", "wecom"],
     }
     monkeypatch.setattr(gw, "_gateway_cfg", lambda: cfg)
+    monkeypatch.setattr(gw, "_set_gateway_cfg", lambda c: cfg.update(c))
     monkeypatch.setattr(gw, "_sdk_available", lambda k: True)
     monkeypatch.setattr(gw, "_ensure_deps", lambda k: (True, ""))
     monkeypatch.setattr(gw, "_start_channel", fake_start)
@@ -72,6 +74,7 @@ async def test_restore_auto_start_skips_missing_sdk(monkeypatch):
 
     cfg = {"weixin": {"configured": True}, "_auto_start": ["weixin"]}
     monkeypatch.setattr(gw, "_gateway_cfg", lambda: cfg)
+    monkeypatch.setattr(gw, "_set_gateway_cfg", lambda c: cfg.update(c))
     monkeypatch.setattr(gw, "_sdk_available", lambda k: False)  # SDK 不可用
     monkeypatch.setattr(gw, "_ensure_deps", lambda k: (True, ""))
     monkeypatch.setattr(gw, "_start_channel", fake_start)

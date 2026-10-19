@@ -145,7 +145,6 @@
   var API = '/api/v2'
   var AF = (window.PanelAuth && window.PanelAuth.authFetch) ? window.PanelAuth.authFetch : window.fetch
   var AOPTS = (window.PanelAuth && window.PanelAuth.authOpts) ? window.PanelAuth.authOpts : function (o) { return o || {} }
-  var SUPPORTED_QR = ['weixin', 'qq', 'wecom', 'dingtalk']
 
   function toast(msg, type) {
     var t = document.getElementById('toast')
@@ -169,133 +168,208 @@
     document.querySelectorAll('.panel').forEach(function (p) { p.classList.toggle('active', p.id === 'tab-' + name) })
   }
 
-  // ── Gateway 通道 ─────────────────────────
-  var gatewayChannels = []
+  // ── Gateway 实例管理 ─────────────────────
+  var gwInstances = []
+  var gwEditing = null // {instance_id, kind}
+  var gwMeta = {}
+
   async function loadGateway() {
     var el = $('tab-gateway')
     try {
-      var res = await api('/gateway/channels')
-      if (!res.status) throw new Error(res.msg || '加载失败')
-      gatewayChannels = res.data.channels || []
+      var [instRes, metaRes] = await Promise.all([
+        api('/gateway/instances'),
+        api('/gateway/channels')
+      ])
+      if (!instRes.status) throw new Error(instRes.msg || '加载实例失败')
+      if (!metaRes.status) throw new Error(metaRes.msg || '加载平台失败')
+      gwInstances = instRes.data.instances || []
+      gwMeta = {}
+      ;(metaRes.data.channels || []).forEach(function (c) { gwMeta[c.kind] = c })
       renderGateway()
     } catch (e) {
       el.innerHTML = '<div class="card"><div class="empty">⚠️ ' + esc(e.message) + '</div></div>'
     }
   }
+
+  function groupByKind(instances) {
+    var groups = {}
+    instances.forEach(function (i) {
+      var k = i.kind || 'other'
+      if (!groups[k]) groups[k] = []
+      groups[k].push(i)
+    })
+    return groups
+  }
+
   function renderGateway() {
     var el = $('tab-gateway')
-    if (!gatewayChannels.length) { el.innerHTML = '<div class="card"><div class="empty">没有可用通道</div></div>'; return }
-    el.innerHTML = '<div class="grid">' + gatewayChannels.map(function (c) {
-      var cfgBadge = c.configured ? '<span class="badge ok">已配置</span>' : '<span class="badge no">未配置</span>'
-      var sdkBadge = c.sdk_installed ? '<span class="badge ok">SDK✓</span>' : '<span class="badge no">SDK 未装</span>'
-      var runBadge = c.running ? '<span class="badge run">运行中</span>' : '<span class="badge stop">已停止</span>'
-      return '<div class="ch-card" data-kind="' + esc(c.kind) + '">' +
-        '<div class="hd"><div class="nm">' + esc(c.label) + '</div><div class="spacer"></div>' + cfgBadge + ' ' + sdkBadge + ' ' + runBadge + '</div>' +
-        '<div class="note">' + esc(c.note) + '</div>' +
-        '<div class="fields" id="fields-' + esc(c.kind) + '"></div>' +
-        '<div class="row">' +
-          '<button class="btn pri" onclick="gwStart(\'' + esc(c.kind) + '\')">启动</button>' +
-          '<button class="btn danger" onclick="gwStop(\'' + esc(c.kind) + '\')">停止</button>' +
-          (SUPPORTED_QR.indexOf(c.kind) >= 0
-            ? '<button class="btn" onclick="gwQrBind(\'' + esc(c.kind) + '\')">📱 扫码绑定</button>'
-            : '') +
-        '</div>' +
-      '</div>'
-    }).join('') + '</div>'
-    // 渲染每个平台的配置字段（用后端返回的 saved_value 回填）
-    gatewayChannels.forEach(function (c) {
-      var box = $('fields-' + c.kind)
-      if (!box) return
-      box.innerHTML = (c.config_fields || []).map(function (f) {
-        var val = f.saved_value || ''
-        var saved = !!f.saved
-        var id = 'cfg-' + c.kind + '-' + f.name
-        if (f.name === 'template') {
-          var opts = ['<option value=""' + (!val ? ' selected' : '') + '>（默认模板）</option>']
-          ;(window.__gwTemplates || []).forEach(function (t) {
-            opts.push('<option value="' + esc(t) + '"' + (val === t ? ' selected' : '') + '>' + esc(t) + '</option>')
-          })
-          return '<div><label>提示词模板</label>' +
-            '<select id="' + id + '">' + opts.join('') + '</select></div>'
-        }
-        if (f.type === 'select') {
-          var sopts = (f.options || []).map(function (o) {
-            return '<option value="' + esc(o.value || '') + '"' + (String(val) === String(o.value) ? ' selected' : '') + '>' + esc(o.label || o.value) + '</option>'
-          })
-          return '<div><label>' + esc(f.name) + '</label>' +
-            '<select id="' + id + '">' + sopts.join('') + '</select></div>'
-        }
-        var isPwd = f.type === 'password'
-        // 敏感字段已设置时不回显明文，显示"已设置"占位
-        var ph = saved && isPwd ? '（已设置）' : (f.placeholder || f.name)
-        var inputVal = saved && isPwd ? '' : val
-        return '<div><label>' + esc(f.name) + (f.required ? ' *' : '') +
-          (saved && isPwd ? ' <span class="badge ok">已设置</span>' : '') + '</label>' +
-          '<input id="' + id + '" type="' + (isPwd ? 'password' : 'text') + '" value="' + esc(inputVal) + '" placeholder="' + esc(ph) + '"></div>'
-      }).join('') +
-      '<div class="row"><button class="btn" onclick="gwSaveConfig(\'' + esc(c.kind) + '\')">保存配置</button></div>'
+    if (!gwInstances.length) {
+      el.innerHTML = '<div class="card"><div class="empty">暂无实例</div>' +
+        '<div style="text-align:center;padding-top:8px"><button class="btn pri" onclick="gwAddInstance()">+ 添加实例</button></div></div>'
+      return
+    }
+    var groups = groupByKind(gwInstances)
+    var html = '<div class="row" style="margin-bottom:14px"><button class="btn pri" onclick="gwAddInstance()">+ 添加实例</button></div>'
+    Object.keys(groups).sort().forEach(function (kind) {
+      var meta = gwMeta[kind] || {}
+      var items = groups[kind]
+      html += '<div class="card"><h3>' + esc(meta.label || kind) + ' <span class="badge ok">' + items.length + '</span></h3>' +
+        '<div class="grid">' + items.map(function (i) {
+          var cfgBadge = i.configured ? '<span class="badge ok">已配置</span>' : '<span class="badge no">未配置</span>'
+          var runBadge = i.running ? '<span class="badge run">运行中</span>' : '<span class="badge stop">已停止</span>'
+          var sdkBadge = i.sdk_installed ? '<span class="badge ok">SDK✓</span>' : '<span class="badge no">SDK 未装</span>'
+          var qrBtn = i.supported_qr ? '<button class="btn" onclick="gwQrBind(\'' + esc(i.kind) + '\')">📱 扫码绑定</button>' : ''
+          return '<div class="ch-card" data-instance="' + esc(i.instance_id) + '">' +
+            '<div class="hd"><div class="nm">' + esc(i.name || i.label || i.instance_id) + '</div><div class="spacer"></div>' +
+            cfgBadge + ' ' + sdkBadge + ' ' + runBadge + '</div>' +
+            '<div class="note">' + esc(i.note || '') + '</div>' +
+            '<div class="row">' +
+              '<button class="btn pri" onclick="gwStartInstance(\'' + esc(i.instance_id) + '\')"' + (i.running ? ' disabled' : '') + '>启动</button>' +
+              '<button class="btn" onclick="gwStopInstance(\'' + esc(i.instance_id) + '\')"' + (!i.running ? ' disabled' : '') + '>停止</button>' +
+              '<button class="btn" onclick="gwEditInstance(\'' + esc(i.instance_id) + '\')">编辑</button>' +
+              '<button class="btn danger" onclick="gwDeleteInstance(\'' + esc(i.instance_id) + '\')">删除</button>' +
+              qrBtn +
+            '</div>' +
+          '</div>'
+        }).join('') + '</div></div>'
     })
+    el.innerHTML = html
     loadTemplatesIfNeeded()
   }
 
-  // 拉取可用提示词模板（只拉一次，用于每通道模板下拉）
-  var __tplLoaded = false
-  function loadTemplatesIfNeeded() {
-    if (__tplLoaded) return
-    __tplLoaded = true
-    api('/gateway/templates').then(function (res) {
-      if (res && res.status) {
-        window.__gwTemplates = (res.data && res.data.templates) || []
-        // 已有模板下拉的页面，重新渲染以显示选项
-        gatewayChannels.forEach(function (c) {
-          var sel = $('cfg-' + c.kind + '-template')
-          if (sel && window.__gwTemplates.length && sel.options.length <= 1) {
-            var cur = sel.value
-            var opts = ['<option value=""' + (!cur ? ' selected' : '') + '>（默认模板）</option>']
-            window.__gwTemplates.forEach(function (t) {
-              opts.push('<option value="' + esc(t) + '"' + (cur === t ? ' selected' : '') + '>' + esc(t) + '</option>')
-            })
-            sel.innerHTML = opts.join('')
-            if (cur) sel.value = cur
-          }
-        })
-      }
-    }).catch(function () { /* 拉取失败静默 */ })
+  function kindOptions(selected) {
+    return Object.keys(gwMeta).sort().map(function (k) {
+      var m = gwMeta[k]
+      return '<option value="' + esc(k) + '"' + (k === selected ? ' selected' : '') + '>' + esc(m.label || k) + '</option>'
+    }).join('')
   }
-  window.__gwSavedConfigs = {}
-  window.gwSaveConfig = async function (kind) {
-    var c = gatewayChannels.find(function (x) { return x.kind === kind })
-    if (!c) return
-    var body = {}
-    ;(c.config_fields || []).forEach(function (f) {
-      var v = $('cfg-' + kind + '-' + f.name)
+
+  function renderInstanceForm(i) {
+    var kind = i.kind
+    var meta = gwMeta[kind] || {}
+    var fields = (i.config_fields && i.config_fields.length) ? i.config_fields : (meta.config_fields || [])
+    var html = '<div><label>实例名称 *</label><input id="gwInstName" value="' + esc(i.name || '') + '" placeholder="实例名称"></div>'
+    html += '<div><label>平台类型</label><select id="gwInstKind" onchange="gwInstKindChanged()">' + kindOptions(kind) + '</select></div>'
+    html += '<div><label>启用</label><select id="gwInstEnabled">' +
+      '<option value="true"' + (i.enabled !== false ? ' selected' : '') + '>启用</option>' +
+      '<option value="false"' + (i.enabled === false ? ' selected' : '') + '>停用</option>' +
+      '</select></div>'
+    fields.forEach(function (f) {
+      var name = f.name
+      var val = f.saved_value || ''
+      var saved = !!f.saved
+      var id = 'gwf-' + name
+      if (name === 'template') {
+        var opts = ['<option value=""' + (!val ? ' selected' : '') + '>（默认模板）</option>']
+        ;(window.__gwTemplates || []).forEach(function (t) {
+          opts.push('<option value="' + esc(t) + '"' + (val === t ? ' selected' : '') + '>' + esc(t) + '</option>')
+        })
+        html += '<div><label>提示词模板</label><select id="' + id + '">' + opts.join('') + '</select></div>'
+        return
+      }
+      if (f.type === 'select') {
+        var sopts = (f.options || []).map(function (o) {
+          return '<option value="' + esc(o.value || '') + '"' + (String(val) === String(o.value) ? ' selected' : '') + '>' + esc(o.label || o.value) + '</option>'
+        })
+        html += '<div><label>' + esc(f.name) + '</label><select id="' + id + '">' + sopts.join('') + '</select></div>'
+        return
+      }
+      var isPwd = f.type === 'password'
+      var ph = saved && isPwd ? '（已设置）' : (f.placeholder || f.name)
+      var inputVal = saved && isPwd ? '' : val
+      html += '<div><label>' + esc(f.name) + (f.required ? ' *' : '') +
+        (saved && isPwd ? ' <span class="badge ok">已设置</span>' : '') + '</label>' +
+        '<input id="' + id + '" type="' + (isPwd ? 'password' : 'text') + '" value="' + esc(inputVal) + '" placeholder="' + esc(ph) + '"></div>'
+    })
+    html += '<input type="hidden" id="gwInstId" value="' + esc(i.instance_id || '') + '">'
+    return html
+  }
+
+  window.gwInstKindChanged = function () {
+    var kind = $('gwInstKind').value
+    var meta = gwMeta[kind] || {}
+    var fake = { kind: kind, name: $('gwInstName').value || '', config_fields: meta.config_fields || [], enabled: true }
+    var box = $('gwInstFields')
+    if (box) box.innerHTML = renderInstanceForm(fake)
+  }
+
+  window.gwAddInstance = function () {
+    gwEditing = null
+    var firstKind = Object.keys(gwMeta).sort()[0] || ''
+    var meta = gwMeta[firstKind] || {}
+    var fake = { kind: firstKind, name: '', config_fields: meta.config_fields || [], enabled: true }
+    $('gwModalTitle').textContent = '+ 添加实例'
+    $('gwInstFields').innerHTML = renderInstanceForm(fake)
+    $('gwModal').classList.add('show')
+  }
+
+  window.gwEditInstance = function (instance_id) {
+    var i = gwInstances.find(function (x) { return x.instance_id === instance_id })
+    if (!i) return
+    gwEditing = i
+    $('gwModalTitle').textContent = '编辑实例'
+    $('gwInstFields').innerHTML = renderInstanceForm(i)
+    $('gwModal').classList.add('show')
+  }
+
+  window.gwCloseInstanceModal = function () {
+    $('gwModal').classList.remove('show')
+    gwEditing = null
+  }
+
+  window.gwSaveInstance = async function () {
+    var isEdit = !!gwEditing
+    var kind = $('gwInstKind').value
+    var name = $('gwInstName').value.trim()
+    if (!name) { toast('请填写实例名称', 'err'); return }
+    var body = { kind: kind, name: name, enabled: $('gwInstEnabled').value === 'true' }
+    var meta = gwMeta[kind] || {}
+    var fields = isEdit && gwEditing.config_fields && gwEditing.config_fields.length
+      ? gwEditing.config_fields
+      : (meta.config_fields || [])
+    fields.forEach(function (f) {
+      var v = $('gwf-' + f.name)
       if (!v) return
       var val = v.value.trim()
-      // 敏感字段留空（占位"已设置"）视为不修改，保留后端原值
-      if (f.type === 'password' && !val) return
+      if (f.type === 'password' && !val) return // 留空表示不修改
       body[f.name] = val
     })
+    var path = isEdit ? '/gateway/instances/' + encodeURIComponent(gwEditing.instance_id) : '/gateway/instances'
     try {
-      var res = await api('/gateway/channels/' + kind + '/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      var res = await api(path, {
+        method: isEdit ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
       if (!res.status) throw new Error(res.msg || '保存失败')
-      window.__gwSavedConfigs[kind] = body
-      toast('配置已保存')
+      toast('实例已保存')
+      gwCloseInstanceModal()
       loadGateway()
     } catch (e) { toast(e.message, 'err') }
   }
-  window.gwStart = async function (kind) {
+
+  window.gwStartInstance = async function (instance_id) {
     try {
-      var res = await api('/gateway/channels/' + kind + '/start', { method: 'POST' })
+      var res = await api('/gateway/instances/' + encodeURIComponent(instance_id) + '/start', { method: 'POST' })
       if (!res.status) throw new Error(res.msg || '启动失败')
-      toast('通道已启动')
+      toast('实例已启动')
       loadGateway()
     } catch (e) { toast(e.message, 'err') }
   }
-  window.gwStop = async function (kind) {
+  window.gwStopInstance = async function (instance_id) {
     try {
-      var res = await api('/gateway/channels/' + kind + '/stop', { method: 'POST' })
+      var res = await api('/gateway/instances/' + encodeURIComponent(instance_id) + '/stop', { method: 'POST' })
       if (!res.status) throw new Error(res.msg || '停止失败')
-      toast('通道已停止')
+      toast('实例已停止')
+      loadGateway()
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.gwDeleteInstance = async function (instance_id) {
+    if (!window.confirm('确定删除该实例？运行中会先停止。')) return
+    try {
+      var res = await api('/gateway/instances/' + encodeURIComponent(instance_id), { method: 'DELETE' })
+      if (!res.status) throw new Error(res.msg || '删除失败')
+      toast('实例已删除')
       loadGateway()
     } catch (e) { toast(e.message, 'err') }
   }
@@ -534,6 +608,20 @@
     <div id="qrBody"></div>
     <div id="qrStatus" style="text-align:center;font-size:13px;color:var(--bt-text-2);min-height:20px"></div>
     <div style="text-align:center;padding-top:8px"><button class="btn" onclick="gwQrClose()">关闭</button></div>
+  </div>
+
+<!-- 实例编辑弹窗 -->
+<div id="gwModal" class="qr-modal">
+  <div class="qr-modal-box" style="max-width:480px;max-height:86vh;overflow-y:auto">
+    <div class="qr-modal-hd">
+      <strong id="gwModalTitle">编辑实例</strong>
+      <button class="btn" onclick="gwCloseInstanceModal()" style="border:none;background:transparent;font-size:16px">✕</button>
+    </div>
+    <div id="gwInstFields"></div>
+    <div style="text-align:center;padding-top:10px">
+      <button class="btn pri" onclick="gwSaveInstance()">保存</button>
+      <button class="btn" onclick="gwCloseInstanceModal()">取消</button>
+    </div>
   </div>
 </div>
 

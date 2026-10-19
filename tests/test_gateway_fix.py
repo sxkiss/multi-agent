@@ -283,10 +283,15 @@ class TestRuntimeDepsAndFillback:
         assert "discord.py" in missing
 
     def test_missing_deps_wecom(self):
+        import importlib.util
+
         from platform_ext import gateway
 
         missing = gateway._missing_deps("wecom")
-        assert "wecom-aibot-sdk" in missing
+        if importlib.util.find_spec("wecom_aibot_sdk") is None:
+            assert "wecom-aibot-sdk" in missing
+        else:
+            assert "wecom-aibot-sdk" not in missing
 
     def test_norm_cfg_strips_template(self):
         from platform_ext import gateway

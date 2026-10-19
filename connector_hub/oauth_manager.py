@@ -25,11 +25,11 @@ import httpx
 
 from connector_hub import PROJECT_ROOT
 from connector_hub.connectors_service import (
-    _read_config,
-    _write_config,
+    CONFIG_FILE,
     encrypt_credentials,
     decrypt_credentials,
 )
+from platform_ext import config_files
 from connector_hub.oauth_providers import (
     PROVIDERS,
     OAuth2ProviderConfig,
@@ -138,10 +138,9 @@ def generate_code_challenge(code_verifier: str) -> str:
 # ── config.json 存储 ───────────────────────────────────────────
 
 def _get_oauth2_section() -> dict[str, Any]:
-    """获取 config.json 中的 oauth2 段（不存在则初始化）。"""
-    cfg = _read_config()
-    connector_hub = cfg.setdefault("connector_hub", {})
-    return connector_hub.setdefault("oauth2", {
+    """获取 connector_hub.json 中的 oauth2 段（不存在则初始化）。"""
+    cfg = config_files.load_section("connector_hub", CONFIG_FILE)
+    return cfg.setdefault("oauth2", {
         "auth_states": {},
         "clients": {},
         "token_cache": {},
@@ -149,10 +148,10 @@ def _get_oauth2_section() -> dict[str, Any]:
 
 
 def _save_oauth2_section(section: dict[str, Any]) -> None:
-    """保存 oauth2 段到 config.json。"""
-    cfg = _read_config()
-    cfg.setdefault("connector_hub", {})["oauth2"] = section
-    _write_config(cfg)
+    """保存 oauth2 段到 connector_hub.json。"""
+    cfg = config_files.load_section("connector_hub", CONFIG_FILE)
+    cfg["oauth2"] = section
+    config_files.save_section("connector_hub", cfg, CONFIG_FILE)
 
 
 # ── AuthState 存储 ──────────────────────────────────────────────
@@ -530,13 +529,8 @@ def get_callback_host_from_request(request: Request | None = None) -> str:
             return f"{proto}://{host}"
         return f"{proto}://{host}"
 
-    # 无 request 时从 config 兜底
-    cfg = _read_config()
-    port = cfg.get("port")
-    if not port:
-        # 尝试从 web_server 默认端口推断
-        port = 9876
-    return f"http://localhost:{port}"
+    # 无 request 时用默认端口兜底（服务端口固定由 web_server --port 控制）
+    return "http://localhost:9876"
 
 
 def build_callback_url(request: Request | None = None) -> str:
