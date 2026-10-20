@@ -46,8 +46,10 @@ Environment variables (all optional):
                           not trip code 1009 (message too big). Set to 0
                           to disable the cap entirely.
                           default: 33554432 (32 MiB)
-  BROWSER_USE_CDP_WS_URL     - if set, bypass launcher and connect directly to this
-                          Chrome DevTools WebSocket URL (e.g. for remote/Docker Chrome)
+    BROWSER_USE_CDP_WS_URL     - if set, bypass launcher and connect directly to this
+                           Chrome DevTools WebSocket URL (e.g. for remote/Docker Chrome)
+    BROWSER_USE_PROXY          - HTTP/HTTPS/SOCKS5 proxy for Chrome (e.g. "http://127.0.0.1:7890"
+                           or "socks5://127.0.0.1:1080"). Passed as --proxy-server flag.
                           default: None
   BROWSER_USE_IDLE_TIMEOUT_MINUTES - stop a locally managed Chrome profile after
                           this many minutes without real CDP activity. 0 disables.
@@ -177,6 +179,9 @@ class OctopSettings:
     )
     browser_mode: BrowserMode = field(
         default_factory=lambda: normalize_mode(_env_str("BROWSER_USE_MODE"))
+    )
+    proxy: str | None = field(
+        default_factory=lambda: _env_str("BROWSER_USE_PROXY")
     )
 
 
