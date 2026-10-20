@@ -331,7 +331,10 @@ class Agent:
         self.base_url = self.config.get("base_url")
         self.model_name = self.config.get("model_name") or self.config.get("default_model")
         self.rag_trigger_threshold = self.config.get("rag_trigger_threshold", 10)
-        self.max_tool_iterations = self.config.get("max_tool_iterations", 9999)
+        try:
+            self.max_tool_iterations = max(1, int(self.config.get("max_tool_iterations", 9999)))
+        except (TypeError, ValueError):
+            self.max_tool_iterations = 9999
         # 工具参数非法（多为输出被截断）的连续计数，用于熔断，防止无限重试烧 token
         self._bad_args_streak = 0
         self.context_window_kb = self.config.get("context_window_kb", 512)
@@ -400,10 +403,10 @@ class Agent:
         try:
             self.reasoning_repeat_retries = max(0, int(
                 self.config.get("reasoning_repeat_retries")
-                or _agent_cfg.get("reasoning_repeat_retries", 1)
+                or _agent_cfg.get("reasoning_repeat_retries", 3)
             ))
         except (TypeError, ValueError):
-            self.reasoning_repeat_retries = 1
+            self.reasoning_repeat_retries = 3
         # 轮询类工具允许同参数连续调用，不参与重复熔断
         self._repeat_exempt_tools = {"TaskStatus", "TaskList", "CheckCommandStatus"}
 
@@ -914,7 +917,8 @@ Here is some useful information about the environment you are running in:
                 "type": enable_type
             }
             
-        # 协议分流：responses 走 /v1/responses（小巧适配层把事件翻成 chat.delta 形状）
+        # 协议分流：responses 走 /v1/responses；anthropic 走 /v1/messages。
+        # 两个适配层都把事件翻成 chat.delta 形状，主循环零改动。
         if getattr(self, "api_protocol", "chat") == "responses":
             from chat_client.responses_client import build_request, iter_chat_chunks
 
@@ -928,6 +932,30 @@ Here is some useful information about the environment you are running in:
                 max_output_tokens=self.max_output_tokens or None,
             )
             return iter_chat_chunks(self.client, payload)
+
+        if getattr(self, "api_protocol", "chat") == "anthropic":
+            from chat_client.anthropic_client import (
+                build_request as anthropic_build_request,
+                iter_anthropic_chunks,
+                stream_messages,
+            )
+
+            payload = anthropic_build_request(
+                messages,
+                tools,
+                self.model_name,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                reasoning_effort=self.reasoning_effort or None,
+                max_output_tokens=self.max_output_tokens or None,
+            )
+            return iter_anthropic_chunks(stream_messages(
+                self.base_url,
+                self.api_key,
+                payload,
+                default_headers=self.default_headers,
+                timeout=max(30, self.response_timeout_seconds or 120),
+            ))
 
         return self.client.chat.completions.create(**params)
 
@@ -1285,9 +1313,15 @@ Here is some useful information about the environment you are running in:
                                 continue
                             logger.warning(
                                 "[AI-Retry] reasoning 重复退化超过重试上限（已重试 %d 次），"
-                                "保留当前结果继续执行: %d chars",
+                                "丢弃退化思考并结束本轮，避免污染历史: %d chars",
                                 reasoning_repeat_retry_count, len(current_reasoning_content),
                             )
+                            # 退化思考不写入历史，也不继续执行，直接结束本轮并提示用户
+                            yield {
+                                "type": "warning",
+                                "data": "检测到模型思维链持续重复退化，已停止本轮以避免无限循环。请重试或换一个更简单的指令。",
+                            }
+                            return
 
                         # 空回复检测：API 返回 200 但无内容且无工具调用 → 重试
                         if not current_response_content and not tool_call_chunks:
@@ -1933,15 +1967,20 @@ Here is some useful information about the environment you are running in:
         """检测 reasoning 里是否存在同一句重复过多（退化死循环）。
 
         按常见句子分隔符切句，归一化后计数；出现同一句 >= limit 次即判定退化。
-        仅在 reasoning 足够长时启用，避免误伤正常思考。
+        为避免长任务中"短退化"（总长不足 2000 但同一句连续复读）漏检，
+        额外检测：任意一句归一化后连续出现 >= 4 次也判定退化。
+        门槛设在 600 字符，兼顾短退化与误伤平衡。
         """
-        if not reasoning or len(reasoning) < 2000:
+        if not reasoning or len(reasoning) < 600:
             return False
         import re as _re
         # 同时按中英文句末标点和换行切句；英文句号只在后面跟空白时切，
         # 避免把 chat_client/hotreload.py 这类点号标识符切碎造成误判。
         parts = _re.split(r"(?<=[。！？!?；;])\s*|\n+|(?<=\.)\s+", reasoning)
         counts: dict[str, int] = {}
+        # 连续相同计数：专门抓"同一句连续复读"的短退化
+        streak = 0
+        prev_norm = None
         for part in parts:
             norm = cls._normalize_reasoning_sentence(part)
             if len(norm) < 6:
@@ -1949,6 +1988,14 @@ Here is some useful information about the environment you are running in:
             counts[norm] = counts.get(norm, 0) + 1
             if counts[norm] >= limit:
                 return True
+            # 连续复读检测：相邻两句归一化完全相同
+            if prev_norm is not None and norm == prev_norm:
+                streak += 1
+                if streak >= 3:  # 连续 4 句相同
+                    return True
+            else:
+                streak = 0
+            prev_norm = norm
         return False
 
     @staticmethod
