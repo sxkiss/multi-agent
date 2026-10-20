@@ -55,6 +55,18 @@ class ResponsesAPIError(Exception):
         self.status_code = status_code
         self.code = code
 
+
+class AnthropicAPIError(Exception):
+    """Anthropic Messages 协议层故障的统一异常。
+
+    携带 status_code / code，使 is_retryable_api_err 能判定是否重试。
+    """
+
+    def __init__(self, message: str, status_code: int | None = None, code: str | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
+
 # openai SDK 3.x 基于 httpx2（重命名版）：流式中断/连接异常均属此家族
 HTTPX_RETRYABLE = (
     httpx2.RemoteProtocolError, httpx2.ConnectError, httpx2.ReadError,
@@ -93,7 +105,7 @@ def is_retryable_api_err(e) -> bool:
     if code in RETRYABLE_RESPONSE_CODES:
         return True
     # 兜底：错误码不在白名单时，看消息是否含瞬时故障关键词
-    if isinstance(e, ResponsesAPIError):
+    if isinstance(e, (ResponsesAPIError, AnthropicAPIError)):
         msg = str(e.args[0] if e.args else "").lower()
         if any(k in msg for k in RETRYABLE_MSG_KEYWORDS):
             return True

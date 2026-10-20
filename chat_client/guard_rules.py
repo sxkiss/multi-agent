@@ -35,6 +35,12 @@ RULES_FILENAME = "rules.yaml"
 
 # 内置默认规则（首次 seed 到磁盘；对齐原 _DANGEROUS_CMD_PATTERNS + 扩充）
 DEFAULT_RULES: list[dict[str, Any]] = [
+    {"id": "overwrite-global-config",
+     "pattern": r'(?:cat|echo|printf|tee)\s+[^|;>&]*[>|][^|;>&]*/(?:home/[^/]+/)?bt/config\.json',
+     "severity": "critical", "action": "block", "description": "禁止用 shell 重定向覆盖全局 config.json"},
+    {"id": "overwrite-global-auth",
+     "pattern": r'(?:cat|echo|printf|tee)\s+[^|;>&]*[>|][^|;>&]*/(?:home/[^/]+/)?bt/auth\.json',
+     "severity": "critical", "action": "block", "description": "禁止用 shell 重定向覆盖全局 auth.json"},
     {"id": "rm-rf-root", "pattern": r"rm\s+(-[a-zA-Z]+\s+)*-[a-zA-Z]*[rf][a-zA-Z]*\s+/(?:\s|$)",
      "severity": "critical", "action": "block", "description": "递归删除根目录"},
     {"id": "rm-rf-nondir", "pattern": r"rm\s+-[a-zA-Z]*r[a-zA-Z]*f?[a-zA-Z]*\s+/[^/\w]",

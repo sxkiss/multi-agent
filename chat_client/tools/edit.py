@@ -437,6 +437,29 @@ def _remove_extra_path(path: str):
     return removed
 
 
+# 全局敏感文件：只允许通过专用 API / 配置面板修改，
+# 禁止 Read/Write/Edit/Patch/LargeFileEdit 直接读写，防止 agent 误覆盖。
+_PROTECTED_GLOBAL_FILES: tuple[str, ...] = (
+    "config.json",
+    "auth.json",
+    "crew_agents.json",
+    "agents.json",
+    "scheduled_tasks.json",
+)
+
+
+def _is_protected_global_file(file_path: str) -> bool:
+    real = os.path.realpath(os.path.abspath(os.path.expanduser(file_path)))
+    root = os.path.realpath(_ALLOWED_BASE_DIRS[0])
+    try:
+        rel = os.path.relpath(real, root)
+    except ValueError:
+        return False
+    if rel.startswith("..") or os.path.isabs(rel):
+        return False
+    return rel in _PROTECTED_GLOBAL_FILES
+
+
 def _is_path_allowed(file_path: str) -> bool:
     real = os.path.realpath(os.path.abspath(os.path.expanduser(file_path)))
     bases = list(_ALLOWED_BASE_DIRS) + _load_extra_paths()
@@ -473,6 +496,8 @@ class FileEdit:
     """
     def execute(self, file_path: str, old_str: str, new_str: str, replace_all: bool = False) -> str:
         try:
+            if _is_protected_global_file(file_path):
+                return _xml_response("error", f"Access denied: 全局敏感配置不允许直接修改，请使用专用 API ({file_path})")
             if not _is_path_allowed(file_path):
                 return _xml_response("error", f"Path not allowed: {file_path}")
             if not os.path.exists(file_path):
@@ -558,6 +583,9 @@ class MultiFileEdit:
                     file_path = os.path.join(PROJECT_ROOT, file_path)
                 
                 try:
+                    if _is_protected_global_file(file_path):
+                        errors.append(f"{file_path}: Access denied: 全局敏感配置不允许直接修改，请使用专用 API")
+                        continue
                     if op_type == 'update':
                         result = self._apply_update(file_path, op)
                         results.append(result)
@@ -778,6 +806,8 @@ class LargeFileEdit:
     def execute(self, file_path: str, action: str = "read", content: str = "",
                 start_line: int = 1, end_line: int = 1000,
                 old_str: str = "", new_str: str = "") -> str:
+        if _is_protected_global_file(file_path) and action.lower() != "read":
+            return _xml_response("error", f"Access denied: 全局敏感配置不允许直接修改，请使用专用 API ({file_path})")
         if not _is_path_allowed(file_path):
             return _xml_response("error", f"Path not allowed: {file_path}")
         action = action.lower()
