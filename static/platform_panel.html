@@ -172,7 +172,23 @@
   .mcp-add-form { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
   .overwrite-label { font-size: 12px; color: var(--bt-text-2); display: flex; align-items: center; gap: 5px; }
   .crew-del { border: none; background: transparent; color: var(--bt-danger); font-size: 12px; cursor: pointer; }
-  .crew-list, .skill-list, .card-list { margin-bottom: 8px; }
+   .crew-list, .skill-list, .card-list { margin-bottom: 8px; }
+   .crew-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm); margin-bottom: 6px; }
+   .crew-info { flex: 1; min-width: 0; }
+   .crew-name { font-weight: 600; font-size: 13px; }
+   .crew-desc { color: var(--bt-text-2); font-size: 12px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
+   .crew-badge { font-size: 11px; padding: 2px 6px; border-radius: 3px; background: var(--bt-surface); border: 1px solid var(--bt-border); color: var(--bt-text-2); }
+   .crew-badge.builtin { background: #e8f5e9; border-color: #4caf50; color: #2e7d32; }
+   .crew-badge.custom { background: #fff3e0; border-color: #ff9800; color: #e65100; }
+   .crew-dept-select { width: 120px; font-size: 12px; padding: 4px 6px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm); background: var(--bt-bg); color: var(--bt-text); }
+   .crew-form-wrap { margin-top: 10px; }
+   .crew-add-btn { cursor: pointer; color: var(--bt-primary); font-size: 13px; font-weight: 600; user-select: none; }
+   .crew-add-btn::before { content: '▶ '; font-size: 10px; }
+   .crew-form-wrap[open] > .crew-add-btn::before { content: '▼ '; }
+   .crew-form { margin-top: 8px; padding: 12px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm); background: var(--bt-surface); display: flex; flex-direction: column; gap: 8px; }
+   .crew-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+   .crew-tool-chk { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--bt-text-2); cursor: pointer; }
+   .crew-tool-chk input { cursor: pointer; }
   .empty { color: var(--bt-text-3); font-size: 13px; padding: 12px; text-align: center; }
   .loading { color: var(--bt-text-2); font-size: 13px; padding: 10px; }
   .btn-save { margin-top: 16px; }
@@ -515,13 +531,38 @@
         <div id="set-crewskill" class="set-panel">
           <div class="card">
             <h3>子代理团队（Crew）</h3>
+            <p class="form-hint" style="font-size:12px;color:var(--bt-text-2);margin:4px 0 10px">每个成员自带工具；可按部门组织。对话中经理自动分派。</p>
+
+            <!-- 部门管理 -->
+            <details class="crew-form-wrap">
+              <summary class="crew-add-btn">＋ 新建部门</summary>
+              <div class="crew-form">
+                <input class="form-input" id="deptName" placeholder="标识 (小写字母数字_-，如 dev)" />
+                <input class="form-input" id="deptTitle" placeholder="部门名称 (如 研发部)" />
+                <input class="form-input" id="deptDesc" placeholder="职责说明（可选）" />
+                <button class="btn pri" onclick="saveDept()">保存部门</button>
+              </div>
+            </details>
+            <div id="deptList" class="crew-list" style="margin-top:10px"></div>
+
+            <!-- 成员管理 -->
             <div id="crewList" class="crew-list"></div>
-            <div class="form-section">
-              <input class="form-input" id="crewName" placeholder="成员名称 (小写字母数字_-)" />
-              <input class="form-input" id="crewDept" placeholder="所属部门标识" />
-              <textarea class="form-textarea" id="crewDesc" rows="2" placeholder="职责描述 (Goal)"></textarea>
-              <button class="btn pri" onclick="saveCrewAgent()">保存成员</button>
-            </div>
+
+            <!-- 新建成员 -->
+            <details class="crew-form-wrap">
+              <summary class="crew-add-btn">＋ 新建成员代理</summary>
+              <div class="crew-form">
+                <input class="form-input" id="crewName" placeholder="名称 (小写字母数字_-, 如 data-analyst)" />
+                <input class="form-input" id="crewDept" placeholder="所属部门标识 (可选, 如 research)" list="dept-datalist" />
+                <datalist id="dept-datalist"></datalist>
+                <input class="form-input" id="crewDesc" placeholder="职责描述 (Goal)" />
+                <textarea class="form-textarea" id="crewBackstory" rows="3" placeholder="系统提示词 (Backstory)"></textarea>
+                <select class="form-input" id="crewModel"><option value="">模型：继承父会话</option></select>
+                <div class="form-label" style="font-size:12px;color:var(--bt-text-2);margin-top:2px">工具（至少勾选 1 个）</div>
+                <div class="crew-tools" id="crewTools"></div>
+                <button class="btn pri" onclick="saveCrewAgent()">保存成员</button>
+              </div>
+            </details>
           </div>
           <div class="card">
             <h3>技能（Skill）</h3>
@@ -1541,33 +1582,170 @@ window.renderSearchProviderOpts = function renderSearchProviderOpts() {
   }
 
   // ── Crew ─────────────────────────────
+  var _departments = []
+  var _crewTools = []
+  var _crewModels = []
+
+  async function fetchCrewData() {
+    var res = await apiRaw('/crew/agents')
+    if (res.status && res.data) {
+      _departments = res.data.departments || []
+      renderDepartments()
+      renderDeptDatalist()
+      renderCrewMembers(res.data.agents || [])
+    }
+  }
+
+  function renderDepartments() {
+    var el = $('deptList')
+    el.innerHTML = _departments.length ? _departments.map(function(d) {
+      return '<div class="crew-item"><div class="crew-info"><span class="crew-name">' + esc(d.title || d.name) + '</span> <span class="crew-badge custom">' + esc(d.name) + '</span><span class="crew-desc">' + esc(d.description || '') + '</span></div><button class="crew-del" onclick="deleteDept(\'' + esc(d.name) + '\')">删除</button></div>'
+    }).join('') : '<div class="empty">暂无部门</div>'
+  }
+
+  function renderDeptDatalist() {
+    var dl = $('dept-datalist')
+    dl.innerHTML = _departments.map(function(d) {
+      return '<option value="' + esc(d.name) + '">' + esc(d.title || d.name) + '</option>'
+    }).join('')
+  }
+
+  function renderCrewMembers(agents) {
+    var el = $('crewList')
+    el.innerHTML = agents.length ? agents.map(function(a) {
+      var badge = a.builtin
+        ? '<span class="crew-badge builtin">内置</span>'
+        : '<span class="crew-badge custom">自定义</span>'
+      var deptSel = a.builtin ? '' : '<select class="crew-dept-select" onchange="assignDept(\'' + esc(a.name) + '\', this.value)"><option value="">未分配</option>' + _departments.map(function(d) {
+        return '<option value="' + esc(d.name) + '"' + (String(a.department || '') === d.name ? ' selected' : '') + '>' + esc(d.title || d.name) + '</option>'
+      }).join('') + '</select>'
+      var delBtn = a.builtin ? '' : '<button class="crew-del" onclick="deleteCrew(\'' + esc(a.name) + '\')">删除</button>'
+      return '<div class="crew-item"><div class="crew-info"><span class="crew-name">' + esc(a.name) + '</span> ' + badge + '<span class="crew-desc" title="工具: ' + esc((a.tools||[]).join(', ')) + '">' + esc(a.description || '') + '</span></div>' + deptSel + delBtn + '</div>'
+    }).join('') : '<div class="empty">暂无成员</div>'
+  }
+
   async function loadCrew() {
     var el = $('crewList')
     el.innerHTML = '<div class="loading">加载中...</div>'
+    try { await fetchCrewData() }
+    catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+
+  async function loadCrewToolsAndModels() {
+    // 工具列表
     try {
-      var res = await apiRaw('/crew/agents')
-      if (res.status && res.data) {
-        var agents = res.data.agents || []
-        el.innerHTML = agents.length ? agents.map(function(a) {
-          return '<div class="tool-item"><span class="tool-item-name">' + esc(a.name) + '</span><span class="tool-item-desc">' + esc((a.goal||'').slice(0,60)) + '</span><button class="crew-del" onclick="deleteCrew(\'' + esc(a.name) + '\')">删除</button></div>'
-        }).join('') : '<div class="empty">暂无成员</div>'
-      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
-    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+      var res = await apiRaw('/tools')
+      if (res && (res.data || Array.isArray(res))) {
+        var tools = Array.isArray(res) ? res : (res.data && res.data.tools ? res.data.tools : (res.data || []))
+        _crewTools = (Array.isArray(tools) ? tools : []).map(function(t) { return { id: t.id || t.name || t, name: t.name || t.id || t } })
+        renderCrewTools()
+      }
+    } catch(e) { console.warn('loadCrewTools', e) }
+    // 模型列表
+    try {
+      var cfgRes = await apiRaw('/config')
+      if (cfgRes.status && cfgRes.data) {
+        _crewModels = (cfgRes.data.config && cfgRes.data.config.models) || cfgRes.data.models || []
+        renderCrewModels()
+      }
+    } catch(e) { console.warn('loadCrewModels', e) }
   }
+
+  function renderCrewTools() {
+    var el = $('crewTools')
+    el.innerHTML = _crewTools.length ? _crewTools.map(function(t) {
+      return '<label class="crew-tool-chk"><input type="checkbox" value="' + esc(t.id) + '" /> ' + esc(t.name) + '</label>'
+    }).join('') : '<span class="empty">工具加载失败</span>'
+  }
+
+  function renderCrewModels() {
+    var sel = $('crewModel')
+    sel.innerHTML = '<option value="">模型：继承父会话</option>' + _crewModels.map(function(m) {
+      return '<option value="' + esc(m) + '">' + esc(m) + '</option>'
+    }).join('')
+  }
+
+  function selectedCrewTools() {
+    return Array.prototype.map.call(document.querySelectorAll('#crewTools input[type="checkbox"]:checked'), function(cb) { return cb.value })
+  }
+
   async function saveCrewAgent() {
-    var name = $('crewName').value.trim()
-    var dept = $('crewDept').value.trim()
-    var goal = $('crewDesc').value.trim()
+    var name = ($('crewName').value || '').trim()
+    var department = ($('crewDept').value || '').trim()
+    var description = ($('crewDesc').value || '').trim()
+    var backstory = ($('crewBackstory').value || '').trim()
+    var model = ($('crewModel').value || '').trim()
+    var tools = selectedCrewTools()
     if (!name) { toast('请填写名称', 'err'); return }
-    var res = await apiRaw('/crew/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, dept: dept, goal: goal }) })
-    if (res.status) { toast('已保存'); loadCrew(); $('crewName').value = ''; $('crewDept').value = ''; $('crewDesc').value = '' }
-    else toast(res.msg || '保存失败', 'err')
+    if (!description) { toast('请填写职责描述 (Goal)', 'err'); return }
+    if (!backstory) { toast('请填写系统提示词 (Backstory)', 'err'); return }
+    if (!tools.length) { toast('请至少勾选一个工具', 'err'); return }
+    var res = await apiRaw('/crew/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, department: department, description: description, backstory: backstory, model: model, tools: tools })
+    })
+    if (res.status) {
+      toast('已保存')
+      loadCrew()
+      $('crewName').value = ''; $('crewDept').value = ''; $('crewDesc').value = ''; $('crewBackstory').value = ''; $('crewModel').value = ''
+      document.querySelectorAll('#crewTools input[type="checkbox"]:checked').forEach(function(cb) { cb.checked = false })
+    } else { toast(res.msg || '保存失败', 'err') }
   }
+
   async function deleteCrew(name) {
     var res = await apiRaw('/crew/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
     if (res.status) { toast('已删除'); loadCrew() }
     else toast(res.msg || '删除失败', 'err')
   }
+
+  async function saveDept() {
+    var name = ($('deptName').value || '').trim()
+    var title = ($('deptTitle').value || '').trim()
+    var description = ($('deptDesc').value || '').trim()
+    if (!name) { toast('请填写部门标识', 'err'); return }
+    if (!title) { toast('请填写部门名称', 'err'); return }
+    var res = await apiRaw('/crew/dept_save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, title: title, description: description }) })
+    if (res.status) { toast('部门已保存'); loadCrew(); $('deptName').value = ''; $('deptTitle').value = ''; $('deptDesc').value = '' }
+    else toast(res.msg || '保存失败', 'err')
+  }
+
+  async function deleteDept(name) {
+    var res = await apiRaw('/crew/dept_delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+    if (res.status) { toast('已删除'); loadCrew() }
+    else toast(res.msg || '删除失败', 'err')
+  }
+
+  async function assignDept(memberName, department) {
+    var agents = []
+    try {
+      var res = await apiRaw('/crew/agents')
+      if (res.status && res.data) agents = res.data.agents || []
+    } catch(e) { agents = [] }
+    var a = agents.find(function(x) { return x.name === memberName })
+    if (!a) { toast('成员不存在', 'err'); return }
+    var rr = await apiRaw('/crew/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: a.name,
+        description: a.description || '',
+        backstory: a.backstory || '',
+        tools: a.tools || [],
+        model: a.model || '',
+        department: department
+      })
+    })
+    if (rr.status) { toast('已更新部门'); loadCrew() }
+    else toast(rr.msg || '分配失败', 'err')
+  }
+
+  // HTML onclick 引用：暴露到 window
+  window.saveCrewAgent = saveCrewAgent
+  window.deleteCrew = deleteCrew
+  window.saveDept = saveDept
+  window.deleteDept = deleteDept
+  window.assignDept = assignDept
 
   // ── 技能 ─────────────────────────────
   async function loadSkills() {
@@ -1634,6 +1812,7 @@ window.renderSearchProviderOpts = function renderSearchProviderOpts() {
     loadSettingsConfig()
     loadSearchConfig()
     fetchMcpServers()
+    loadCrewToolsAndModels()
     loadCrew()
     loadSkills()
     loadCards()
