@@ -391,7 +391,17 @@
   window.gwInstKindChanged = function () {
     var kind = $('gwInstKind').value
     var meta = gwMetaFor(kind)
-    var fake = { kind: kind, name: $('gwInstName').value || '', config_fields: meta.config_fields || [], enabled: true, configured: false }
+    // 新增/编辑共用：编辑模式 gwEditing 有 instance_id，会用它自己的 config_fields；
+    // 新增模式 gwEditing=null，用所选 kind 的 config_fields（空字段，不回填旧数据）
+    var isEdit = !!gwEditing
+    var fake = {
+      kind: kind,
+      name: isEdit && gwEditing ? gwEditing.name : ($('gwInstName').value || ''),
+      instance_id: isEdit && gwEditing ? gwEditing.instance_id : null,
+      config_fields: isEdit && gwEditing ? (gwEditing.config_fields || []) : (meta.config_fields || []),
+      enabled: isEdit && gwEditing ? gwEditing.enabled : true,
+      configured: isEdit && gwEditing ? gwEditing.configured : false
+    }
     var box = $('gwInstFields')
     if (box) box.innerHTML = renderInstanceForm(fake)
     renderQrSection(fake)
@@ -402,10 +412,20 @@
   window.gwAddInstance = function () {
     gwEditing = null
     gwResetDraft()
+    // 新增实例：清空所有字段，显示"新增实例"标识
+    $('gwFormTitle').textContent = '+ 新增实例（instance_id 系统自动生成）'
     var firstKind = Object.keys(gwMeta).sort()[0] || ''
     var meta = gwMeta[firstKind] || {}
-    var fake = { kind: firstKind, name: '', config_fields: meta.config_fields || [], enabled: true, configured: false }
-    $('gwFormTitle').textContent = '+ 添加实例'
+    // 关键：用空字段集（不是现有实例的 config_fields），避免回填旧数据
+    var fake = {
+      kind: firstKind,
+      name: '',
+      instance_id: null,  // 新增时无实例ID
+      config_fields: [],  // 空字段集，由 gwInstKindChanged 根据选择的 kind 重新渲染
+      enabled: true,
+      configured: false,
+      supported_qr: false  // 初始为 false，切换 kind 时会更新
+    }
     $('gwInstFields').innerHTML = renderInstanceForm(fake)
     renderQrSection(fake)
     try { sessionStorage.removeItem('gwEditingId') } catch (e) {}
@@ -500,6 +520,15 @@
 
   // ── 扫码绑定（表单页：添加/编辑实例内嵌）────────────────
   function qrContentHtml(d) {
+    // 优先用后端生成的二维码 PNG（data URI），保证 <img> 能直接显示
+    if (d.qrcode_image && d.qrcode_image.indexOf('data:image/') === 0) {
+      var qrLink = d.qrcode_url || '#'
+      var clickHint = /^https?:\/\//.test(qrLink)
+        ? '<div style="text-align:center;margin-top:6px"><a href="' + esc(qrLink) + '" target="_blank" class="link">打不开二维码？点击链接授权</a></div>'
+        : ''
+      return '<div style="text-align:center;padding:8px"><img src="' + esc(d.qrcode_image) + '" class="qr-img"></div>' +
+        '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">请用手机扫码绑定</div>' + clickHint
+    }
     if (d.qrcode_url && (d.qrcode_url.indexOf('data:') === 0 || /^https?:\/\//.test(d.qrcode_url))) {
       return '<div style="text-align:center;padding:8px"><img src="' + esc(d.qrcode_url) + '" class="qr-img"></div>' +
         '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">请用手机扫码绑定</div>'

@@ -648,8 +648,10 @@ _SENSITIVE_FIELDS = {
 async def gateway_list_channels() -> JSONResponse:
     """列出支持的平台通道与激活状态。
 
-    对已配置的通道，config_fields 附带 saved_value（非敏感字段回填真实值，
-    敏感字段仅标记 saved=True，不回显明文），供面板回显与编辑。
+    注意：此接口返回的 config_fields 是**通用字段定义**，不带 saved_value / saved 标记，
+    供「添加新实例」使用（保持表单空白，不读取/回填任何已有实例数据）。
+    若需回显某个具体实例的已保存配置，请用 GET /gateway/instances 的 config_fields
+    （它针对具体实例，敏感字段脱敏、非敏感字段回填真实值）。
     """
     cfg = _gateway_cfg()
     out = []
@@ -661,17 +663,9 @@ async def gateway_list_channels() -> JSONResponse:
         for f in meta.get("config_fields", []):
             name = f.get("name")
             item = dict(f)
-            if configured and name in saved:
-                is_sensitive = name in _SENSITIVE_FIELDS or f.get("type") == "password"
-                if is_sensitive:
-                    item["saved"] = bool(saved.get(name))
-                    item["saved_value"] = ""
-                else:
-                    item["saved"] = True
-                    item["saved_value"] = str(saved.get(name) or "")
-            else:
-                item["saved"] = False
-                item["saved_value"] = ""
+            # 新增/通用场景：一律不带 saved/saved_value，避免表单回填旧数据
+            item["saved"] = False
+            item["saved_value"] = ""
             fields.append(item)
         out.append({
             "kind": kind,
@@ -680,6 +674,7 @@ async def gateway_list_channels() -> JSONResponse:
             "configured": configured,
             "sdk_installed": sdk_ok,
             "running": kind in _manager_kinds,
+            "supported_qr": kind in qr_login.supported_qr_kinds(),
             "config_fields": fields,
         })
     return _ok({"channels": out})
@@ -822,6 +817,16 @@ async def gateway_qrcode_generate(kind: str, request: Request) -> JSONResponse:
         data = await qr_login.generate(kind, session_id=session_id)
         if instance_id:
             data["instance_id"] = instance_id
+        # 统一：若返回了可扫码链接（qrcode_url/auth_url/verification_uri_complete），
+        # 自动附加 data URI 二维码 PNG，保证前端 <img> 能直接显示图片（不依赖外部图片服务）。
+        qr_content = (
+            data.get("qrcode_url")
+            or data.get("auth_url")
+            or data.get("verification_uri_complete")
+            or ""
+        )
+        if qr_content:
+            data["qrcode_image"] = qr_login._qr_png_data_uri(str(qr_content))
         return _ok(data)
     except Exception as e:  # noqa: BLE001
         logger.exception("[gateway] %s 生成二维码失败", kind)
