@@ -48,6 +48,29 @@ _CHROME_SUFFIXES_WIN = [
 _CLONE_NEWUSER = 0x10000000
 
 
+def _effective_proxy() -> str | None:
+    """返回当前生效的代理地址。
+
+    优先读取运行时持久化配置（~/.octop-browser/proxy.json，由浏览器工具的
+    代理设置 API 写入），回退到环境变量 BROWSER_USE_PROXY。每次启动都动态
+    读取，保证在浏览器工具里修改代理后重启浏览器会话即生效。
+    """
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+
+        _state = Path.home() / ".octop-browser"
+        _cfg_path = _state / "proxy.json"
+        if _cfg_path.exists():
+            _data = _json.loads(_cfg_path.read_text(encoding="utf-8"))
+            if isinstance(_data, dict) and _data.get("enabled") and _data.get("proxy"):
+                return str(_data["proxy"]).strip()
+    except Exception:  # noqa: BLE001
+        pass
+    env = os.environ.get("BROWSER_USE_PROXY", "").strip()
+    return env or None
+
+
 def _playwright_exe_candidates(cdir: Path) -> list[Path]:
     """Return the binary locations Playwright has used inside ``chromium-<rev>/``.
 
@@ -229,9 +252,11 @@ def _build_flags(profile: Profile, headless: bool) -> list[str]:
         flags.append("--disable-gpu")
     if _should_disable_dev_shm():
         flags.append("--disable-dev-shm-usage")
-    # Proxy support: BROWSER_USE_PROXY env var
-    if _settings.proxy:
-        flags.append(f"--proxy-server={_settings.proxy}")
+    # Proxy support: 优先读取运行时持久化配置（proxy.json），回退到环境变量。
+    # 每次启动都动态读取，保证在浏览器工具里修改代理后重启会话即生效。
+    _proxy = _effective_proxy()
+    if _proxy:
+        flags.append(f"--proxy-server={_proxy}")
     return flags
 
 

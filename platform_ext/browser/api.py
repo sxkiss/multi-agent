@@ -14,18 +14,20 @@ from fastapi import APIRouter
 
 from platform_ext.browser import env as _env
 from platform_ext.browser import harness as _harness
+from platform_ext.browser import proxy_config as _proxy
 from platform_ext.browser import record_replay as _rr
 from platform_ext.browser import stream as _stream
 from platform_ext.browser import uninstall as _uninstall
 
 # 显式设置前缀（FastAPI 0.141 嵌套不叠加 prefix）
-for _r in (_env.router, _harness.router, _rr.router, _uninstall.router, _stream.router):
+for _r in (_env.router, _harness.router, _proxy.router, _rr.router, _uninstall.router, _stream.router):
     _r.prefix = "/api/v2"
 
 # 供 web_server 逐个挂载
 subrouters: list[APIRouter] = [
     _env.router,
     _harness.router,
+    _proxy.router,
     _rr.router,
     _uninstall.router,
     _stream.router,
