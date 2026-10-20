@@ -229,6 +229,9 @@ def _build_flags(profile: Profile, headless: bool) -> list[str]:
         flags.append("--disable-gpu")
     if _should_disable_dev_shm():
         flags.append("--disable-dev-shm-usage")
+    # Proxy support: BROWSER_USE_PROXY env var
+    if _settings.proxy:
+        flags.append(f"--proxy-server={_settings.proxy}")
     return flags
 
 
