@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import os
 import time
 from typing import Any
@@ -18,6 +20,13 @@ from typing import Any
 import httpx
 
 from platform_ext import PROJECT_ROOT, config_files
+
+# 二维码图片生成：把授权链接/内容编码成 data:image/png 供 <img> 直接显示
+try:
+    import qrcode
+    _QR_AVAILABLE = True
+except Exception:
+    _QR_AVAILABLE = False
 
 # 登录会话状态（内存，按 session_id 区分多并发扫码）
 _sessions: dict[str, dict[str, Any]] = {}
@@ -91,11 +100,30 @@ def save_channel_config(kind: str, config: dict[str, Any], instance_id: str | No
 
 
 # ── 微信 iLink Bot ────────────────────────────────────────────
+def _qr_png_data_uri(content: str) -> str:
+    """把任意文本/链接编码成二维码 PNG 的 data URI，供前端 <img> 直接显示。"""
+    if not _QR_AVAILABLE or not content:
+        return ""
+    try:
+        img = qrcode.make(content)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return ""
+
+
 async def weixin_generate() -> dict[str, Any]:
     from octop_gateway.channels.weixin.login_qr import WeixinQRLogin
     login = WeixinQRLogin()
     result = await login.fetch_qr_code()
-    return {"qrcode_token": str(result.qrcode), "qrcode_url": str(result.qrcode_img_content)}
+    url = str(result.qrcode_img_content)
+    return {
+        "qrcode_token": str(result.qrcode),
+        "qrcode_url": url,
+        # 额外提供二维码 PNG（data URI），前端可 <img> 直接显示
+        "qrcode_image": _qr_png_data_uri(url),
+    }
 
 
 async def weixin_poll(qrcode_token: str) -> dict[str, Any]:
