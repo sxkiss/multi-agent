@@ -160,15 +160,7 @@ body {
 }
 .send-btn:disabled { opacity: 0.45 !important; box-shadow: none !important; }
 
-/* ---------- 设置抽屉 ---------- */
-.settings-drawer {
-  background: var(--bt-surface) !important;
-  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.12) !important;
-}
-.drawer-header {
-  border-bottom: 1px solid var(--bt-border) !important;
-  background: linear-gradient(180deg, var(--bt-surface-2), var(--bt-surface)) !important;
-}
+/* ---------- 表单 ---------- */
 .form-section-group {
   background: var(--bt-surface-2) !important;
   border: 1px solid var(--bt-border) !important;
@@ -216,7 +208,6 @@ html[data-theme="dark"] body,
 html[data-theme="dark"] .ai-chat-container,
 html[data-theme="dark"] .chat-main-area { background: var(--bt-bg) !important; }
 html[data-theme="dark"] .chat-sidebar,
-html[data-theme="dark"] .settings-drawer,
 html[data-theme="dark"] .chat-input,
 html[data-theme="dark"] .input-wrapper,
 html[data-theme="dark"] .custom-popover,
