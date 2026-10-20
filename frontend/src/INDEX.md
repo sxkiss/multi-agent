@@ -17,4 +17,4 @@ Vue3 + Vite 前端源码。
 
 ## Subdirectories
 
-- [components/](./components/INDEX.md) — UI 组件（ChatMain / ChatSidebar / ChatInput / MessageItem / SettingsDrawer）
+- [components/](./components/INDEX.md) — UI 组件（ChatMain / ChatSidebar / ChatInput / MessageItem）

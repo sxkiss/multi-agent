@@ -12,7 +12,6 @@
       @delete-conversation="deleteConversation"
       @delete-conversations="deleteConversations"
       @export-conversation="exportConversation"
-      @open-settings="openSettingsDrawer"
       @open-platform="openPlatformPanel"
       @open-connectors="openConnectorsPanel"
       @toggle-fullscreen="toggleFullscreen"
@@ -127,8 +126,7 @@
         @remove-selected-tool="removeSelectedTool"
         @select-model="selectModel"
         @toggle-tool-selection="toggleToolSelection"
-        @batch-toggle-tools="batchToggleTools"
-        @open-settings="openSettingsDrawer"
+@batch-toggle-tools="batchToggleTools"
       />
       <!-- 集团实时运行状态网（单 Agent 模式隐藏） -->
       <div class="org-live-panel" v-if="orgLoaded && chatMode === 'group'">
@@ -155,13 +153,6 @@
           </div>
         </div>
       </div>
-    <SettingsDrawer
-      :visible="settingsDrawerVisible"
-      :config="globalConfig"
-      :read-only="isCardUser"
-      @close="closeSettingsDrawer"
-      @save="handleSaveConfig"
-    />
     <LoginMask v-if="needLogin" @success="onLoginSuccess" />
   </div>
 </template>
@@ -171,7 +162,6 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import ChatSidebar from './components/ChatSidebar.vue'
 import ChatMain from './components/ChatMain.vue'
 import ChatInput from './components/ChatInput.vue'
-import SettingsDrawer from './components/SettingsDrawer.vue'
 import LoginMask from './components/LoginMask.vue'
 import { authOpts, authStatus, onUnauthorized, onForbidden, isCardToken, getToken } from './auth.js'
 
@@ -319,7 +309,6 @@ const webSearchEnabled = ref(true)
 const containerRef = ref(null)
 const chatMainRef = ref(null)
 const chatInputRef = ref(null)
-const settingsDrawerVisible = ref(false)
 
 // ==================== 消息发送队列 ====================
 // 发送中再输入的消息进入队列，显示在输入框上方；可单条取消/清空；
@@ -1781,64 +1770,12 @@ function batchToggleTools(enabled) {
   }
 }
 
-function openSettingsDrawer() {
-  settingsDrawerVisible.value = true
-  loadTools()
-}
-
 function openPlatformPanel() {
   window.open('/static/platform_panel.html', '_blank')
 }
 
 function openConnectorsPanel() {
   window.open('/connectors', '_blank')
-}
-
-function closeSettingsDrawer() {
-  settingsDrawerVisible.value = false
-  loadTools()
-}
-
-function handleSaveConfig(newConfig) {
-  // 先关闭面板
-  settingsDrawerVisible.value = false
-  // 保存成功后重新从后端读取最新配置（后端可能合并了默认值）
-  apiGet('/api/config', (result) => {
-    if (result.status && result.data) {
-      const e = result.data
-      globalConfig.value = {
-        system_prompt: e.config?.system_prompt || '',
-        api_base_url: e.config?.api_base_url || '',
-        api_key: e.config?.api_key || '',
-        api_key_set: e.config?.api_key_set === true,
-        models: e.config?.models || [],
-        embedding: {
-          embedding_api_key: e.config?.embedding?.embedding_api_key || '',
-          embedding_api_key_set: e.config?.embedding?.embedding_api_key_set === true,
-          embedding_base_url: e.config?.embedding?.embedding_base_url || '',
-          embedding_model_name: e.config?.embedding?.embedding_model_name || ''
-        },
-        rag: {
-          sliding_window_size: e.config?.rag?.sliding_window_size || 10,
-          rag_trigger_threshold: e.config?.rag?.rag_trigger_threshold || 3,
-          rag_retrieval_count: e.config?.rag?.rag_retrieval_count || 10,
-          rag_final_count: e.config?.rag?.rag_final_count || 5
-        },
-        context_window_kb: e.config?.context_window_kb || 512,
-        workspace: e.config?.workspace || '',
-        agent: {
-          max_tool_iterations: e.config?.agent?.max_tool_iterations || 10,
-          temperature: e.config?.agent?.temperature ?? 1,
-          top_p: e.config?.agent?.top_p ?? 1,
-          max_retries: e.config?.agent?.max_retries ?? 5,
-          reasoning_effort: e.config?.agent?.reasoning_effort || 'max'
-        },
-        default_headers: e.config?.default_headers || {},
-        questions: e.questions || []
-      }
-    }
-  })
-  loadTools()
 }
 
 function loadTools() {
@@ -2112,8 +2049,6 @@ function toggleFullscreen() {
   isFullscreen.value = !isFullscreen.value
 
   const appMain = document.querySelector('.app-w-main')
-  const overlay = document.querySelector('.settings-drawer-overlay')
-  const drawer = document.querySelector('.settings-drawer')
 
   if (isFullscreen.value) {
     container.classList.add('browser-fullscreen')
@@ -2127,8 +2062,6 @@ function toggleFullscreen() {
       appMain.style.zIndex = '999999'
       appMain.style.transition = 'none'
     }
-    if (overlay) overlay.style.zIndex = '999999'
-    if (drawer) drawer.style.zIndex = '999999'
     container.style.transition = 'none'
   } else {
     container.classList.remove('browser-fullscreen')
@@ -2462,8 +2395,7 @@ function toggleFullscreen() {
   .msg-queue { padding: 4px 8px 3px !important; }
   .msg-queue-text { font-size: 11px !important; }
 
-  /* 设置面板 */
-  .settings-drawer { width: 100% !important; max-width: 100% !important; }
+  /* 功能面板 */
   .drawer-content { padding: 12px !important; }
   .form-input, .form-textarea, .form-select { font-size: 14px !important; }
 

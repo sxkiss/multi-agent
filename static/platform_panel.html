@@ -219,6 +219,7 @@
     <button class="tab" data-tab="memory" onclick="switchTab('memory')">🧠 记忆</button>
     <button class="tab" data-tab="usage" onclick="switchTab('usage')">📊 用量</button>
     <button class="tab" data-tab="settings" onclick="switchTab('settings')">⚙️ 设置</button>
+    <button class="tab hotreload-tab" onclick="doHotReload()" title="不重启服务，立即生效外部修改（工具/配置/团队/MCP）">⟳ 热重载</button>
   </div>
 
   <div id="tab-gateway" class="panel active">
@@ -1820,6 +1821,31 @@ window.renderSearchProviderOpts = function renderSearchProviderOpts() {
 
   // DOMContentLoaded 中调用
   initSettings()
+
+  // ── 热重载 ─────────────────────────────
+  var _reloading = false
+  async function doHotReload() {
+    if (_reloading) return
+    _reloading = true
+    var btn = document.querySelector('.hotreload-tab')
+    if (btn) { btn.disabled = true; btn.textContent = '⟳ 重载中...' }
+    try {
+      var res = await apiRaw('/hotreload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: 'all' }) })
+      if (res.status) {
+        toast('热重载完成')
+        // 重载相关数据
+        loadSettingsConfig(); loadSearchConfig(); fetchMcpServers(); loadCrew(); loadSkills()
+      } else {
+        toast(res.msg || '热重载部分失败', 'err')
+      }
+    } catch(e) {
+      toast('热重载请求失败: ' + (e.message || e), 'err')
+    } finally {
+      _reloading = false
+      if (btn) { btn.disabled = false; btn.textContent = '⟳ 热重载' }
+    }
+  }
+  window.doHotReload = doHotReload
 
 
 })();
