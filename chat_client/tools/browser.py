@@ -198,14 +198,25 @@ def browser_use(action: str, url: str = "", x: int = 0, y: int = 0,
             enabled = bool(proxy_enabled) and bool(proxy)
             cfg = proxy_config.save_proxy_config(enabled, proxy)
             eff = proxy_config.effective_proxy()
+            # 若当前已有运行中的浏览器会话，自动关闭它，使下次启动直接读取新代理
+            killed = False
+            try:
+                cur = _run(browser_tool(action="close_session", profile=profile, kill=True))
+                killed = bool(getattr(cur, "success", False))
+            except Exception:  # noqa: BLE001
+                killed = False
+            payload = {
+                "configured": cfg,
+                "env_proxy": os.environ.get("BROWSER_USE_PROXY", "").strip(),
+                "effective_proxy": eff,
+            }
+            if killed:
+                payload["hint"] = "代理已保存并关闭当前浏览器会话，下次打开网页将自动使用新代理"
+            else:
+                payload["hint"] = "代理已保存，下次打开浏览器会话时将自动使用新代理"
             return _xml_response(
                 "success",
-                json.dumps({
-                    "configured": cfg,
-                    "env_proxy": os.environ.get("BROWSER_USE_PROXY", "").strip(),
-                    "effective_proxy": eff,
-                    "hint": "代理配置已保存，重启浏览器会话后生效（可调用 action=close_session 后重新打开）",
-                }, ensure_ascii=False, indent=2),
+                json.dumps(payload, ensure_ascii=False, indent=2),
                 tool_name="browser_use",
             )
         except Exception as exc:  # noqa: BLE001

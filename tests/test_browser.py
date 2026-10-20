@@ -233,7 +233,8 @@ class TestProxyConfig:
 
         monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
         res = browser.browser_use(action="set_proxy", proxy="http://127.0.0.1:7890")
-        assert "成功" in res or "代理配置已保存" in res
+        assert "success" in res
+        assert "http://127.0.0.1:7890" in res
         assert pc.load_proxy_config() == {"enabled": True, "proxy": "http://127.0.0.1:7890"}
 
     def test_browser_use_set_proxy_disabled(self, monkeypatch, tmp_path):
@@ -246,7 +247,7 @@ class TestProxyConfig:
         monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
         pc.save_proxy_config(True, "http://127.0.0.1:7890")
         res = browser.browser_use(action="set_proxy", proxy_enabled=False, proxy="")
-        assert "代理配置已保存" in res
+        assert "success" in res
         assert pc.load_proxy_config() == {"enabled": False, "proxy": ""}
 
     def test_browser_use_get_proxy(self, monkeypatch, tmp_path):
