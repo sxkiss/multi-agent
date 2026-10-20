@@ -146,3 +146,80 @@ class TestTool:
         res = browser.browser_use(action="screenshot", profile="p1")
         assert "![screenshot]" in res
         assert "fake.png" in res
+
+
+# ── proxy 配置 ───────────────────────────────────────────
+class TestProxyConfig:
+    def test_load_proxy_config_default(self, monkeypatch, tmp_path):
+        """无配置文件时返回禁用状态。"""
+        import platform_ext.browser.proxy_config as pc
+        monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
+        cfg = pc.load_proxy_config()
+        assert cfg == {"enabled": False, "proxy": ""}
+
+    def test_save_and_load_proxy_config(self, monkeypatch, tmp_path):
+        import platform_ext.browser.proxy_config as pc
+        monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
+        pc.save_proxy_config(True, "http://127.0.0.1:7890")
+        cfg = pc.load_proxy_config()
+        assert cfg == {"enabled": True, "proxy": "http://127.0.0.1:7890"}
+
+    def test_effective_proxy_prefers_persisted(self, monkeypatch, tmp_path):
+        """持久化配置优先于环境变量。"""
+        import platform_ext.browser.proxy_config as pc
+        monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
+        monkeypatch.setenv("BROWSER_USE_PROXY", "socks5://127.0.0.1:1080")
+        # 无持久化配置时回退环境变量
+        assert pc.effective_proxy() == "socks5://127.0.0.1:1080"
+        # 有持久化配置时优先
+        pc.save_proxy_config(True, "http://127.0.0.1:7890")
+        assert pc.effective_proxy() == "http://127.0.0.1:7890"
+
+    def test_effective_proxy_disabled_falls_back_to_env(self, monkeypatch, tmp_path):
+        import platform_ext.browser.proxy_config as pc
+        monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
+        monkeypatch.setenv("BROWSER_USE_PROXY", "http://127.0.0.1:7890")
+        # 持久化配置存在但 disabled → 回退环境变量
+        pc.save_proxy_config(False, "http://127.0.0.1:9999")
+        assert pc.effective_proxy() == "http://127.0.0.1:7890"
+
+    def test_proxy_routes_registered(self):
+        from platform_ext.browser import api
+        paths = []
+        for r in api.subrouters:
+            prefix = getattr(r, "prefix", "")
+            for route in getattr(r, "routes", []):
+                paths.append(prefix + route.path)
+        assert "/api/v2/browser/proxy" in paths
+
+    def test_get_proxy_endpoint(self, monkeypatch, tmp_path):
+        from platform_ext.browser import proxy_config as pc
+        monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
+        res = asyncio.run(pc.get_proxy())
+        assert res["status"] is True
+        assert res["data"]["effective_proxy"] is None
+        assert res["data"]["configured"] == {"enabled": False, "proxy": ""}
+
+    def test_set_proxy_endpoint(self, monkeypatch, tmp_path):
+        from platform_ext.browser import proxy_config as pc
+        monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
+        res = asyncio.run(pc.set_proxy(pc.ProxyBody(enabled=True, proxy="http://127.0.0.1:7890")))
+        assert res["status"] is True
+        assert res["data"]["configured"] == {"enabled": True, "proxy": "http://127.0.0.1:7890"}
+        assert res["data"]["effective_proxy"] == "http://127.0.0.1:7890"
+
+    def test_vendor_launcher_effective_proxy(self, monkeypatch, tmp_path):
+        """验证 vendored launcher 的 _effective_proxy 读取持久化配置。"""
+        import platform_ext.browser as _peb
+        _peb.ensure_vendor_on_path()
+        from octop_browser.cdp import launcher
+
+        # 写一份代理配置到临时 home
+        (tmp_path / ".octop-browser").mkdir(parents=True, exist_ok=True)
+        import json
+        (tmp_path / ".octop-browser" / "proxy.json").write_text(
+            json.dumps({"enabled": True, "proxy": "http://127.0.0.1:7890"}), encoding="utf-8")
+
+        monkeypatch.setattr(launcher.Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("BROWSER_USE_PROXY", raising=False)
+        assert launcher._effective_proxy() == "http://127.0.0.1:7890"

@@ -53,7 +53,8 @@ BROWSER_USE_DESC = """
   输入、截图、管理标签页。适合需要真实渲染/登录态/JS 交互的网页任务。
 - 需要「实时看画面 + 手动操作」时，用 Web 面板 /browser（不经过本工具）。
 - 会话按 profile 复用，登录态（cookies）持久化在磁盘 profile 中。
-- 代理：通过环境变量 BROWSER_USE_PROXY 设置（如 "http://127.0.0.1:7890"）。
+- 代理：在浏览器面板 /browser 的「代理设置」中配置（运行时保存，重启浏览器
+  会话生效）；也可通过环境变量 BROWSER_USE_PROXY 设置（如 "http://127.0.0.1:7890"）。
 
 可用 action：
   navigate      打开 URL（参数 url）
@@ -102,9 +103,10 @@ def browser_use(action: str, url: str = "", x: int = 0, y: int = 0,
         level: dom_tree 详细度（interactive/full）
         profile: 浏览器 profile 名（默认 default，登录态按 profile 持久化）
     
-    代理配置：
-        通过环境变量 BROWSER_USE_PROXY 设置（如 "http://127.0.0.1:7890" 或 
-        "socks5://127.0.0.1:1080"）。重启浏览器后生效。
+代理配置：
+        在浏览器面板 /browser 的「代理设置」中配置（运行时保存，重启浏览器
+        会话生效）；也可通过环境变量 BROWSER_USE_PROXY 设置（如
+        "http://127.0.0.1:7890" 或 "socks5://127.0.0.1:1080"）。
     """
     try:
         from platform_ext.browser import ensure_vendor_on_path  # noqa: PLC0415
