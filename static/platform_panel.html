@@ -126,6 +126,63 @@
     display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
   }
   .qr-modal-hd strong { font-size: 15px; }
+/* ── 设置：左侧导航 + 右侧内容 ───────────────── */
+  .settings-layout { display: flex; gap: 16px; align-items: flex-start; }
+  .settings-nav {
+    flex: 0 0 200px; display: flex; flex-direction: column; gap: 4px;
+    background: var(--bt-surface); border: 1px solid var(--bt-border);
+    border-radius: var(--bt-radius); padding: 8px; box-shadow: var(--bt-shadow-sm);
+    position: sticky; top: 16px;
+  }
+  .set-tab {
+    text-align: left; padding: 10px 12px; border: none; background: transparent;
+    color: var(--bt-text-2); font-size: 13.5px; font-weight: 600; cursor: pointer;
+    border-radius: var(--bt-radius-sm); transition: background var(--bt-transition), color var(--bt-transition);
+  }
+  .set-tab:hover { background: var(--bt-primary-soft); color: var(--bt-text); }
+  .set-tab.active { background: var(--bt-primary-soft); color: var(--bt-primary); }
+  .settings-content { flex: 1; min-width: 0; }
+  .set-panel { display: none; }
+  .set-panel.active { display: block; }
+
+  /* 表单样式（对齐 SettingsDrawer） */
+  .form-section { margin-bottom: 12px; }
+  .form-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px; color: var(--bt-text); }
+  .form-hint { font-size: 12px; color: var(--bt-text-3); margin-bottom: 5px; }
+  .form-input {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm);
+    background: var(--bt-surface-2); color: var(--bt-text); font-size: 13.5px; outline: none;
+    transition: border var(--bt-transition);
+  }
+  .form-input:focus { border-color: var(--bt-primary); }
+  .form-textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm);
+    background: var(--bt-surface-2); color: var(--bt-text); font-size: 13.5px; outline: none; resize: vertical;
+    font-family: inherit;
+  }
+  .key-row { display: flex; align-items: center; gap: 8px; }
+  .key-badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--bt-primary-soft); color: var(--bt-primary); font-weight: 600; }
+  .switch-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13.5px; }
+  .switch-input { width: 16px; height: 16px; accent-color: var(--bt-primary); }
+  .switch-text { font-weight: 600; }
+  .mcp-manage-bar { display: flex; gap: 8px; margin-bottom: 8px; }
+  .mcp-list .tool-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--bt-border); font-size: 13px; flex-wrap: wrap; }
+  .tool-item-name { font-weight: 600; }
+  .tool-item-desc { color: var(--bt-text-2); font-size: 12px; flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-add-form { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .overwrite-label { font-size: 12px; color: var(--bt-text-2); display: flex; align-items: center; gap: 5px; }
+  .crew-del { border: none; background: transparent; color: var(--bt-danger); font-size: 12px; cursor: pointer; }
+  .crew-list, .skill-list, .card-list { margin-bottom: 8px; }
+  .empty { color: var(--bt-text-3); font-size: 13px; padding: 12px; text-align: center; }
+  .loading { color: var(--bt-text-2); font-size: 13px; padding: 10px; }
+  .btn-save { margin-top: 16px; }
+  .btn { padding: 8px 14px; border: 1px solid var(--bt-border); background: var(--bt-surface); color: var(--bt-text); border-radius: var(--bt-radius-sm); font-size: 13px; cursor: pointer; transition: all var(--bt-transition); }
+  .btn:hover { border-color: var(--bt-primary); color: var(--bt-primary); }
+  .btn.pri { background: var(--bt-primary); border-color: var(--bt-primary); color: #fff; font-weight: 600; }
+  .btn.pri:hover { background: var(--bt-primary-dark); }
+  .mcp-market-item, .mcp-market-head { font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm); margin-bottom: 6px; }
+  .mcp-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+  .mcp-tag { font-size: 11px; background: var(--bt-surface-2); padding: 1px 6px; border-radius: 99px; }
 </style>
 </head>
 <body>
@@ -145,6 +202,7 @@
     <button class="tab active" data-tab="gateway" onclick="switchTab('gateway')">📡 通道</button>
     <button class="tab" data-tab="memory" onclick="switchTab('memory')">🧠 记忆</button>
     <button class="tab" data-tab="usage" onclick="switchTab('usage')">📊 用量</button>
+    <button class="tab" data-tab="settings" onclick="switchTab('settings')">⚙️ 设置</button>
   </div>
 
   <div id="tab-gateway" class="panel active">
@@ -166,6 +224,191 @@
   </div>
   <div id="tab-memory" class="panel"></div>
   <div id="tab-usage" class="panel"></div>
+  <div id="tab-settings" class="panel">
+    <div class="settings-layout">
+      <div class="settings-nav">
+        <button class="set-tab active" data-set="ai" onclick="switchSetTab('ai')">AI / 工作目录 / 上下文 / Agent</button>
+        <button class="set-tab" data-set="mcp" onclick="switchSetTab('mcp')">MCP</button>
+        <button class="set-tab" data-set="searchmem" onclick="switchSetTab('searchmem')">搜索 / 记忆</button>
+        <button class="set-tab" data-set="crewskill" onclick="switchSetTab('crewskill')">Crew / 技能</button>
+        <button class="set-tab" data-set="card" onclick="switchSetTab('card')">卡密</button>
+      </div>
+      <div class="settings-content">
+        <!-- AI 接口 + 工作目录 + 上下文 + Agent -->
+        <div id="set-ai" class="set-panel active">
+          <div class="card">
+            <h3>AI 接口与模型</h3>
+            <div class="form-section">
+              <label class="form-label">API Base URL</label>
+              <input type="text" class="form-input" id="set_api_base_url" placeholder="https://api.openai.com/v1" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">API Key</label>
+              <div class="key-row">
+                <input type="password" class="form-input" id="set_api_key" placeholder="已配置（留空保持原值）" />
+                <span id="set_api_key_badge" class="key-badge" style="display:none">已配置</span>
+              </div>
+            </div>
+            <div class="form-section">
+              <label class="form-label">默认模型</label>
+              <select class="form-input" id="set_default_model"><option value="">（默认）</option></select>
+            </div>
+            <div class="form-section">
+              <label class="form-label">系统提示词</label>
+              <textarea class="form-textarea" id="set_system_prompt" rows="3" placeholder="系统提示词"></textarea>
+            </div>
+          </div>
+          <div class="card">
+            <h3>工作目录</h3>
+            <div class="form-section">
+              <label class="form-label">工作目录路径</label>
+              <input type="text" class="form-input" id="set_workspace" placeholder="~/workspace 或 /path/to/project" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>上下文窗口</h3>
+            <div class="form-section">
+              <label class="form-label">上下文窗口大小 (KB)</label>
+              <input type="number" class="form-input" id="set_context_window_kb" placeholder="512" min="64" max="4096" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>Agent 参数</h3>
+            <div class="form-section">
+              <label class="form-label">思考程度 (Reasoning Effort)</label>
+              <select class="form-input" id="set_reasoning_effort">
+                <option value="low">low - 轻量推理</option>
+                <option value="medium">medium - 中等推理</option>
+                <option value="high">high - 深度推理</option>
+                <option value="xhigh">xhigh - 超深度推理</option>
+                <option value="max">max - 最大深度推理</option>
+              </select>
+            </div>
+            <div class="form-section">
+              <label class="form-label">思考温度 (Temperature)</label>
+              <input type="number" step="0.1" class="form-input" id="set_temperature" placeholder="1.0" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">Top P</label>
+              <input type="number" step="0.05" class="form-input" id="set_top_p" placeholder="0.8" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">最大工具迭代次数</label>
+              <input type="number" class="form-input" id="set_max_tool_iterations" placeholder="999999" />
+            </div>
+          </div>
+        </div>
+        <!-- MCP -->
+        <div id="set-mcp" class="set-panel">
+          <div class="card">
+            <h3>MCP 服务</h3>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_enable_mcp" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用 MCP 集成</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="form-label">MCP 配置文件路径</label>
+              <input type="text" class="form-input" id="set_mcp_config_path" placeholder="mcp/config.json" />
+            </div>
+            <div class="mcp-manage">
+              <div class="mcp-manage-bar">
+                <button class="btn" id="mcpRefreshBtn" onclick="fetchMcpServers()">⟳ 刷新</button>
+                <button class="btn" id="mcpMarketBtn" onclick="fetchMcpMarket()">🛒 MCP 市场</button>
+              </div>
+              <div id="mcpList" class="mcp-list"></div>
+              <div class="mcp-add-form">
+                <input class="form-input" id="mcpNameInput" placeholder="server 名称" />
+                <textarea class="form-textarea" id="mcpConfigInput" rows="3" placeholder='配置 JSON，例如：{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/path"]}'></textarea>
+                <label class="overwrite-label"><input type="checkbox" id="mcpOverwrite" /> 同名覆盖</label>
+                <button class="btn pri" onclick="addMcpServer()">＋ 添加</button>
+                <div id="mcpMsg"></div>
+              </div>
+              <div id="mcpMarketBox"></div>
+            </div>
+          </div>
+        </div>
+        <!-- 搜索 + 记忆 -->
+        <div id="set-searchmem" class="set-panel">
+          <div class="card">
+            <h3>联网搜索</h3>
+            <div class="form-section">
+              <label class="form-label">默认搜索引擎</label>
+              <select class="form-input" id="set_search_provider"></select>
+            </div>
+            <div class="form-section">
+              <label class="form-label">默认返回条数</label>
+              <input type="number" class="form-input" id="set_search_result_size" />
+            </div>
+            <button class="btn pri" onclick="saveSearchConfig()">保存搜索设置</button>
+            <div id="searchMsg"></div>
+          </div>
+          <div class="card">
+            <h3>记忆 / 知识库</h3>
+            <div class="form-section">
+              <label class="form-label">全局记忆 Agent ID</label>
+              <input type="text" class="form-input" id="set_global_kb_agent_id" placeholder="ai-agent" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">mem0 服务地址</label>
+              <input type="text" class="form-input" id="set_mem0_api_url" placeholder="http://localhost:8000" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">RAG 记忆检索模式</label>
+              <select class="form-input" id="set_rag_mode">
+                <option value="disabled">关闭 - 不使用记忆检索</option>
+                <option value="global_only">启用全局记忆检索（仅本机 mem0）</option>
+                <option value="external_only">启用外部知识库检索（ai-assistant.cn）</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <!-- Crew + 技能 -->
+        <div id="set-crewskill" class="set-panel">
+          <div class="card">
+            <h3>子代理团队（Crew）</h3>
+            <div id="crewList" class="crew-list"></div>
+            <div class="form-section">
+              <input class="form-input" id="crewName" placeholder="成员名称 (小写字母数字_-)" />
+              <input class="form-input" id="crewDept" placeholder="所属部门标识" />
+              <textarea class="form-textarea" id="crewDesc" rows="2" placeholder="职责描述 (Goal)"></textarea>
+              <button class="btn pri" onclick="saveCrewAgent()">保存成员</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>技能（Skill）</h3>
+            <div id="skillList" class="skill-list"></div>
+            <div class="form-section">
+              <input class="form-input" id="skillUrlInput" placeholder="https://... .zip 或 GitHub 仓库地址" />
+              <button class="btn pri" onclick="installFromUrl()">URL 安装</button>
+            </div>
+          </div>
+        </div>
+        <!-- 卡密 -->
+        <div id="set-card" class="set-panel">
+          <div class="card">
+            <h3>🔑 卡密管理</h3>
+            <div class="form-section">
+              <label class="form-label">有效期(天, 0=长期)</label>
+              <input type="number" class="form-input" id="cardDays" value="30" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">持有人</label>
+              <input type="text" class="form-input" id="cardOwner" placeholder="用户名/备注" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">数量</label>
+              <input type="number" class="form-input" id="cardCount" value="10" />
+            </div>
+            <button class="btn pri" onclick="createCards()">＋ 生成卡密</button>
+            <div id="cardList" class="card-list" style="margin-top:12px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 <div id="toast" class="toast"></div>
 <script src="/static/js/panel-auth.js"></script>
@@ -851,6 +1094,267 @@
       }
     } catch (e) {}
   })
+
+
+  // ── 设置功能 ─────────────────────────
+  window.switchSetTab = function (name) {
+    document.querySelectorAll('.set-tab').forEach(function (t) {
+      t.classList.toggle('active', t.dataset.set === name)
+    })
+    document.querySelectorAll('.set-panel').forEach(function (p) {
+      p.classList.toggle('active', p.id === 'set-' + name)
+    })
+  }
+
+  // 设置功能使用不带 /api/v2 前缀的 API（设置接口在 /api/ 下）
+  async function apiRaw(path, opts) {
+    var r = await AF('/api' + path, AOPTS(opts || {}))
+    return r.json()
+  }
+
+  // 全局配置数据
+  var _cfg = {}
+
+  // 加载配置
+  async function loadSettingsConfig() {
+    try {
+      var res = await apiRaw('/config')
+      if (res.status && res.data) {
+        _cfg = res.data.config || {}
+        // AI 接口
+        $('set_api_base_url').value = _cfg.api_base_url || ''
+        $('set_api_key').value = _cfg.api_key || ''
+        $('set_api_key_badge').style.display = _cfg.api_key_set ? '' : 'none'
+        $('set_system_prompt').value = _cfg.system_prompt || ''
+        var dm = $('set_default_model')
+        dm.innerHTML = '<option value="">（默认）</option>'
+        (arr2(_cfg.models) || []).forEach(function(m) { dm.innerHTML += '<option value="' + esc(m) + '">' + esc(m) + '</option>' })
+        dm.value = _cfg.default_model || ''
+        // 工作目录 / 上下文 / Agent / MCP / 记忆
+        $('set_workspace').value = _cfg.workspace || ''
+        $('set_context_window_kb').value = _cfg.context_window_kb || ''
+        var ag = _cfg.agent || {}
+        $('set_reasoning_effort').value = ag.reasoning_effort || 'low'
+        $('set_temperature').value = ag.temperature || ''
+        $('set_top_p').value = ag.top_p || ''
+        $('set_max_tool_iterations').value = ag.max_tool_iterations || ''
+        $('set_enable_mcp').checked = !!_cfg.enable_mcp
+        $('set_mcp_config_path').value = _cfg.mcp_config_path || ''
+        $('set_global_kb_agent_id').value = _cfg.global_kb_agent_id || 'ai-agent'
+        $('set_mem0_api_url').value = _cfg.mem0_api_url || 'http://localhost:8000'
+        $('set_rag_mode').value = _cfg.rag_mode || 'disabled'
+      }
+    } catch(e) { console.warn('loadConfig', e) }
+  }
+  function arr2(v) { return Array.isArray(v) ? v : [] }
+
+  // 保存 AI 接口等核心配置
+  async function saveSettingsConfig() {
+    var payload = {
+      api_base_url: $('set_api_base_url').value.trim(),
+      api_key: $('set_api_key').value.trim(),
+      system_prompt: $('set_system_prompt').value,
+      default_model: $('set_default_model').value,
+      workspace: $('set_workspace').value.trim(),
+      context_window_kb: parseInt($('set_context_window_kb').value) || 512,
+      agent: {
+        reasoning_effort: $('set_reasoning_effort').value,
+        temperature: parseFloat($('set_temperature').value) || 1,
+        top_p: parseFloat($('set_top_p').value) || 0.8,
+        max_tool_iterations: parseInt($('set_max_tool_iterations').value) || 999999
+      },
+      enable_mcp: $('set_enable_mcp').checked,
+      mcp_config_path: $('set_mcp_config_path').value.trim(),
+      global_kb_agent_id: $('set_global_kb_agent_id').value.trim() || 'ai-agent',
+      mem0_api_url: $('set_mem0_api_url').value.trim() || 'http://localhost:8000',
+      rag_mode: $('set_rag_mode').value || 'disabled'
+    }
+    var res = await apiRaw('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: JSON.stringify(payload) }) })
+    if (res.status) {
+      toast('设置已保存')
+      _cfg = payload
+    } else {
+      toast(res.msg || '保存失败', 'err')
+    }
+  }
+
+  // 初始化加载配置
+  loadSettingsConfig()
+
+  // ── MCP ──────────────────────────────
+  var _mcpServers = []
+  var _mcpMarket = null
+
+  async function fetchMcpServers() {
+    var el = $('mcpList')
+    el.innerHTML = '<div class="loading">加载中...</div>'
+    try {
+      var res = await apiRaw('/mcp/servers')
+      if (res.status) {
+        _mcpServers = res.items || res.data?.items || []
+        el.innerHTML = _mcpServers.length ? _mcpServers.map(function(s) {
+          return '<div class="tool-item"><span class="tool-item-name">' + esc(s.name) + '</span><span class="tool-item-desc">' + esc(s.type) + (s.command ? ' · ' + esc(s.command) : '') + '</span><button class="crew-del" onclick="removeMcpServer(\'' + esc(s.name) + '\')">移除</button></div>'
+        }).join('') : '<div class="empty">暂无 MCP server</div>'
+      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
+    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+  async function removeMcpServer(name) {
+    var res = await apiRaw('/mcp/servers/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+    if (res.status) { fetchMcpServers(); toast('已移除 ' + name) }
+    else toast(res.msg || '移除失败', 'err')
+  }
+  async function addMcpServer() {
+    var name = $('mcpNameInput').value.trim()
+    var config = $('mcpConfigInput').value.trim()
+    var overwrite = $('mcpOverwrite').checked
+    if (!name || !config) { toast('请填写名称和配置', 'err'); return }
+    var res = await apiRaw('/mcp/servers/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, config: config, overwrite: overwrite }) })
+    if (res.status) { fetchMcpServers(); toast('已添加 ' + name); $('mcpNameInput').value = ''; $('mcpConfigInput').value = '' }
+    else toast(res.msg || '添加失败', 'err')
+  }
+  async function fetchMcpMarket() {
+    var el = $('mcpMarketBox')
+    el.innerHTML = '<div class="loading">拉取中...</div>'
+    try {
+      var res = await apiRaw('/mcp/market')
+      if (res.status && res.data) {
+        _mcpMarket = res.data
+        el.innerHTML = res.data.msg ? '<div class="mcp-market-head">' + esc(res.data.msg) + '</div>' : ''
+        el.innerHTML += (res.data.items || []).map(function(m) {
+          var tags = (arr2(m.env_vars) || []).map(function(v) { return '<span class="mcp-tag">' + esc(v) + '</span>' }).join('')
+          return '<div class="mcp-market-item"><div><strong>' + esc(m.name) + '</strong><span style="font-size:11px;margin-left:6px;color:var(--bt-text-2)">' + esc((m.transport||'').toString()) + '</span>' + (m._package && m._package.runtime_hint ? '<span class="mcp-tag" style="margin-left:4px">' + esc(m._package.runtime_hint) + '</span>' : '') + '</div><div style="font-size:12px;color:var(--bt-text-2)">' + esc((m.description||'').toString().slice(0,80)) + '</div>' + (tags ? '<div class="mcp-tags">' + tags + '</div>' : '') + '<button class="btn pri" style="margin-top:6px" onclick="installMcp(\'' + esc(m.name) + '\')">⚡ 一键安装</button></div>'
+        }).join('')
+      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
+    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+  async function installMcp(name) {
+    var res = await apiRaw('/mcp/servers/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+    if (res.status) { toast('安装完成'); fetchMcpServers() }
+    else toast(res.msg || '安装失败', 'err')
+  }
+
+  // ── 搜索 / 记忆 ─────────────────────
+  async function saveSearchConfig() {
+    var provider = $('set_search_provider').value
+    var result_size = parseInt($('set_search_result_size').value) || 10
+    var res = await apiRaw('/search/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: provider, result_size: result_size }) })
+    if (res.status) toast('搜索设置已保存')
+    else toast(res.msg || '保存失败', 'err')
+  }
+
+  async function loadSearchConfig() {
+    try {
+      var res = await apiRaw('/search/config')
+      if (res.status && res.data) {
+        var d = res.data
+        $('set_search_provider').value = d.provider || 'bing'
+        $('set_search_result_size').value = d.result_size || 10
+      }
+    } catch(e) { console.warn('loadSearchConfig', e) }
+  }
+
+  // ── Crew ─────────────────────────────
+  async function loadCrew() {
+    var el = $('crewList')
+    el.innerHTML = '<div class="loading">加载中...</div>'
+    try {
+      var res = await apiRaw('/crew/agents')
+      if (res.status && res.data) {
+        var agents = res.data.agents || []
+        el.innerHTML = agents.length ? agents.map(function(a) {
+          return '<div class="tool-item"><span class="tool-item-name">' + esc(a.name) + '</span><span class="tool-item-desc">' + esc((a.goal||'').slice(0,60)) + '</span><button class="crew-del" onclick="deleteCrew(\'' + esc(a.name) + '\')">删除</button></div>'
+        }).join('') : '<div class="empty">暂无成员</div>'
+      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
+    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+  async function saveCrewAgent() {
+    var name = $('crewName').value.trim()
+    var dept = $('crewDept').value.trim()
+    var goal = $('crewDesc').value.trim()
+    if (!name) { toast('请填写名称', 'err'); return }
+    var res = await apiRaw('/crew/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, dept: dept, goal: goal }) })
+    if (res.status) { toast('已保存'); loadCrew(); $('crewName').value = ''; $('crewDept').value = ''; $('crewDesc').value = '' }
+    else toast(res.msg || '保存失败', 'err')
+  }
+  async function deleteCrew(name) {
+    var res = await apiRaw('/crew/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+    if (res.status) { toast('已删除'); loadCrew() }
+    else toast(res.msg || '删除失败', 'err')
+  }
+
+  // ── 技能 ─────────────────────────────
+  async function loadSkills() {
+    var el = $('skillList')
+    el.innerHTML = '<div class="loading">加载中...</div>'
+    try {
+      var res = await apiRaw('/skills')
+      if (res.status && res.data) {
+        var skills = res.data.skills || []
+        el.innerHTML = skills.length ? skills.map(function(sk) {
+          return '<div class="tool-item"><span class="tool-item-name">' + esc(sk.name) + '</span><span class="tool-item-desc">' + esc((sk.description||'').slice(0,60)) + '</span>' + (sk.enabled ? '<button class="crew-del" onclick="uninstallSkill(\'' + esc(sk.name) + '\')">卸载</button>' : '') + '<label class="switch-label"><input type="checkbox" class="switch-input" ' + (sk.enabled ? 'checked' : '') + ' onchange="toggleSkill(\'' + esc(sk.name) + '\', this.checked)"></label></div>'
+        }).join('') : '<div class="empty">暂无技能</div>'
+      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
+    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+  async function toggleSkill(name, enabled) {
+    var res = await apiRaw('/skills/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ skill_name: name, enabled: !!enabled }) })
+    if (res.status) loadSkills()
+    else toast(res.msg || '更新失败', 'err')
+  }
+  async function installFromUrl() {
+    var url = $('skillUrlInput').value.trim()
+    if (!url) { toast('请输入 URL', 'err'); return }
+    var res = await apiRaw('/skills/install_url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url }) })
+    if (res.status) { toast('安装完成'); loadSkills(); $('skillUrlInput').value = '' }
+    else toast(res.msg || '安装失败', 'err')
+  }
+  async function uninstallSkill(name) {
+    var res = await apiRaw('/skills/uninstall', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ skill_name: name }) })
+    if (res.status) { toast('已卸载'); loadSkills() }
+    else toast(res.msg || '卸载失败', 'err')
+  }
+
+  // ── 卡密 ─────────────────────────────
+  async function loadCards() {
+    var el = $('cardList')
+    el.innerHTML = '<div class="loading">加载中...</div>'
+    try {
+      var res = await apiRaw('/card/admin/list')
+      if (res.status && res.data) {
+        var cards = res.data || []
+        el.innerHTML = cards.length ? cards.map(function(c) {
+          var expired = c.expires && Date.now() > Date.parse(c.expires)
+          return '<div class="tool-item"><span class="tool-item-name">' + esc(c.key ? c.key.slice(0,12) + '...' : '') + '</span><span class="tool-item-desc">持有人: ' + esc(c.owner || '') + ' | ' + esc(c.status || 'active') + (expired ? ' ⚠️已过期' : '') + '</span></div>'
+        }).join('') : '<div class="empty">暂无卡密</div>'
+      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
+    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+  async function createCards() {
+    var days = parseInt($('cardDays').value) || 30
+    var owner = $('cardOwner').value.trim()
+    var count = parseInt($('cardCount').value) || 10
+    var res = await apiRaw('/card/admin/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: days, owner: owner, count: count }) })
+    if (res.status) { toast('已生成 ' + (res.data.count || count) + ' 个卡密'); loadCards() }
+    else toast(res.msg || '生成失败', 'err')
+  }
+
+  // 设置页初始化
+  async function initSettings() {
+    loadSettingsConfig()
+    loadSearchConfig()
+    fetchMcpServers()
+    loadCrew()
+    loadSkills()
+    loadCards()
+    // 填充搜索引擎选项
+    var sel = $('set_search_provider')
+    var providers = ['bing','searxng','zhipu','doubao','bocha','metaso','tavily','exa','brave','serper','linkup','perplexity','firecrawl','jina','ollama','grok','tinyfish','default']
+    sel.innerHTML = providers.map(function(p) { return '<option value="' + esc(p) + '">' + esc(p) + '</option>' }).join('')
+  }
+
+  // DOMContentLoaded 中调用
+  initSettings()
+
 
 })();
 </script>
