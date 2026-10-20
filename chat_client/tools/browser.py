@@ -53,8 +53,9 @@ BROWSER_USE_DESC = """
   输入、截图、管理标签页。适合需要真实渲染/登录态/JS 交互的网页任务。
 - 需要「实时看画面 + 手动操作」时，用 Web 面板 /browser（不经过本工具）。
 - 会话按 profile 复用，登录态（cookies）持久化在磁盘 profile 中。
-- 代理：在浏览器面板 /browser 的「代理设置」中配置（运行时保存，重启浏览器
-  会话生效）；也可通过环境变量 BROWSER_USE_PROXY 设置（如 "http://127.0.0.1:7890"）。
+- 代理：直接调用本工具 action 设置/读取代理（set_proxy / get_proxy，运行时
+  保存到磁盘，重启浏览器会话生效）；也可在浏览器面板 /browser 的「代理设置」中
+  配置；或通过环境变量 BROWSER_USE_PROXY 设置（如 "http://127.0.0.1:7890"）。
 
 可用 action：
   navigate      打开 URL（参数 url）
@@ -72,6 +73,8 @@ BROWSER_USE_DESC = """
   go_back / go_forward / reload
   new_tab / switch_tab（tab_id）/ close_tab（tab_id）/ list_tabs
   close_session 关闭浏览器会话
+  set_proxy     设置代理（参数 proxy=代理地址，可选 proxy_enabled=是否启用）
+  get_proxy     读取当前生效代理配置
 """
 
 
@@ -81,6 +84,7 @@ def browser_use(action: str, url: str = "", x: int = 0, y: int = 0,
                 direction: str = "down", amount: int = 300,
                 expression: str = "", tab_id: str = "",
                 level: str = "interactive", profile: str = "default",
+                proxy: str = "", proxy_enabled: bool = True,
                 **kwargs) -> str:
     """
     内置浏览器自动化（真实 Chrome / CDP）。打开网页、抓取 DOM、点击、输入、
@@ -89,7 +93,8 @@ def browser_use(action: str, url: str = "", x: int = 0, y: int = 0,
     Args:
         action: 操作类型（navigate/dom_tree/screenshot/click/type/fill/press/
             select/scroll/hover/eval_js/wait/go_back/go_forward/reload/
-            new_tab/switch_tab/close_tab/list_tabs/close_session）
+            new_tab/switch_tab/close_tab/list_tabs/close_session/
+            set_proxy/get_proxy）
         url: navigate 时的目标 URL
         x: 点击/悬停的 X 坐标
         y: 点击/悬停的 Y 坐标
@@ -102,11 +107,14 @@ def browser_use(action: str, url: str = "", x: int = 0, y: int = 0,
         tab_id: 标签页 ID
         level: dom_tree 详细度（interactive/full）
         profile: 浏览器 profile 名（默认 default，登录态按 profile 持久化）
-    
-代理配置：
-        在浏览器面板 /browser 的「代理设置」中配置（运行时保存，重启浏览器
-        会话生效）；也可通过环境变量 BROWSER_USE_PROXY 设置（如
-        "http://127.0.0.1:7890" 或 "socks5://127.0.0.1:1080"）。
+        proxy: set_proxy 时的代理地址（如 "http://127.0.0.1:7890" 或
+            "socks5://127.0.0.1:1080"）
+        proxy_enabled: set_proxy 时是否启用代理（默认 True；False 表示清除代理配置）
+
+    代理配置：
+        直接调用本工具 action=set_proxy 设置代理、action=get_proxy 读取当前
+        生效代理。代理配置持久化到磁盘，重启浏览器会话后生效。也可在浏览器
+        面板 /browser 的「代理设置」中配置，或通过环境变量 BROWSER_USE_PROXY 设置。
     """
     try:
         from platform_ext.browser import ensure_vendor_on_path  # noqa: PLC0415
@@ -166,6 +174,43 @@ def browser_use(action: str, url: str = "", x: int = 0, y: int = 0,
             params["tab_id"] = tab_id
     elif action == "dom_tree":
         params["level"] = level
+
+    # ── 代理配置（set_proxy / get_proxy）──────────────────
+    # 不经过 browser_tool（CDP 引擎不认识这两个 action），直接读写持久化配置。
+    if action in ("set_proxy", "get_proxy"):
+        try:
+            from platform_ext.browser import proxy_config  # noqa: PLC0415
+            if action == "get_proxy":
+                cfg = proxy_config.load_proxy_config()
+                env = os.environ.get("BROWSER_USE_PROXY", "").strip()
+                eff = proxy_config.effective_proxy()
+                return _xml_response(
+                    "success",
+                    json.dumps({
+                        "configured": cfg,
+                        "env_proxy": env,
+                        "effective_proxy": eff,
+                    }, ensure_ascii=False, indent=2),
+                    tool_name="browser_use",
+                )
+            # set_proxy
+            proxy = (proxy or "").strip()
+            enabled = bool(proxy_enabled) and bool(proxy)
+            cfg = proxy_config.save_proxy_config(enabled, proxy)
+            eff = proxy_config.effective_proxy()
+            return _xml_response(
+                "success",
+                json.dumps({
+                    "configured": cfg,
+                    "env_proxy": os.environ.get("BROWSER_USE_PROXY", "").strip(),
+                    "effective_proxy": eff,
+                    "hint": "代理配置已保存，重启浏览器会话后生效（可调用 action=close_session 后重新打开）",
+                }, ensure_ascii=False, indent=2),
+                tool_name="browser_use",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("browser_use proxy config failed: action=%s", action)
+            return _xml_response("error", f"代理配置失败（{action}）: {exc}")
 
     try:
         result = _run(browser_tool(action=action, profile=profile, **params))

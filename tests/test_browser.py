@@ -223,3 +223,41 @@ class TestProxyConfig:
         monkeypatch.setattr(launcher.Path, "home", lambda: tmp_path)
         monkeypatch.delenv("BROWSER_USE_PROXY", raising=False)
         assert launcher._effective_proxy() == "http://127.0.0.1:7890"
+
+    def test_browser_use_set_proxy(self, monkeypatch, tmp_path):
+        """browser_use 工具可直接调用 action=set_proxy 设置代理。"""
+        from platform_ext.browser import proxy_config as pc
+        import platform_ext.browser as _peb
+        _peb.ensure_vendor_on_path()
+        from chat_client.tools import browser
+
+        monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
+        res = browser.browser_use(action="set_proxy", proxy="http://127.0.0.1:7890")
+        assert "成功" in res or "代理配置已保存" in res
+        assert pc.load_proxy_config() == {"enabled": True, "proxy": "http://127.0.0.1:7890"}
+
+    def test_browser_use_set_proxy_disabled(self, monkeypatch, tmp_path):
+        """proxy_enabled=False 时清除代理配置。"""
+        from platform_ext.browser import proxy_config as pc
+        import platform_ext.browser as _peb
+        _peb.ensure_vendor_on_path()
+        from chat_client.tools import browser
+
+        monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
+        pc.save_proxy_config(True, "http://127.0.0.1:7890")
+        res = browser.browser_use(action="set_proxy", proxy_enabled=False, proxy="")
+        assert "代理配置已保存" in res
+        assert pc.load_proxy_config() == {"enabled": False, "proxy": ""}
+
+    def test_browser_use_get_proxy(self, monkeypatch, tmp_path):
+        """browser_use 工具可直接调用 action=get_proxy 读取代理。"""
+        from platform_ext.browser import proxy_config as pc
+        import platform_ext.browser as _peb
+        _peb.ensure_vendor_on_path()
+        from chat_client.tools import browser
+
+        monkeypatch.setattr(pc, "_proxy_config_path", lambda: tmp_path / "proxy.json")
+        pc.save_proxy_config(True, "socks5://127.0.0.1:1080")
+        res = browser.browser_use(action="get_proxy")
+        assert '"effective_proxy": "socks5://127.0.0.1:1080"' in res
+        assert '"enabled": true' in res or '"enabled": True' in res
