@@ -257,6 +257,42 @@
               <label class="form-label">系统提示词</label>
               <textarea class="form-textarea" id="set_system_prompt" rows="3" placeholder="系统提示词"></textarea>
             </div>
+            <div class="form-section">
+              <label class="form-label">API 协议</label>
+              <select class="form-input" id="set_api_protocol">
+                <option value="responses">responses</option>
+                <option value="messages">messages (chat completions)</option>
+              </select>
+            </div>
+            <div class="form-section">
+              <label class="form-label">用量上报地址 (API Usage URL)</label>
+              <input type="text" class="form-input" id="set_api_usage_url" placeholder="留空则不启用用量上报" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>默认请求头 (Default Headers)</h3>
+            <div class="form-section">
+              <label class="form-label">UID</label>
+              <input type="text" class="form-input" id="set_header_uid" placeholder="uid" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">Access Key</label>
+              <div class="key-row">
+                <input type="password" class="form-input" id="set_header_access_key" placeholder="留空保持原值" />
+                <span id="set_header_access_key_badge" class="key-badge" style="display:none">已配置</span>
+              </div>
+            </div>
+            <div class="form-section">
+              <label class="form-label">App ID</label>
+              <input type="text" class="form-input" id="set_header_appid" placeholder="app_001" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>模型白名单 (Models)</h3>
+            <div class="form-section">
+              <label class="form-label">模型列表（每行一个模型名，默认模型需在下拉中选中）</label>
+              <textarea class="form-textarea" id="set_models_list" rows="4" placeholder="auto&#10;gpt-4o&#10;claude-3-5-sonnet"></textarea>
+            </div>
           </div>
           <div class="card">
             <h3>工作目录</h3>
@@ -296,6 +332,54 @@
               <label class="form-label">最大工具迭代次数</label>
               <input type="number" class="form-input" id="set_max_tool_iterations" placeholder="999999" />
             </div>
+            <div class="form-section">
+              <label class="form-label">工具超时 (秒)</label>
+              <input type="number" class="form-input" id="set_tool_timeout" placeholder="120" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">最大重试次数</label>
+              <input type="number" class="form-input" id="set_max_retries" placeholder="5" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">API 最大重试</label>
+              <input type="number" class="form-input" id="set_api_max_retry" placeholder="3" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">API 重试初始等待 (秒)</label>
+              <input type="number" step="0.1" class="form-input" id="set_api_retry_base_wait" placeholder="1" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">API 重试最大等待 (秒)</label>
+              <input type="number" step="0.1" class="form-input" id="set_api_retry_max_wait" placeholder="10" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>工具执行行为</h3>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_tool_parallel" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用工具并行执行</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="form-label">并行最大 Worker 数</label>
+              <input type="number" class="form-input" id="set_tool_parallel_max_workers" placeholder="8" />
+            </div>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_tool_result_archive" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">归档工具结果（大结果折叠）</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="form-label">工具结果最大字符数</label>
+              <input type="number" class="form-input" id="set_tool_result_max_chars" placeholder="8000" />
+            </div>
+          </div>
+          <div class="form-section" style="padding-top:12px">
+            <button class="btn pri" onclick="saveSettingsConfig()">💾 保存 AI / 工作目录 / 上下文 / Agent 设置</button>
           </div>
         </div>
         <!-- MCP -->
@@ -336,12 +420,13 @@
             <h3>联网搜索</h3>
             <div class="form-section">
               <label class="form-label">默认搜索引擎</label>
-              <select class="form-input" id="set_search_provider"></select>
+              <select class="form-input" id="set_search_provider" onchange="renderSearchProviderOpts()"></select>
             </div>
             <div class="form-section">
               <label class="form-label">默认返回条数</label>
               <input type="number" class="form-input" id="set_search_result_size" />
             </div>
+            <div id="set_search_provider_opts"></div>
             <button class="btn pri" onclick="saveSearchConfig()">保存搜索设置</button>
             <div id="searchMsg"></div>
           </div>
@@ -362,6 +447,67 @@
                 <option value="global_only">启用全局记忆检索（仅本机 mem0）</option>
                 <option value="external_only">启用外部知识库检索（ai-assistant.cn）</option>
               </select>
+            </div>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_use_global_rag" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用全局 RAG 检索</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_use_external_kb" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用外部知识库</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_use_document_kb" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用文档知识库</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="form-label">文档知识库检索条数 (top_k)</label>
+              <input type="number" class="form-input" id="set_document_kb_top_k" placeholder="5" />
+            </div>
+            <h3>Embedding 向量化</h3>
+            <div class="form-section">
+              <label class="form-label">Embedding API Key</label>
+              <div class="key-row">
+                <input type="password" class="form-input" id="set_embedding_api_key" placeholder="留空保持原值" />
+                <span id="set_embedding_api_key_badge" class="key-badge" style="display:none">已配置</span>
+              </div>
+            </div>
+            <div class="form-section">
+              <label class="form-label">Embedding Base URL</label>
+              <input type="text" class="form-input" id="set_embedding_base_url" placeholder="http://127.0.0.1:8000/v1" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">Embedding 模型名</label>
+              <input type="text" class="form-input" id="set_embedding_model_name" placeholder="bge-base-zh-v1.5" />
+            </div>
+            <h3>RAG 详细参数</h3>
+            <div class="form-section">
+              <label class="form-label">滑动窗口大小 (Sliding Window)</label>
+              <input type="number" class="form-input" id="set_rag_sliding_window_size" placeholder="15" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">RAG 触发阈值</label>
+              <input type="number" class="form-input" id="set_rag_trigger_threshold" placeholder="10" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">RAG 检索条数</label>
+              <input type="number" class="form-input" id="set_rag_retrieval_count" placeholder="10" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">RAG 最终条数</label>
+              <input type="number" class="form-input" id="set_rag_final_count" placeholder="5" />
+            </div>
+            <div class="form-section" style="padding-top:12px">
+              <button class="btn pri" onclick="saveSettingsConfig()">💾 保存记忆 / 知识库 / RAG / Embedding 设置</button>
             </div>
           </div>
         </div>
@@ -1127,22 +1273,55 @@
         $('set_api_key_badge').style.display = _cfg.api_key_set ? '' : 'none'
         $('set_system_prompt').value = _cfg.system_prompt || ''
         var dm = $('set_default_model')
-        dm.innerHTML = '<option value="">（默认）</option>'
-        (arr2(_cfg.models) || []).forEach(function(m) { dm.innerHTML += '<option value="' + esc(m) + '">' + esc(m) + '</option>' })
+        var _models = arr2(_cfg.models) || []
+        var _opts = '<option value="">（默认）</option>'
+        _models.forEach(function(m) { _opts += '<option value="' + esc(m) + '">' + esc(m) + '</option>' })
+        dm.innerHTML = _opts
         dm.value = _cfg.default_model || ''
         // 工作目录 / 上下文 / Agent / MCP / 记忆
         $('set_workspace').value = _cfg.workspace || ''
         $('set_context_window_kb').value = _cfg.context_window_kb || ''
+        $('set_api_protocol').value = _cfg.api_protocol || 'responses'
+        $('set_api_usage_url').value = _cfg.api_usage_url || ''
+        var hd = _cfg.default_headers || {}
+        $('set_header_uid').value = hd.uid || ''
+        $('set_header_access_key').value = hd['access-key'] || ''
+        $('set_header_access_key_badge').style.display = hd['access-key'] ? '' : 'none'
+        $('set_header_appid').value = hd.appid || ''
+        $('set_models_list').value = (arr2(_cfg.models) || []).join('\n')
         var ag = _cfg.agent || {}
         $('set_reasoning_effort').value = ag.reasoning_effort || 'low'
         $('set_temperature').value = ag.temperature || ''
         $('set_top_p').value = ag.top_p || ''
         $('set_max_tool_iterations').value = ag.max_tool_iterations || ''
+        $('set_tool_timeout').value = ag.tool_timeout || ''
+        $('set_max_retries').value = ag.max_retries || ''
+        $('set_api_max_retry').value = ag.api_max_retry || ''
+        $('set_api_retry_base_wait').value = ag.api_retry_base_wait || ''
+        $('set_api_retry_max_wait').value = ag.api_retry_max_wait || ''
+        $('set_tool_parallel').checked = !!_cfg.tool_parallel_enabled
+        $('set_tool_parallel_max_workers').value = _cfg.tool_parallel_max_workers || ''
+        $('set_tool_result_archive').checked = !!_cfg.tool_result_archive
+        $('set_tool_result_max_chars').value = _cfg.tool_result_max_chars || ''
         $('set_enable_mcp').checked = !!_cfg.enable_mcp
         $('set_mcp_config_path').value = _cfg.mcp_config_path || ''
         $('set_global_kb_agent_id').value = _cfg.global_kb_agent_id || 'ai-agent'
         $('set_mem0_api_url').value = _cfg.mem0_api_url || 'http://localhost:8000'
         $('set_rag_mode').value = _cfg.rag_mode || 'disabled'
+        $('set_use_global_rag').checked = !!_cfg.use_global_rag
+        $('set_use_external_kb').checked = !!_cfg.use_external_kb
+        $('set_use_document_kb').checked = _cfg.use_document_kb !== false
+        $('set_document_kb_top_k').value = _cfg.document_kb_top_k || ''
+        var emb = _cfg.embedding || {}
+        $('set_embedding_api_key').value = emb.embedding_api_key || ''
+        $('set_embedding_api_key_badge').style.display = emb.embedding_api_key_set ? '' : 'none'
+        $('set_embedding_base_url').value = emb.embedding_base_url || ''
+        $('set_embedding_model_name').value = emb.embedding_model_name || ''
+        var rag = _cfg.rag || {}
+        $('set_rag_sliding_window_size').value = rag.sliding_window_size || ''
+        $('set_rag_trigger_threshold').value = rag.rag_trigger_threshold || ''
+        $('set_rag_retrieval_count').value = rag.rag_retrieval_count || ''
+        $('set_rag_final_count').value = rag.rag_final_count || ''
       }
     } catch(e) { console.warn('loadConfig', e) }
   }
@@ -1157,17 +1336,49 @@
       default_model: $('set_default_model').value,
       workspace: $('set_workspace').value.trim(),
       context_window_kb: parseInt($('set_context_window_kb').value) || 512,
+      api_protocol: $('set_api_protocol').value || 'responses',
+      api_usage_url: $('set_api_usage_url').value.trim(),
+      default_headers: {
+        uid: $('set_header_uid').value.trim(),
+        'access-key': $('set_header_access_key').value.trim(),
+        appid: $('set_header_appid').value.trim() || 'app_001'
+      },
+      models: $('set_models_list').value.split('\n').map(function(s){ return s.trim() }).filter(Boolean),
       agent: {
         reasoning_effort: $('set_reasoning_effort').value,
         temperature: parseFloat($('set_temperature').value) || 1,
         top_p: parseFloat($('set_top_p').value) || 0.8,
-        max_tool_iterations: parseInt($('set_max_tool_iterations').value) || 999999
+        max_tool_iterations: parseInt($('set_max_tool_iterations').value) || 999999,
+        tool_timeout: parseInt($('set_tool_timeout').value) || 120,
+        max_retries: parseInt($('set_max_retries').value) || 5,
+        api_max_retry: parseInt($('set_api_max_retry').value) || 3,
+        api_retry_base_wait: parseFloat($('set_api_retry_base_wait').value) || 1,
+        api_retry_max_wait: parseFloat($('set_api_retry_max_wait').value) || 10
       },
+      tool_parallel_enabled: $('set_tool_parallel').checked,
+      tool_parallel_max_workers: parseInt($('set_tool_parallel_max_workers').value) || 8,
+      tool_result_archive: $('set_tool_result_archive').checked,
+      tool_result_max_chars: parseInt($('set_tool_result_max_chars').value) || 8000,
       enable_mcp: $('set_enable_mcp').checked,
       mcp_config_path: $('set_mcp_config_path').value.trim(),
       global_kb_agent_id: $('set_global_kb_agent_id').value.trim() || 'ai-agent',
       mem0_api_url: $('set_mem0_api_url').value.trim() || 'http://localhost:8000',
-      rag_mode: $('set_rag_mode').value || 'disabled'
+      rag_mode: $('set_rag_mode').value || 'disabled',
+      use_global_rag: $('set_use_global_rag').checked,
+      use_external_kb: $('set_use_external_kb').checked,
+      use_document_kb: $('set_use_document_kb').checked,
+      document_kb_top_k: parseInt($('set_document_kb_top_k').value) || 5,
+      embedding: {
+        embedding_api_key: $('set_embedding_api_key').value.trim(),
+        embedding_base_url: $('set_embedding_base_url').value.trim(),
+        embedding_model_name: $('set_embedding_model_name').value.trim()
+      },
+      rag: {
+        sliding_window_size: parseInt($('set_rag_sliding_window_size').value) || 15,
+        rag_trigger_threshold: parseInt($('set_rag_trigger_threshold').value) || 10,
+        rag_retrieval_count: parseInt($('set_rag_retrieval_count').value) || 10,
+        rag_final_count: parseInt($('set_rag_final_count').value) || 5
+      }
     }
     var res = await apiRaw('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: JSON.stringify(payload) }) })
     if (res.status) {
@@ -1234,11 +1445,85 @@
   }
 
   // ── 搜索 / 记忆 ─────────────────────
-  async function saveSearchConfig() {
+  var _searchData = null  // GET /api/search/config 返回的 data
+  var _searchMeta = {
+    'bing':     { label: 'Bing',     need_key: false, fields: { language: { label: '语言 (Accept-Language)', type: 'text', placeholder: 'zh-CN,zh' } } },
+    'searxng':  { label: 'SearXNG',  need_key: false, fields: { url: { label: '实例 URL', type: 'text', placeholder: 'http://127.0.0.1:8081' }, engine: { label: '引擎 (engines)', type: 'text', placeholder: '可选' } } },
+    'zhipu':    { label: '智谱',     need_key: true, fields: {} },
+    'doubao':   { label: '豆包',     need_key: true, fields: { mode: { label: '模式', type: 'select', options: [['custom', 'custom（自定义搜索）'], ['ai-search', 'ai-search（AI 搜索）']] } } },
+    'bocha':    { label: '博查',     need_key: true, fields: {} },
+    'metaso':   { label: '秘塔',     need_key: true, fields: {} },
+    'tavily':   { label: 'Tavily',   need_key: true, fields: { depth: { label: '搜索深度 (depth)', type: 'select', options: [['basic', 'basic'], ['advanced', 'advanced']] } } },
+    'exa':      { label: 'Exa',      need_key: true, fields: {} },
+    'brave':    { label: 'Brave',    need_key: true, fields: {} },
+    'serper':   { label: 'Serper',   need_key: true, fields: {} },
+    'linkup':   { label: 'LinkUp',   need_key: true, fields: { depth: { label: '搜索深度 (depth)', type: 'select', options: [['standard', 'standard'], ['deep', 'deep']] } } },
+    'perplexity': { label: 'Perplexity', need_key: true, fields: {} },
+    'firecrawl':  { label: 'Firecrawl', need_key: true, fields: {} },
+    'jina':     { label: 'Jina',     need_key: true, fields: {} },
+    'ollama':   { label: 'Ollama',   need_key: true, fields: {} },
+    'grok':     { label: 'Grok',     need_key: true, fields: { url: { label: 'API URL', type: 'text', placeholder: 'https://api.x.ai/v1' }, model: { label: '模型', type: 'text', placeholder: 'grok-3' }, enable_search: { label: 'Enable Search', type: 'select', options: [['true', 'true'], ['false', 'false']] } } },
+    'tinyfish': { label: 'Tinyfish', need_key: true, fields: {} },
+    'default':  { label: '默认',     need_key: false, fields: {} }
+  }
+
+window.renderSearchProviderOpts = function renderSearchProviderOpts() {
+    var box = $('set_search_provider_opts')
+    if (!box) return
+    var pname = $('set_search_provider').value || 'default'
+    var meta = _searchMeta[pname] || { label: pname, need_key: false, fields: {} }
+    var opts = (_searchData && _searchData.providers && _searchData.providers[pname] && _searchData.providers[pname].options) || {}
+    var html = '<div style="margin-top:10px;border-top:1px solid var(--bt-border);padding-top:10px">'
+    html += '<div style="font-size:13px;font-weight:600;color:var(--bt-text-2);margin-bottom:8px">' + esc(meta.label) + ' 参数</div>'
+    // API Key 字段（需要 key 的引擎）
+    if (meta.need_key) {
+      var set = opts.api_key_set ? '（已配置）' : '（未配置）'
+      html += '<div class="form-section"><label class="form-label">API Key <span class="key-badge" style="display:inline-block;margin-left:6px;font-size:11px">' + set + '</span></label>'
+      html += '<input type="password" class="form-input" data-search-opt="api_key" value="" placeholder="' + (opts.api_key_set ? '已配置，留空保持不变' : '输入 API Key') + '" /></div>'
+    }
+    // 其他字段
+    var fkeys = Object.keys(meta.fields || {})
+    fkeys.forEach(function(k) {
+      var f = meta.fields[k]
+      html += '<div class="form-section"><label class="form-label">' + esc(f.label) + '</label>'
+      if (f.type === 'select') {
+        html += '<select class="form-input" data-search-opt="' + esc(k) + '">'
+        ;(f.options || []).forEach(function(o) {
+          html += '<option value="' + esc(o[0]) + '"' + (String(opts[k]) === String(o[0]) ? ' selected' : '') + '>' + esc(o[1]) + '</option>'
+        })
+        html += '</select>'
+      } else {
+        html += '<input type="text" class="form-input" data-search-opt="' + esc(k) + '" value="' + esc(opts[k] || '') + '" placeholder="' + esc(f.placeholder || '') + '" />'
+      }
+      html += '</div>'
+    })
+    html += '</div>'
+    box.innerHTML = html
+  }
+
+  // 从当前 DOM 收集指定 provider 的 options
+  function collectSearchProviderOpts() {
+    var pname = $('set_search_provider').value || 'default'
+    var opts = {}
+    document.querySelectorAll('#set_search_provider_opts [data-search-opt]').forEach(function(el) {
+      opts[el.getAttribute('data-search-opt')] = el.value
+    })
+    return { provider: pname, options: opts }
+  }
+
+  window.saveSearchConfig = async function saveSearchConfig() {
     var provider = $('set_search_provider').value
     var result_size = parseInt($('set_search_result_size').value) || 10
-    var res = await apiRaw('/search/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: provider, result_size: result_size }) })
-    if (res.status) toast('搜索设置已保存')
+    var extra = collectSearchProviderOpts()
+    // 组装 providers 结构：只提交当前 provider，避免影响其他引擎已存值
+    var payload = {
+      provider: provider,
+      result_size: result_size,
+      providers: {}
+    }
+    payload.providers[provider] = { options: extra.options }
+    var res = await apiRaw('/search/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: JSON.stringify(payload) }) })
+    if (res.status) { toast('搜索设置已保存'); loadSearchConfig() }
     else toast(res.msg || '保存失败', 'err')
   }
 
@@ -1246,9 +1531,11 @@
     try {
       var res = await apiRaw('/search/config')
       if (res.status && res.data) {
+        _searchData = res.data
         var d = res.data
         $('set_search_provider').value = d.provider || 'bing'
         $('set_search_result_size').value = d.result_size || 10
+        renderSearchProviderOpts()
       }
     } catch(e) { console.warn('loadSearchConfig', e) }
   }
@@ -1340,16 +1627,16 @@
 
   // 设置页初始化
   async function initSettings() {
+    // 先填充搜索引擎下拉，再由 loadSearchConfig 选中当前值并渲染参数
+    var sel = $('set_search_provider')
+    var providerNames = Object.keys(_searchMeta)
+    sel.innerHTML = providerNames.map(function(p) { return '<option value="' + esc(p) + '">' + esc(_searchMeta[p].label) + '</option>' }).join('')
     loadSettingsConfig()
     loadSearchConfig()
     fetchMcpServers()
     loadCrew()
     loadSkills()
     loadCards()
-    // 填充搜索引擎选项
-    var sel = $('set_search_provider')
-    var providers = ['bing','searxng','zhipu','doubao','bocha','metaso','tavily','exa','brave','serper','linkup','perplexity','firecrawl','jina','ollama','grok','tinyfish','default']
-    sel.innerHTML = providers.map(function(p) { return '<option value="' + esc(p) + '">' + esc(p) + '</option>' }).join('')
   }
 
   // DOMContentLoaded 中调用
