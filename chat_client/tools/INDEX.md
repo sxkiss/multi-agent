@@ -11,6 +11,7 @@
 | `__init__.py` | Core | ToolRegistry 核心：注册/热重载/黑名单/权限上下文 |
 | `base.py` | Core | `_xml_response()` 格式化响应 |
 | `agent_tools.py` | Tools | 文件/系统/网络/网站/数据库操作工具集 |
+| `browser.py` | Tools | 浏览器自动化（CDP/Playwright，截图/点击/导航） |
 | `terminal.py` | Tools | RunCommand 后台命令管理 |
 | `sys_ops.py` | Tools | 运维增强 13 件套（服务器状态/Docker/防火墙等） |
 | `scheduler.py` | Tools | 定时任务系统（4 个调度工具） |
@@ -19,8 +20,13 @@
 | `mcp_tool.py` | Tools | MCP 工具封装 |
 | `mem0.py` | Tools | Mem0 记忆工具 |
 | `knowledge.py` | Tools | 知识库工具（KnowledgeAdd/Search/List/Delete） |
+| `market.py` | Tools | 技能/工具市场（安装/卸载/搜索） |
 | `skill.py` | Tools | 技能安装/卸载工具 |
 | `summary.py` | Tools | 摘要生成工具 |
 | `todo.py` | Tools | TODO 管理工具 |
+| `tool_archive.py` | Tools | 工具结果归档精简（防上下文膨胀） |
 | `view_image.py` | Tools | ViewImage 看图工具（元信息 + base64 data URL，前端可直接渲染） |
 | `webfetch.py` | Tools | 网页获取工具（curl/WebFetch/http_check） |
+| `websearch.py` | Tools | 联网搜索（多引擎/深度搜索） |
+| `wechat_media.py` | Tools | 微信媒体收发（图片/视频/文件） |
+| `gateway_media_send.py` | Tools | 统一出站媒体发送（跨 IM 通道） |
