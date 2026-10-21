@@ -108,6 +108,9 @@ def build_request(
     input_items: list[dict[str, Any]] = []
     fc_seq = 0
 
+    # 原始 tool_call id → 规范化后的 fc_ id。
+    # function_call 与 function_call_output 必须共用同一份映射，否则配对断裂。
+    id_map: dict[str, str] = {}
     # 收集历史中已有的 fc_ 编号，避免新生成的 id 与之冲突
     existing_fc = set()
     for _m in (messages or []):
@@ -117,6 +120,30 @@ def build_request(
                     _cid = _tc.get("id") or ""
                     if _cid.startswith("fc_") and _cid[3:].isdigit():
                         existing_fc.add(int(_cid[3:]))
+
+    def _normalize_id(raw: str) -> str:
+        """把任意 tool_call id 规范化为 agnes 要求的 fc_ 形式（幂等）。"""
+        nonlocal fc_seq
+        if not raw:
+            fc_seq += 1
+            while fc_seq in existing_fc:
+                fc_seq += 1
+            existing_fc.add(fc_seq)
+            out = f"fc_{fc_seq}"
+            id_map[raw] = out
+            return out
+        if raw in id_map:
+            return id_map[raw]
+        if raw.startswith("fc_"):
+            id_map[raw] = raw
+            return raw
+        fc_seq += 1
+        while fc_seq in existing_fc:
+            fc_seq += 1
+        existing_fc.add(fc_seq)
+        out = f"fc_{fc_seq}"
+        id_map[raw] = out
+        return out
 
     for m in messages or []:
         if not isinstance(m, dict):
@@ -154,38 +181,33 @@ def build_request(
                 if not isinstance(tc, dict):
                     continue
                 fn = tc.get("function") or {}
-                cid = tc.get("id") or ""
+                raw_id = tc.get("id") or ""
                 args = fn.get("arguments")
                 if not isinstance(args, str):
                     args = json.dumps(args or {}, ensure_ascii=False)
-                if not cid:
-                    fc_seq += 1
-                    cid = f"fc_auto_{fc_seq}"
-                # 上游 agnes 的 ResponseInput 强制要求 function_call.id 必须以
-                # "fc_" 开头（如 fc_xxx），否则反序列化失败 → 400
-                # → 被 ccload/sub2api 包装成 500。OpenAI 风格 id（call_xxx）
-                # 会直接触发该错误。call_id 保持原始值即可（它只用于与
-                # function_call_output.call_id 配对，agnes 对 call_id 无前缀要求）。
-                if cid.startswith("fc_"):
-                    fc_id = cid
-                else:
-                    fc_seq += 1
-                    while fc_seq in existing_fc:
-                        fc_seq += 1
-                    fc_id = f"fc_{fc_seq}"
-                    existing_fc.add(fc_seq)
+                # 上游 agnes 的 ResponseInput 强制要求 function_call 的 id / call_id
+                # 都以 "fc_" 开头，否则反序列化失败 → 400 → 被 ccload/sub2api
+                # 包装成 500（表现为多轮工具对话报 500）。
+                #
+                # 为什么 call_id 也要规范化：BT → ccload → sub2api → agnes 链路上
+                # 有两次协议转换，ccload 转 chat 时用 call_id，sub2api 转回
+                # responses 时又把它当 id。只要 call_id 还是 call_xxx，修复就会被
+                # 中间层抵消。两端都用 fc_ 才能穿透整条链路。
+                fc_id = _normalize_id(raw_id)
                 input_items.append({
                     "type": "function_call",
                     "id": fc_id,
-                    "call_id": cid,
+                    "call_id": fc_id,
                     "name": fn.get("name") or "",
                     "arguments": args,
                 })
             continue
 
         if role == "tool":
-            cid = m.get("tool_call_id") or ""
+            raw_cid = m.get("tool_call_id") or ""
             output = _text_of(m.get("content"))
+            # 与 function_call 共用映射，保证 call_id 配对一致
+            cid = id_map.get(raw_cid) or _normalize_id(raw_cid)
             item: dict[str, Any] = {"type": "function_call_output", "call_id": cid, "output": output}
             if cid:
                 item["id"] = f"fco_{cid}"
