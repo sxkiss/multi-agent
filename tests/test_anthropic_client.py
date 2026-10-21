@@ -50,7 +50,9 @@ class BuildRequestTest(unittest.TestCase):
         ]
         req = ac.build_request(messages, None, "auto", max_output_tokens=100)
         self.assertEqual(req["model"], "auto")
-        self.assertEqual(req["system"], "你是助手")
+        # system 现在是块数组（Anthropic 官方前缀缓存写法），文本内容不变
+        self.assertEqual(req["system"][0]["text"], "你是助手")
+        self.assertEqual(req["system"][0]["cache_control"], {"type": "ephemeral"})
         # tool_result 是独立 user 消息，因此共 3 条：user + assistant + user(tool_result)
         self.assertEqual(len(req["messages"]), 3)
         # assistant 消息 content：tool_use

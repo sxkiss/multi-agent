@@ -219,10 +219,20 @@ def build_request(
         "max_tokens": max_output_tokens or 4096,
     }
     if system_blocks:
-        payload["system"] = "\n\n".join(system_blocks)
+        # 前缀缓存：Anthropic 支持对 system 打 cache_control（ephemeral），
+        # 使稳定的 system 前缀在连续请求间命中缓存，避免每轮全量重算/计费。
+        payload["system"] = [{
+            "type": "text",
+            "text": "\n\n".join(system_blocks),
+            "cache_control": {"type": "ephemeral"},
+        }]
     ct = convert_tools(tools)
     if ct:
         payload["tools"] = ct
+        # 工具定义是稳定的固定税（83 工具 ≈ 21.5K tokens/轮）。
+        # 给最后一个工具打 cache_control，让整个工具数组作为缓存前缀，
+        # 连续请求间命中缓存，避免每轮全量重算（Anthropic 官方推荐做法）。
+        payload["tools"][-1] = {**payload["tools"][-1], "cache_control": {"type": "ephemeral"}}
     if temperature is not None:
         payload["temperature"] = temperature
     if top_p is not None:
