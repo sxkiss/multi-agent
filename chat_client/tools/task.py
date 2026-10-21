@@ -706,94 +706,127 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
 
         return i, sname, stask, step_out
 
-    # 1) 规整每步 depends_on（步骤序号或成员名，1-based；空/无=无依赖）
-    _name_to_idx = {str(s.get("agent", "")).strip(): i for i, s in enumerate(steps, 1)}
-    _deps = {}
-    for i, step in enumerate(steps, 1):
-        raw = step.get("depends_on") or step.get("depends") or []
-        if isinstance(raw, str):
-            raw = [raw]
-        deps = set()
-        for d in raw:
-            d = str(d).strip()
-            if d in ("", "无", "none", "null", "[]", "无依赖"):
-                continue
-            if d.isdigit():
-                di = int(d)
-            elif d in _name_to_idx:
-                di = _name_to_idx[d]
-            else:
-                _m = re.search(r"\d+", d)
-                di = int(_m.group()) if _m else None
-            if di and 1 <= di < i:  # 仅允许依赖更早步骤，避免自环/后向边
-                deps.add(di)
-        _deps[i] = deps
-
-    # 2) 计算拓扑层级（wave 等级）；含环则降级为全部并行（level=0）
-    _level = {}
-    def _calc(i):
-        if i in _level:
-            return _level[i]
-        ds = _deps.get(i, set())
-        if not ds:
-            _level[i] = 0
-            return 0
-        _level[i] = 0
-        _level[i] = 1 + max(_calc(x) for x in ds)
-        return _level[i]
-    try:
-        for i in range(1, len(steps) + 1):
-            _calc(i)
-    except (RecursionError, ValueError):
-        _level = {i: 0 for i in range(1, len(steps) + 1)}
-
-    # 3) 按 wave 分批并发（同 level 并发；依赖必在更早 wave 完成）；parallel=False 退化为逐条串行
-    # 捕获当前线程的 job，传给 worker 线程以便子步骤 emit_progress 能推到 SSE
-    from chat_client.tools import get_current_job, _restore_job_ctx
+    # ---- 后台异步执行：专家团队在后台线程跑，不阻塞主会话 ----
+    # 与 Task 子代理共用 BackgroundTaskManager 回传链路：完成后 notify_done
+    # 推 SSE + 落盘完整结果 + 唤醒挂起的主循环收尾段，结果自动回灌上下文。
+    import uuid as _uuid
+    from . import get_background_manager, get_current_job, _restore_job_ctx
     _ctx_job = get_current_job()
-    _done = {}
-    _remaining = set(range(1, len(steps) + 1))
-    if parallel:
-        from concurrent.futures import ThreadPoolExecutor
-        _MAX_WORKERS = 5
-        while _remaining:
-            _cur = min(_level[i] for i in _remaining)
-            _wave = sorted([i for i in _remaining if _level[i] == _cur])
-            with ThreadPoolExecutor(max_workers=min(len(_wave), _MAX_WORKERS)) as _ex:
-                def _submit_with_job(args, _job=_ctx_job):
-                    _restore_job_ctx(_job)
-                    return _run_one_step(*args)
-                _futs = {_ex.submit(_submit_with_job, (i, steps[i - 1], _deps[i])): i for i in _wave}
-                for _fut, i in _futs.items():
-                    _ri, _rsn, _rst, _rso = _fut.result()
-                    _done[i] = (_rsn, _rst, _rso)
-                    transcript.append({"agent": _rsn, "task": _rst, "output": _rso})
-                    plan_lines.append(f"步骤{_ri} [{_rsn}] {_rst} → 完成({len(_rso)} 字)")
-            _remaining -= set(_wave)
-    else:
-        # 串行：每步跑完立即累积 _done，后续步骤可衔接其依赖产出
-        for _i, _step in enumerate(steps, 1):
-            _ri, _rsn, _rst, _rso = _run_one_step(_i, _step, _deps[_i])
-            _done[_i] = (_rsn, _rst, _rso)
-            transcript.append({"agent": _rsn, "task": _rst, "output": _rso})
-            plan_lines.append(f"步骤{_ri} [{_rsn}] {_rst} → 完成({len(_rso)} 字)")
 
-    # ---- 最后：经理汇总 ----
-    emit_progress("crew_step", {"agent": "manager", "dept": "经理", "status": "running", "step": "汇总"})
-    final = _crew_synthesis(parent_config, objective, transcript)
-    emit_progress("crew_step", {"agent": "manager", "dept": "经理", "status": "done", "step": "汇总"})
+    def _run_crew_body():
+        # 在后台线程恢复 job 上下文，使子步骤 emit_progress 能推到 SSE
+        if _ctx_job is not None:
+            try:
+                _restore_job_ctx(_ctx_job)
+            except Exception:
+                pass
+        # 1) 规整每步 depends_on（步骤序号或成员名，1-based；空/无=无依赖）
+        _name_to_idx = {str(s.get("agent", "")).strip(): i for i, s in enumerate(steps, 1)}
+        _deps = {}
+        for i, step in enumerate(steps, 1):
+            raw = step.get("depends_on") or step.get("depends") or []
+            if isinstance(raw, str):
+                raw = [raw]
+            deps = set()
+            for d in raw:
+                d = str(d).strip()
+                if d in ("", "无", "none", "null", "[]", "无依赖"):
+                    continue
+                if d.isdigit():
+                    di = int(d)
+                elif d in _name_to_idx:
+                    di = _name_to_idx[d]
+                else:
+                    _m = re.search(r"\d+", d)
+                    di = int(_m.group()) if _m else None
+                if di and 1 <= di < i:  # 仅允许依赖更早步骤，避免自环/后向边
+                    deps.add(di)
+            _deps[i] = deps
 
-    report = [
-        "<crew_report>",
-        "<plan>",
-        *plan_lines,
-        "</plan>",
-        "<final_answer>",
-        final,
-        "</final_answer>",
-        "</crew_report>",
-    ]
-    return _xml_response("done", "\n".join(report))
+        # 2) 计算拓扑层级（wave 等级）；含环则降级为全部并行（level=0）
+        _level = {}
+        def _calc(i):
+            if i in _level:
+                return _level[i]
+            ds = _deps.get(i, set())
+            if not ds:
+                _level[i] = 0
+                return 0
+            _level[i] = 0
+            _level[i] = 1 + max(_calc(x) for x in ds)
+            return _level[i]
+        try:
+            for i in range(1, len(steps) + 1):
+                _calc(i)
+        except (RecursionError, ValueError):
+            _level = {i: 0 for i in range(1, len(steps) + 1)}
+
+        # 3) 按 wave 分批并发（同 level 并发；依赖必在更早 wave 完成）；parallel=False 退化为逐条串行
+        _done = {}
+        _transcript = []
+        _plan_lines = []
+        _remaining = set(range(1, len(steps) + 1))
+        if parallel:
+            from concurrent.futures import ThreadPoolExecutor
+            _MAX_WORKERS = 5
+            while _remaining:
+                _cur = min(_level[i] for i in _remaining)
+                _wave = sorted([i for i in _remaining if _level[i] == _cur])
+                with ThreadPoolExecutor(max_workers=min(len(_wave), _MAX_WORKERS)) as _ex:
+                    def _submit_with_job(args, _job=_ctx_job):
+                        _restore_job_ctx(_job)
+                        return _run_one_step(*args)
+                    _futs = {_ex.submit(_submit_with_job, (i, steps[i - 1], _deps[i])): i for i in _wave}
+                    for _fut, i in _futs.items():
+                        _ri, _rsn, _rst, _rso = _fut.result()
+                        _done[i] = (_rsn, _rst, _rso)
+                        _transcript.append({"agent": _rsn, "task": _rst, "output": _rso})
+                        _plan_lines.append(f"步骤{_ri} [{_rsn}] {_rst} → 完成({len(_rso)} 字)")
+                _remaining -= set(_wave)
+        else:
+            # 串行：每步跑完立即累积 _done，后续步骤可衔接其依赖产出
+            for _i, _step in enumerate(steps, 1):
+                _ri, _rsn, _rst, _rso = _run_one_step(_i, _step, _deps[_i])
+                _done[_i] = (_rsn, _rst, _rso)
+                _transcript.append({"agent": _rsn, "task": _rst, "output": _rso})
+                _plan_lines.append(f"步骤{_ri} [{_rsn}] {_rst} → 完成({len(_rso)} 字)")
+
+        # ---- 最后：经理汇总 ----
+        emit_progress("crew_step", {"agent": "manager", "dept": "经理", "status": "running", "step": "汇总"})
+        final = _crew_synthesis(parent_config, objective, _transcript)
+        emit_progress("crew_step", {"agent": "manager", "dept": "经理", "status": "done", "step": "汇总"})
+
+        report = [
+            "<crew_report>",
+            "<plan>",
+            *_plan_lines,
+            "</plan>",
+            "<final_answer>",
+            final,
+            "</final_answer>",
+            "</crew_report>",
+        ]
+        return _xml_response("done", "\n".join(report))
+
+    bg_task_id = str(_uuid.uuid4())
+    bgm = get_background_manager()
+    bgm.register(bg_task_id, "RunCrew", (objective,), None, parent_session_id or "")
+    def _crew_thread():
+        try:
+            _out = _run_crew_body()
+            bgm.notify_done(bg_task_id, _out)
+        except Exception as _e:
+            bgm.notify_failed(bg_task_id, str(_e))
+    threading.Thread(target=_crew_thread, daemon=True, name=f"crew-{bg_task_id[:8]}").start()
+    return _xml_response(
+        "running",
+        f"专家团队已在后台启动并运行（不阻塞主会话）。\n"
+        f"<task_id>{bg_task_id}</task_id>\n\n"
+        f"【重要】\n"
+        f"1. 不要用相同目标重复调用 RunCrew——团队已在运行。\n"
+        f"2. 结果完成后会自动回灌到对话上下文，无需轮询 TaskStatus。\n"
+        f"3. 主动查询用 TaskStatus(task_id=\"{bg_task_id}\")。",
+    )
 
 
 @register_tool(category="Agent", name_cn="咨询同事", risk_level="low", timeout=300)
