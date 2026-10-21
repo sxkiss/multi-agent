@@ -128,5 +128,53 @@ class StreamAdapterTest(unittest.TestCase):
         self.assertEqual(list(ac.iter_anthropic_chunks([])), [])
 
 
+class TestAdjacentMessageMerge(unittest.TestCase):
+    """Anthropic 协议要求 user/assistant 严格交替；相邻同 role 必须合并。
+
+    回归背景：一轮并行调用多个工具时，每个 tool 消息各自转成一条 user，
+    产生连续 user 消息，上游拒绝整个请求（多轮对话 500「不符合 API 协议」）。
+    """
+
+    def test_parallel_tool_results_merged_into_one_user_message(self):
+        messages = [
+            {"role": "user", "content": "run two tools"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "function": {"name": "Bash", "arguments": '{"command":"ls"}'}},
+                {"id": "c2", "function": {"name": "Read", "arguments": '{"file_path":"a"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "out1"},
+            {"role": "tool", "tool_call_id": "c2", "content": "out2"},
+            {"role": "user", "content": "thanks"},
+        ]
+        req = ac.build_request(messages, None, "auto")
+        roles = [m["role"] for m in req["messages"]]
+        # 严格交替
+        for a, b in zip(roles, roles[1:]):
+            self.assertNotEqual(a, b, f"相邻同 role: {roles}")
+        # 两个 tool_result 落在同一条 user 消息里
+        result_msgs = [
+            m for m in req["messages"]
+            if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"])
+        ]
+        self.assertEqual(len(result_msgs), 1)
+        tool_results = [b for b in result_msgs[0]["content"] if b.get("type") == "tool_result"]
+        self.assertEqual(len(tool_results), 2)
+        self.assertEqual(
+            {b["tool_use_id"] for b in tool_results}, {"c1", "c2"}
+        )
+
+    def test_adjacent_user_text_merged(self):
+        messages = [
+            {"role": "user", "content": "第一条"},
+            {"role": "user", "content": "第二条"},
+            {"role": "assistant", "content": "好"},
+        ]
+        req = ac.build_request(messages, None, "auto")
+        roles = [m["role"] for m in req["messages"]]
+        self.assertEqual(roles, ["user", "assistant"])
+        texts = [b["text"] for b in req["messages"][0]["content"]]
+        self.assertEqual(texts, ["第一条", "第二条"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -136,6 +136,35 @@ def _assistant_content_blocks(m: dict[str, Any]) -> list[dict[str, Any]]:
     return blocks
 
 
+def _merge_adjacent_same_role(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """合并相邻同 role 的消息（Anthropic 协议要求 user/assistant 严格交替）。
+
+    两类典型场景：
+    1. 一轮并行调用多个工具时，每个 tool 消息会各自转成一条 user(tool_result)，
+       连续多条 user 会被上游拒绝（表现为多轮对话 500「不符合 API 协议」）。
+       Anthropic 要求所有 tool_result 放在同一条 user 消息的 content 数组里。
+    2. 历史里连续两条 user 文本消息（如用户连发、系统注入），同样需要合并。
+
+    合并时保持块顺序，content 统一为块数组。
+    """
+    merged: list[dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        blocks = content if isinstance(content, list) else (
+            [{"type": "text", "text": str(content or "")}] if content else []
+        )
+        if merged and merged[-1].get("role") == role:
+            prev = merged[-1]
+            prev_blocks = prev.get("content")
+            if not isinstance(prev_blocks, list):
+                prev_blocks = [{"type": "text", "text": str(prev_blocks or "")}] if prev_blocks else []
+            prev["content"] = prev_blocks + blocks
+        else:
+            merged.append({"role": role, "content": list(blocks)})
+    return merged
+
+
 def build_request(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
@@ -178,6 +207,10 @@ def build_request(
                 "content": output,
             }]})
             continue
+
+    # 关键：合并相邻同 role 消息。并行工具调用的多条 tool_result 必须合并进
+    # 同一条 user 消息，否则 Anthropic 会因「消息未交替」拒绝整个请求（500）。
+    anthropic_messages = _merge_adjacent_same_role(anthropic_messages)
 
     payload: dict[str, Any] = {
         "model": model,
