@@ -3547,9 +3547,22 @@ async def index(request: Request):
     return response
 
 
+# 从当前配置读取鉴权开关（与 auth_middleware 保持一致）
+def _auth_disabled() -> bool:
+    """未开启鉴权（auth.json enabled=false）时，/api/config 等普通配置接口应放行。"""
+    try:
+        from auth import load_auth
+        return not bool(load_auth(BASE_DIR).get("enabled"))
+    except Exception:
+        return True
+
+
 @app.get("/api/config")
 async def api_config(request: Request):
     from auth import extract_token, is_admin_token
+    # 未开启鉴权 → 完全放行（与 auth_middleware 行为一致）
+    if _auth_disabled():
+        return JSONResponse(agent_main.get_config())
     token = extract_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="未登录")
@@ -3561,6 +3574,11 @@ async def api_config(request: Request):
 @app.post("/api/config")
 async def api_set_config(request: Request):
     from auth import extract_token, is_admin_token
+    # 未开启鉴权 → 完全放行（与 auth_middleware 行为一致）
+    if _auth_disabled():
+        params = await _params(request)
+        config_str = params.get('config', '')
+        return JSONResponse(agent_main.set_config(config_str))
     token = extract_token(request)
     if not token or not is_admin_token(BASE_DIR, token):
         from fastapi import HTTPException
