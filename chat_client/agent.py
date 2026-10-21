@@ -39,6 +39,35 @@ logger = logging.getLogger(__name__)
 # L-1: tiktoken 编码器缓存在模块级，避免每次调用重复导入
 _TIKTOKEN_ENC = None
 
+
+def estimate_tokens(text: str) -> int:
+    """估算 token 数量（CJK-aware：尽量贴近实际，避免高估/低估）。
+    策略：优先尝试 tiktoken；降级到启发式估算。
+    - CJK 字符（\\u4e00-\\u9fff）、全角标点、假名：约 1 字符/token（偏高，防截断过早）
+    - ASCII 字母/数字：约 4 字符/token（更接近真实比）
+    - 其余标点/空白：1 字符/token
+    总体上限与下限均合理，避免英文严重高估、中文严重低估。
+
+    模块级函数：_build_messages 的轮间压缩与主循环的工具内压缩闸门共用。
+    """
+    try:
+        global _TIKTOKEN_ENC
+        if _TIKTOKEN_ENC is None:
+            import tiktoken
+            _TIKTOKEN_ENC = tiktoken.get_encoding("cl100k_base")
+        if _TIKTOKEN_ENC:
+            return max(1, len(_TIKTOKEN_ENC.encode(text)))
+    except Exception:
+        _TIKTOKEN_ENC = False  # 标记不可用，后续不再重试导入
+    # 启发式 fallback：区分 CJK 与 ASCII
+    cjk_count = sum(1 for ch in text
+                    if ('\u4e00' <= ch <= '\u9fff')
+                    or ('\u3000' <= ch <= '\u303f')
+                    or ('\uff00' <= ch <= '\uffef'))
+    ascii_chars = len(text) - cjk_count
+    # CJK ~1.0 token/char，ASCII ~0.25 token/char；偏保守取中间值
+    return max(1, int(cjk_count * 1.0 + ascii_chars * 0.35))
+
 BINARY_EXTENSIONS = {
     '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.class', '.jar', '.war', '.7z',
     '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.pdf', '.doc', '.docx', '.xls', '.xlsx',
@@ -508,6 +537,27 @@ class Agent:
                 "→ 命中后调 `GetExpertPrompt(name=\"content-creator\")` 加载人设。\n"
                 "- **自查**：回复用户前，若涉及专家角色/外部技能需求而你没调过市场工具，就是漏用。"
             )
+            # 专家派发铁律（2026-10-21 boss 要求，对齐 Octop）：
+            # 专家必须是**独立 agent 实例**执行，主会话只调度与转述，禁止自己扮演专家。
+            self.system_prompt += (
+                "\n\n## 专家派发铁律（必须遵守，优先级高于一般对话习惯）\n"
+                "**核心原则：专家 = 独立 Agent 实例，不是主会话的一个人格。**\n"
+                "- 当用户需求命中上方【本地专家库】中某位专家的领域或触发词（triggers），"
+                "**必须把任务派发给独立 agent 执行，禁止主会话自己扮演/直接加载该专家人格**。\n"
+                "- 派发方式（按优先级）：\n"
+                "  1. 该专家**已是团队成员**（crew_agents.json 中已有该成员）→ "
+                "直接 `Task(subagent_type=\"成员名\", description=..., prompt=..., expected_output=...)`；\n"
+                "  2. 该专家**在本地专家库但尚未成为成员** → 先 `InstallExpert(name=\"专家id\")` "
+                "落地为成员，再 `Task(subagent_type=\"成员名\", ...)` 派发；\n"
+                "  3. 本地没有 → `ExpertMarket` 搜 → `InstallExpert` 落地 → `Task` 派发。\n"
+                "- **主会话职责边界**：只做「意图识别 → 派发 → 等待结果 → 向你转述」。"
+                "主会话不得自己执行专家的专业流程、不得自己扮演专家口吻、不得跳过 Task 直接把专家提示词"
+                "塞进自己的上下文当成自己的人格。\n"
+                "- **例外（仅限）**：用户明确要求「你本人直接回答/别派子 agent」时，才可主会话直接处理。\n"
+                "- **自查**：回复前确认——这次涉及专家领域吗？如果涉及，我是否真的调用了 "
+                "`Task(subagent_type=...)` 派给独立 agent？没有就是违规。\n"
+                "- 用户只做闲聊或通用问题时，不触发本规则。\n"
+            )
             # 注入 mem0 记忆使用提示
             self.system_prompt += "\n\n## 记忆系统\n- `mem0_search` 查询历史记忆（用户偏好、踩坑记录、已完成任务）\n- `mem0_add` 写入重要信息（用户明确说'记住'、协作规则、技术决策）\n- `mem0_list` 列出所有记忆（按 agent_id 过滤，默认50条）\n- `mem0_delete` 删除指定 ID 的记忆（不可撤销）\n- `mem0_import` 批量导入（多行文本，每行一条）\n- 涉及跨会话上下文、用户偏好、历史决策时主动调用，不要凭空回答"
 
@@ -862,15 +912,25 @@ Here is some useful information about the environment you are running in:
         return out
 
     def _create_completion_stream(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None):
-        # 前缀缓存：对 system 消息打 cache_control，使稳定的 system+tools 前缀命中缓存，
-        # 避免每轮全量工具定义重复计费（兼容 litellm/OpenAI 前缀缓存；不支持的代理会忽略该字段）
+        # 前缀缓存：对 system 消息打 cache_control，使稳定的 system 前缀命中缓存，
+        # 避免每轮全量重复计费（兼容 litellm/OpenAI 前缀缓存；不支持的代理会忽略该字段）
         if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
             messages = [dict(messages[0], cache_control={"type": "ephemeral"})] + messages[1:]
+
+        # 工具定义是稳定的固定税（83 工具 ≈ 21.5K tokens/轮），单独打缓存标记。
+        # 只给最后一个工具打 cache_control，使整个 tools 数组构成缓存前缀
+        # （Anthropic / 支持前缀缓存的代理会命中；不支持的会忽略该字段）。
+        # 注意：这里做浅拷贝，避免污染调用方持有的 tools 列表。
+        cached_tools = None
+        if tools:
+            cached_tools = list(tools)
+            if isinstance(cached_tools[-1], dict):
+                cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
 
         params = {
             "model": self.model_name,
             "messages": messages,
-            "tools": tools if tools else None,
+            "tools": cached_tools if cached_tools else None,
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": self.temperature,
@@ -1815,6 +1875,18 @@ Here is some useful information about the environment you are running in:
                         "content": content_structure
                     })
 
+                # 【单轮内上下文闸门】工具结果回填后检查一次 messages 体积。
+                # 轮间压缩只在 _build_messages 触发，而一次请求可能连跑上百个工具调用，
+                # 中途 messages 会一路膨胀撞上模型上下文上限。这里对最旧的工具结果
+                # 做「归档式精简」（头+尾+折叠标记，完整内容落盘可召回），
+                # 最近若干条保持原样，避免模型正在用的结果被削。
+                try:
+                    _inflight_budget = int(self.context_window_kb * 1024)
+                    if _inflight_budget > 0 and self.config.get("inflight_compress", True):
+                        self._shrink_inflight_context(messages, _inflight_budget)
+                except Exception:
+                    logger.warning("[Inflight] 单轮内压缩异常（不影响主流程）", exc_info=True)
+
                 if _abort:
                     yield {
                         "type": "warning",
@@ -2257,6 +2329,118 @@ Here is some useful information about the environment you are running in:
             out.append(item)
         return out
 
+    def _shrink_inflight_context(self, messages: list[dict[str, Any]],
+                                 budget_tokens: int) -> int:
+        """工具循环内的压缩闸门（单轮内自保）。
+
+        背景：轮间压缩只在 _build_messages 里触发。但一次用户请求若连续跑几十上百个
+        工具调用（max_tool_iterations 默认 300），messages 会在这条 while 循环里一路膨胀，
+        直到本轮结束、下一轮才压缩 —— 中途极易撞上模型上下文上限（400/413/500）。
+
+        策略（保守、可逆、不丢信息）：
+        - 只处理 role == "tool" 的消息（它们是体积大头，且可重新归档）；
+        - 从最旧的开始，超过阈值的正文走 archive_result 精简（头+尾+折叠标记），
+          完整内容落盘 tool_archives/，模型仍可用 ReadToolArchive 按需召回；
+        - 最近 keep_recent 条 tool 结果不动（模型当前正在用）；
+        - 估算已降到预算 70% 以下即停止，避免过度精简。
+
+        返回被精简的消息条数（0 表示未触发或无需处理）。
+        """
+        if budget_tokens <= 0 or not messages:
+            return 0
+        try:
+            current = sum(
+                estimate_tokens(json.dumps(m, ensure_ascii=False))
+                for m in messages
+            )
+        except Exception:
+            return 0
+        if current <= budget_tokens:
+            return 0
+
+        # 目标：降到预算的 70%，给后续若干轮留出余量
+        target = int(budget_tokens * 0.7)
+        keep_recent = max(0, int(self.config.get("inflight_keep_recent_tools", 6)))
+
+        # 收集可精简的 tool 消息下标（最旧优先），排除最近 N 条
+        tool_idx = [i for i, m in enumerate(messages)
+                    if isinstance(m, dict) and m.get("role") == "tool"]
+        if keep_recent:
+            tool_idx = tool_idx[:-keep_recent] if len(tool_idx) > keep_recent else []
+        if not tool_idx:
+            return 0
+
+        from .tool_archive import archive_result
+        _base = self.config.get("base_dir") or PROJECT_ROOT
+        # 循环内闸门用更激进的阈值：超过 4000 字符就折叠
+        _cfg = dict(self.config)
+        _cfg.setdefault("tool_result_max_chars", 4000)
+        _cfg["tool_result_max_chars"] = min(
+            int(_cfg.get("tool_result_max_chars") or 4000), 4000
+        )
+
+        shrunk = 0
+        for i in tool_idx:
+            if current <= target:
+                break
+            m = messages[i]
+            content = m.get("content")
+            # content 可能是 str 或 [{type:text,text:...}]（本项目统一用后者）
+            if isinstance(content, list):
+                text = "".join(
+                    str(p.get("text") or "") for p in content if isinstance(p, dict)
+                )
+                wrapper = content
+            elif isinstance(content, str):
+                text = content
+                wrapper = None
+            else:
+                continue
+            if not text:
+                continue
+            try:
+                slim, _meta = archive_result(
+                    text,
+                    base_dir=_base,
+                    session_id=self.session_id,
+                    tool_name=m.get("name") or "tool",
+                    config=_cfg,
+                )
+            except Exception:
+                logger.debug("[Inflight] 压缩工具结果失败，跳过", exc_info=True)
+                continue
+            if not slim or slim == text:
+                continue
+
+            before = estimate_tokens(text)
+            after = estimate_tokens(slim)
+            if after >= before:
+                continue
+
+            if wrapper is not None:
+                new_content = []
+                for p in wrapper:
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        new_content.append({**p, "text": slim})
+                        # 只替换第一段文本，其余段落保持
+                        break
+                    new_content.append(p)
+                if len(new_content) < len(wrapper):
+                    new_content.extend(wrapper[len(new_content):])
+                messages[i] = {**m, "content": new_content}
+            else:
+                messages[i] = {**m, "content": slim}
+
+            current -= (before - after)
+            shrunk += 1
+
+        if shrunk:
+            logger.info(
+                "[Inflight] 单轮内上下文压缩：精简 %d 条工具结果，估算 %d → %d tokens（预算 %d）",
+                shrunk, current + 0, current, budget_tokens,
+            )
+        return shrunk
+
     def _build_messages(self, context_str: str) -> list[dict[str, Any]]:
         """构建包含系统指令、上下文和滑动窗口的 Prompt。"""
 
@@ -2286,28 +2470,8 @@ Here is some useful information about the environment you are running in:
             return content
 
         def _estimate_tokens(text: str) -> int:
-            """估算 token 数量（CJK-aware：尽量贴近实际，避免高估/低估）。
-            策略：优先尝试 tiktoken；降级到启发式估算。
-            - CJK 字符（\u4e00-\u9fff）、全角标点、假名：约 1 字符/token（偏高，防截断过早）
-            - ASCII 字母/数字：约 4 字符/token（更接近真实比）
-            - 其余标点/空白：1 字符/token
-            总体上限与下限均合理，避免英文严重高估、中文严重低估。"""
-            try:
-                global _TIKTOKEN_ENC
-                if _TIKTOKEN_ENC is None:
-                    import tiktoken
-                    _TIKTOKEN_ENC = tiktoken.get_encoding("cl100k_base")
-                return max(1, len(_TIKTOKEN_ENC.encode(text)))
-            except Exception:
-                _TIKTOKEN_ENC = False  # 标记不可用，后续不再重试导入
-            # 启发式 fallback：区分 CJK 与 ASCII
-            cjk_count = sum(1 for ch in text
-                            if ('\u4e00' <= ch <= '\u9fff')
-                            or ('\u3000' <= ch <= '\u303f')
-                            or ('\uff00' <= ch <= '\uffef'))
-            ascii_chars = len(text) - cjk_count
-            # CJK ~1.0 token/char，ASCII ~0.25 token/char；偏保守取中间值
-            return max(1, int(cjk_count * 1.0 + ascii_chars * 0.35))
+            """委托到模块级 estimate_tokens（工具循环内的压缩闸门共用同一实现）。"""
+            return estimate_tokens(text)
 
         if context_str:
             system_prompt += f"\n\n[History Context (Time-Ordered)]:\n{context_str}"

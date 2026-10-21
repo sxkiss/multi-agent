@@ -563,7 +563,13 @@ GET /api/chat/events?session_id=xxx&job=xxx&last_id=42
   "api_base_url": "http://127.0.0.1:3333/v1",
   "api_key": "...",
   "default_model": "auto",
-  "context_window_kb": 512,        // 上下文窗口 (KB)，触发压缩阈值 = 95%
+  "context_window_kb": 512,        // 上下文窗口 (KB)，轮间压缩阈值 90%/95%/97% 渐进
+  "inflight_compress": true,       // 单轮内上下文闸门：工具循环中超出预算时精简旧工具结果
+  "inflight_keep_recent_tools": 6, // 闸门保留最近 N 条工具结果不精简
+  "tool_result_archive": true,     // 工具结果超阈值时精简+归档（可 ReadToolArchive 召回）
+  "tool_result_max_chars": 8000,   // 超过此字符数才精简（闸门内强制 ≤4000）
+  "tool_result_head_chars": 3000,  // 精简后保留头部字符数
+  "tool_result_tail_chars": 1500,  // 精简后保留尾部字符数
   "enable_mcp": true,              // 是否加载 MCP 工具
   "agent": {
     "max_tool_iterations": 999999,  // 最大工具调用轮次
