@@ -17,7 +17,7 @@ Boss（用户）——只下达目标
    └─ 经理 Manager——拆解计划 · 分派 · 汇总交付（主对话）
         ├─ 各部门 Departments（调研/研发/运维/测试/审核/财务…可自定义）
         │    └─ 成员 Members——每个成员自带专属工具集与系统提示词
-        └─ 能力底座：142+ 工具 / 技能(Skill) / MCP / RAG / 定时任务
+        └─ 能力底座：80+ 内置工具 / 技能(Skill) / MCP / RAG / 定时任务
 ```
 
 技术栈：FastAPI + uvicorn（后端）· Vue3 + Vite（前端）· OpenAI 兼容协议（任意网关）。
@@ -72,7 +72,7 @@ Boss（用户）——只下达目标
 │   ├── [prompts/](./prompts/INDEX.md)      # 系统提示词模板
 │   └── [mcp/](./mcp/INDEX.md)              # MCP 配置文件
 ├── [chat_client/](./chat_client/INDEX.md)  # Agent 核心运行时
-│   └── [tools/](./chat_client/tools/INDEX.md) # 142+ 工具实现
+│   └── [tools/](./chat_client/tools/INDEX.md) # 80+ 内置工具实现
 ├── [agents/](./agents/INDEX.md)            # 预置 Agent（面板兼容）
 ├── [frontend/src/](./frontend/src/INDEX.md) # Vue3 前端源码
 │   └── [components/](./frontend/src/components/INDEX.md) # UI 组件
@@ -96,6 +96,7 @@ POST /api/chat/stop                         ← 置 stopped + agent.close()
 ```
 
 - **事件类型**：meta_info / message / message_think / tool_call / tool_result / usage / error / message_end
+- **事件持久化**：ChatJob 的 `persist_path` 与 `job.key` 必须一致（创建时直接把最终 key 传入构造函数）；否则事件会混写到随机文件、重启恢复时 key 对不上，导致 SSE 续传死锁（`last_id` 卡住、前端收不到新消息）。
 - **AI API 断流重试**（agent.py 内）：连接类/429/5xx 可重试；无输出→整体重来；已有输出→**续写模式**（partial 作为上下文 + system-note 要求无缝继续），最终持久化文本 = 用户实际所见
 
 ### 3.2 集团模式 RunCrew（hierarchical）
@@ -283,7 +284,7 @@ kill $(systemctl show bt-agent.service -p MainPID --value)   # 5s 后自动拉�
 
 - 无依赖工具并行执行（当前串行，需设计前端事件顺序）
 - 熔断半开机制未实现
-- 工具场景化自动裁剪（142 全下发致首 token 延迟偏高；可在设置隐藏冗余 MCP 缓解）
+- 工具场景化自动裁剪（80+ 全下发致首 token 延迟偏高；可在设置隐藏冗余 MCP 缓解）
 - hierarchical 模式为单层经理；多层嵌套待定
 - 定时任务的 REST/UI 未接前端（工具已可用）
 - `ai_agent_legacy_*` 已删除；`.server.pid` 为历史残留可忽略

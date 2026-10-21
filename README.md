@@ -19,7 +19,7 @@ https://github.com/sxkiss/multi-agent/blob/main/docs/media/intro.mp4
 | 0:09 | 组织架构 | Boss → 经理 → 6 个部门 → 成员，缺人现招、组织自我扩张 |
 | 0:29 | 技术栈 | Python 3.12 + FastAPI / Vue3 + Vite / SSE 流式 / systemd |
 | 0:41 | 技能系统 | 283 个技能，三层渐进披露，不浪费上下文 |
-| 0:51 | 工具与安全 | 142 个工具，命令拦截 / 风险确认 / 白名单 / 审计留痕 |
+| 0:51 | 工具与安全 | 80+ 内置工具（另含 MCP/技能），命令拦截 / 风险确认 / 白名单 / 审计留痕 |
 | 1:05 | 扩展能力 | MCP 接入 / 定时任务自动开工 / 子代理并行派单 |
 | 1:11 | 收尾 | 开源地址与一句话主张 |
 
@@ -49,7 +49,7 @@ bt/
 ├── chat_client/           # Agent 核心：会话、技能、工具、热重载
 │   ├── skills.py          # SkillManager：三层披露 + 缓存
 │   ├── hotreload.py       # 工具模块热重载
-│   └── tools/             # 内置工具集（终端/文件/任务等）
+│   └── tools/             # 内置工具集（终端/文件/浏览器/看图/媒体/任务等）
 ├── skills/                # 技能目录（相对路径，可配 skills_dir 切换）
 ├── frontend/              # 前端源码（Vue 3 + Vite）
 ├── static/                # 前端构建产物（由 dist 拷贝而来，git 忽略）

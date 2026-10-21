@@ -28,4 +28,4 @@ AI Agent 核心运行时：主循环、会话记忆、检索增强、MCP 接入�
 
 ## Subdirectories
 
-- [tools/](./tools/INDEX.md) — 工具注册与实现（142+ 工具）
+- [tools/](./tools/INDEX.md) — 工具注册与实现（80+ 内置工具：终端/文件/浏览器/看图/媒体/市场等）
