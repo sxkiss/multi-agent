@@ -73,6 +73,12 @@
         {{ chatMode === 'group' ? 'AGENTS: 全局 + 项目' : chatMode === 'single' ? 'Agent 直连 · 全套工具' : `${chatMode} CLI` }}
       </span>
       <span class="mode-info">Skills: {{ skillsCount }} 个可用</span>
+      <span class="mode-protocol">
+        <label for="api-protocol-select">API 协议</label>
+        <select id="api-protocol-select" :value="globalConfig.api_protocol" @change="changeProtocol">
+          <option v-for="opt in protocolOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+        </select>
+      </span>
     </div>
     <!-- 集团模式：工作目录 -->
     <div class="codex-bar" v-if="chatMode === 'group'">
@@ -428,6 +434,7 @@ const globalConfig = ref({
   system_prompt: '',
   api_base_url: '',
   api_key: '',
+  api_protocol: 'responses',
   // 服务端脱敏后只回 api_key_set 布尔；用它与 api_base_url 共同判断"已配置"
   api_key_set: false,
   models: [],
@@ -459,6 +466,23 @@ const globalConfig = ref({
   default_headers: {},
   questions: []
 })
+
+// API 协议选项（与后端 chat_client/agent.py 识别值一致）
+const protocolOptions = [
+  { value: 'responses', label: 'responses (/v1/responses)' },
+  { value: 'chat', label: 'chat (chat completions)' },
+  { value: 'anthropic', label: 'anthropic (/v1/messages)' },
+]
+
+// 切换 API 协议：更新本地状态、持久化到 localStorage 并保存到服务端配置
+function changeProtocol(e) {
+  const val = e.target.value
+  globalConfig.value.api_protocol = val
+  localStorage.setItem('ai_api_protocol', val)
+  apiPost('/api/config', { config: JSON.stringify({ api_protocol: val }) }, (res) => {
+    if (!res || !res.status) console.warn('保存 API 协议配置失败:', res && res.msg)
+  })
+}
 
 // 思考定时器
 let thinkingTimer = null
@@ -822,6 +846,10 @@ async function getAIResponseStream(message, sessionId, model, tools, webSearch, 
     // 传递推理深度（集团模式和单 Agent 模式都支持）
     ...(globalConfig.value?.agent?.reasoning_effort
       ? { reasoning_effort: globalConfig.value.agent.reasoning_effort }
+      : {}),
+    // 传递 API 协议（集团模式和单 Agent 模式都支持）
+    ...(globalConfig.value?.api_protocol
+      ? { api_protocol: globalConfig.value.api_protocol }
       : {}),
     // 传递工作目录：优先使用当前模式下的 workspace 输入框，其次回退到全局配置
     ...((groupWorkspace.value.trim() && chatMode.value === 'group')
@@ -1799,6 +1827,7 @@ function updateQuota() {
         api_base_url: e.config?.api_base_url || '',
         api_key: e.config?.api_key || '',
         api_key_set: e.config?.api_key_set === true,
+        api_protocol: e.config?.api_protocol || 'responses',
         models: e.config?.models || [],
         embedding: {
           embedding_api_key: e.config?.embedding?.embedding_api_key || '',
@@ -1898,6 +1927,7 @@ onMounted(async () => {
         api_base_url: e.config?.api_base_url || '',
         api_key: e.config?.api_key || '',
         api_key_set: e.config?.api_key_set === true,
+        api_protocol: e.config?.api_protocol || 'responses',
         models: e.config?.models || [],
         embedding: {
           embedding_api_key: e.config?.embedding?.embedding_api_key || '',
@@ -2468,6 +2498,30 @@ function toggleFullscreen() {
   background: var(--bg-tertiary);
   padding: 1px 4px;
   border-radius: 3px;
+}
+
+/* API 协议选择（集团模式 / 单 Agent 模式共用） */
+.mode-protocol {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+.mode-protocol label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.mode-protocol select {
+  padding: 3px 6px;
+  border: 1px solid #d3d8e2;
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--bg-primary, #fff);
+  color: #1f2937;
+  cursor: pointer;
+  max-width: 220px;
 }
 
 .mode-switch button.active {
