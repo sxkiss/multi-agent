@@ -108,6 +108,16 @@ def build_request(
     input_items: list[dict[str, Any]] = []
     fc_seq = 0
 
+    # 收集历史中已有的 fc_ 编号，避免新生成的 id 与之冲突
+    existing_fc = set()
+    for _m in (messages or []):
+        if isinstance(_m, dict) and (_m.get("role") == "assistant"):
+            for _tc in (_m.get("tool_calls") or []):
+                if isinstance(_tc, dict):
+                    _cid = _tc.get("id") or ""
+                    if _cid.startswith("fc_") and _cid[3:].isdigit():
+                        existing_fc.add(int(_cid[3:]))
+
     for m in messages or []:
         if not isinstance(m, dict):
             continue
@@ -151,10 +161,22 @@ def build_request(
                 if not cid:
                     fc_seq += 1
                     cid = f"fc_auto_{fc_seq}"
-                # ← 带 id 是上游 agnes 的硬性要求
+                # 上游 agnes 的 ResponseInput 强制要求 function_call.id 必须以
+                # "fc_" 开头（如 fc_xxx），否则反序列化失败 → 400
+                # → 被 ccload/sub2api 包装成 500。OpenAI 风格 id（call_xxx）
+                # 会直接触发该错误。call_id 保持原始值即可（它只用于与
+                # function_call_output.call_id 配对，agnes 对 call_id 无前缀要求）。
+                if cid.startswith("fc_"):
+                    fc_id = cid
+                else:
+                    fc_seq += 1
+                    while fc_seq in existing_fc:
+                        fc_seq += 1
+                    fc_id = f"fc_{fc_seq}"
+                    existing_fc.add(fc_seq)
                 input_items.append({
                     "type": "function_call",
-                    "id": cid,
+                    "id": fc_id,
                     "call_id": cid,
                     "name": fn.get("name") or "",
                     "arguments": args,
