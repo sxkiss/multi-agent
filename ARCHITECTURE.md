@@ -3,7 +3,7 @@
 # 系统开发文档
 
 > 项目：Multi-agent —— 通用型多智能体协作平台（集团模式）
-> 版本基准：2026-08-23 · 服务端口 9876 · systemd 单元 `bt-agent.service`
+> 版本基准：2026-10-21 · 服务端口 9876 · systemd 单元 `bt-agent.service`
 > 配套文档：`REVIEW.md`（历次审核与修复记录）
 
 ---
@@ -233,20 +233,30 @@ watcher：10s 轮询各 watch 文件 mtime，变更自动重载对应目标。
 
 ---
 
-## 10. API 一览（29 端点）
+## 10. API 一览（110 端点，完整路由表见 [API.md](./API.md)）
 
 ```
 对话     POST /api/chat/start · GET /api/chat/events · GET /api/chat/status · POST /api/chat/stop
-         GET  /api/chat/history · /api/chat/messages · POST /api/chat/delete
-          GET,POST /api/chat (旧同步) · /api/agent/run
+         GET /api/chat/history · /api/chat/messages · POST /api/chat/delete|delete_batch|delete_message
+         GET,POST /api/chat (旧同步) · /api/agent/run
 组织     GET /api/org · GET /api/crew/agents · POST /api/crew/save|delete|dept_save|dept_delete
-         GET /api/agents（面板预置）
-工具     GET /api/tools · POST /api/hotreload
-技能     GET /api/skills · POST /api/skills/install|install_url|uninstall
-定时     （引擎+工具已就绪；REST: 见 scheduler op_* 可按需暴露）
-配置     GET,POST /api/config · GET /api/models
-兼容     GET,POST /plugin（面板兼容格式）· GET,POST /sse_panel（旧SSE）
-页面     GET /
+         GET /api/agents · GET /api/experts|/{id} · GET /api/conversation/modes
+工具     GET /api/tools · POST /api/tools/show_status · POST /api/hotreload
+技能     GET /api/skills · POST /api/skills/install|install_url|uninstall|status
+         GET /api/skills/presentation|packages · POST /api/skills/export_package|import_package
+MCP      GET/POST /api/mcp/servers* · GET /api/mcp/market · /mcp/health|tools|messages
+文件     GET /api/files/raw|browse · POST /api/files/upload
+知识库   GET /api/knowledge/list · POST /api/knowledge/upload|add_text|search|delete · GET /api/kb/jobs
+会话     GET /api/session/context|export · POST /api/session/fork · GET /api/sessions/stats
+治理     GET /api/context/archives|breakdown · GET /api/guard/rules · POST /api/guard/reload
+审批     GET /api/hitl/pending · POST /api/hitl/decide · GET/POST /api/slash/*
+备份     GET /api/backups · POST /api/backups/create|restore|auto
+认证     GET/POST /api/auth/* · /api/auth/cardlogin · /api/auth/card/verify · /api/card/admin/*
+小程序   GET/POST /api/mp/profile · /api/mp/bot/* · /api/service/token
+页面     GET / · GET /browser · GET /connectors
+平台扩展 GET/POST /api/v2/connectors/* · /api/v2/{teams,channels,storage,usage,gateway,memory}/*
+         GET/POST /api/v2/browser/* · WS /browser-stream/ws
+兼容     GET /v1/models · POST /v1/chat/completions · GET,POST /plugin（面板兼容）· GET,POST /sse_panel
 ```
 
 ---

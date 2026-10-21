@@ -52,7 +52,7 @@ bt/
 │   └── tools/             # 内置工具集（终端/文件/浏览器/看图/媒体/任务等）
 ├── skills/                # 技能目录（相对路径，可配 skills_dir 切换）
 ├── frontend/              # 前端源码（Vue 3 + Vite）
-├── static/                # 前端构建产物（由 dist 拷贝而来，git 忽略）
+├── static/                # 前端入口页面（assets/ 为构建产物，git 忽略）
 ├── sessions/              # 会话数据（运行时生成）
 ├── logs/                  # 运行日志（运行时生成）
 └── requirements.txt       # Python 依赖
@@ -82,16 +82,15 @@ sudo systemctl daemon-reload && sudo systemctl restart bt-agent.service
 
 ## 前端构建
 
-前端源码在 `frontend/`，构建产物输出到 `static/` 供后端直接服务：
+前端源码在 `frontend/`，构建产物输出到 `frontend/dist/`，`npm run build` 会自动把 `index.html` 与 `assets/*` 同步到根目录和 `static/` 供后端直接服务：
 
 ```bash
 cd frontend
 npm install
-npm run build          # 产物在 frontend/dist/
-cp -r dist/* ../static/   # 拷贝到 static/（保持 /static 路径下的资源引用一致）
+npm run build          # 产物在 frontend/dist/ + 自动同步到 ../index.html 与 ../static/
 ```
 
-注意：`static/` 目录整体被 git 忽略，构建产物不入库。
+注意：`static/assets/`（哈希后的 JS/CSS 产物）被 git 忽略；`static/index.html` 等入口页面入库。
 
 ## 配置说明（config.json）
 
@@ -118,11 +117,22 @@ cp -r dist/* ../static/   # 拷贝到 static/（保持 /static 路径下的资�
 - 三层渐进披露：L1 描述注入系统提示词 → L2 按需加载 SKILL.md → L3 按需读取 references/scripts
 - 运行时通过 `set_skills_dir()` 动态切换目录，无需重启
 
+## 核心能力
+
+- **多模态看图**：内置 `ViewImage` 工具，读取本地图片返回元信息 + base64 data URL，模型可直接"看到"图片，前端工具结果卡片也能直接渲染。
+- **知识库（RAG）**：文档上传（pdf/docx/pptx/xlsx/html/md/txt/图片 OCR）→ 切块 → 向量化 → 语义检索，支持 `knowledge` 系列 API。
+- **会话治理**：上下文七段占用分析、工具结果归档统计、会话导出/分叉/批量删除、护栏规则、HITL 高风险审批。
+- **备份恢复**：一键备份/恢复配置与会话数据，支持自动备份。
+- **认证与卡密**：JWT/Bearer 鉴权、卡密登录与管理系统、微信小程序接入、服务令牌。
+- **专家库**：自动发现 `experts/` 目录，按需加载专家人格。
+- **MCP 市场**：浏览/安装第三方 MCP 服务器，扩展工具生态。
+- **集团模式**：Boss → 经理 → 部门 → 成员，子代理并行执行，组织自我扩张。
+
 ## 常用目录
 
 - `sessions/` — 会话记录（运行时数据）
 - `logs/` — 运行日志
-- `static/` — 前端构建产物（git 忽略）
+- `static/` — 前端入口页面（`static/index.html` 等入库）；`static/assets/` 为哈希构建产物（git 忽略）
 
 ## 相关文档
 
