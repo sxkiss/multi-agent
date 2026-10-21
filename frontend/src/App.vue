@@ -805,6 +805,8 @@ async function followChatEvents(sessionId, fromLastId, handlers) {
     } catch (err) {
       if (err.name === 'AbortError') {
         console.log('已断开事件流订阅（后端任务不受影响）')
+        // Abort 意味着当前任务已结束（用户主动停止/发新消息），必须收尾 isSending
+        handlers.onComplete?.()
         return
       }
       resumeCount++
