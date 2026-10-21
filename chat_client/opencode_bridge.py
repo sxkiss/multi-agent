@@ -495,6 +495,9 @@ def query_opencode_sessions(workspace_filter: str = "") -> list[dict]:
             session_rows = []
 
         sessions = [dict(r) for r in session_rows]
+        # 为 session 表查到的会话添加 source 字段
+        for s in sessions:
+            s["source"] = "opencode"
 
         # 2) session 表为空（被清）时，用 message 表反查 session_id + 最近时间
         if not sessions:
@@ -572,6 +575,7 @@ def query_opencode_sessions(workspace_filter: str = "") -> list[dict]:
                     "time_updated": last_t,
                     "tokens_input": 0,
                     "tokens_output": 0,
+                    "source": "opencode",
                 })
 
         conn.close()
@@ -626,7 +630,9 @@ def query_opencode_history(session_id: str) -> list[dict]:
             info = json.loads(msg["data"])
             role = info.get("role", "")
             parts = parts_by_msg.get(msg["id"], [])
-            ts = info.get("time", {}).get("created", msg["time_created"]) / 1000 or 0
+            ts = info.get("time", {}).get("created", msg["time_created"]) or 0
+            if ts > 1000000000000:  # 毫秒级时间戳转秒
+                ts = ts / 1000
 
             if role == "user":
                 text = ""
