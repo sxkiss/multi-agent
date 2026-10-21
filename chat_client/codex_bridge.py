@@ -428,26 +428,13 @@ def query_codex_history(thread_id: str, workspace: str = "") -> list[dict]:
                             "timestamp": ts,
                         })
 
-                elif role == "developer":
-                    # developer 角色保留原样，不映射为 assistant
-                    text = ""
-                    for c in payload.get("content", []):
-                        if isinstance(c, dict) and c.get("type") == "input_text":
-                            text += (c.get("text") or "")
-                    if text.strip():
-                        history.append({
-                            "role": "developer",
-                            "content": text,
-                            "timestamp": ts,
-                        })
-                    continue
-                elif role == "assistant":
+                elif role in ("developer", "assistant"):
                     text = ""
                     tool_calls = []
                     for c in payload.get("content", []):
                         if isinstance(c, dict):
                             ctype = c.get("type", "")
-                            if ctype == "input_text":
+                            if ctype in ("input_text", "output_text"):
                                 text += (c.get("text") or "")
                             elif ctype == "tool_use":
                                 tool_calls.append({
