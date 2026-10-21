@@ -58,8 +58,12 @@ class CacheControlTest(unittest.TestCase):
         req = ac.build_request([{"role": "user", "content": "hi"}], None, "auto")
         self.assertNotIn("tools", req)
 
-    def test_chat_tools_cache_control_does_not_mutate_caller(self):
-        """chat 分支给 tools 打标记时必须浅拷贝，不能污染调用方列表。"""
+    def test_chat_branch_does_not_inject_cache_control(self):
+        """chat（OpenAI）分支绝不能注入 cache_control。
+
+        OpenAI 官方协议不支持 message/tool 上的 cache_control，严格网关
+        （如 ccload）会直接返回 400/500。前缀缓存只在 anthropic 适配层做。
+        """
         fake = agent_mod.Agent.__new__(agent_mod.Agent)
         fake.model_name = "m"
         fake.temperature = 1.0
@@ -85,15 +89,47 @@ class CacheControlTest(unittest.TestCase):
             {"type": "function", "function": {"name": "A", "parameters": {}}},
             {"type": "function", "function": {"name": "B", "parameters": {}}},
         ]
-        original_last = dict(tools[-1])
+        msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
 
+        fake._create_completion_stream(msgs, tools)
+
+        # 发送出去的工具与消息都不带 cache_control
+        for t in captured["tools"]:
+            self.assertNotIn("cache_control", t)
+        for m in captured["messages"]:
+            self.assertNotIn("cache_control", m)
+        # 调用方列表也未被修改
+        self.assertNotIn("cache_control", tools[-1])
+        self.assertNotIn("cache_control", msgs[0])
+
+    def test_chat_branch_tools_not_aliased(self):
+        """chat 分支传出的 tools 应是浅拷贝，避免下游意外修改调用方列表。"""
+        fake = agent_mod.Agent.__new__(agent_mod.Agent)
+        fake.model_name = "m"
+        fake.temperature = 1.0
+        fake.top_p = 0.9
+        fake.reasoning_effort = None
+        fake.max_output_tokens = 0
+        fake.thinking = False
+        fake.config = {}
+        fake.api_protocol = "chat"
+
+        captured = {}
+
+        class _Client:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        captured.update(kwargs)
+                        return "ok"
+
+        fake.client = _Client()
+        tools = [{"type": "function", "function": {"name": "A", "parameters": {}}}]
         fake._create_completion_stream([{"role": "user", "content": "hi"}], tools)
 
-        # 发送出去的最后一个工具带缓存标记
-        self.assertEqual(captured["tools"][-1]["cache_control"], {"type": "ephemeral"})
-        # 调用方列表未被修改
-        self.assertEqual(tools[-1], original_last)
-        self.assertNotIn("cache_control", tools[-1])
+        self.assertIsNot(captured["tools"], tools)
+        self.assertEqual(captured["tools"], tools)
 
 
 class InflightCompressTest(unittest.TestCase):
@@ -159,14 +195,20 @@ class InflightCompressTest(unittest.TestCase):
         self.assertGreater(len(files), 0)
 
     def test_keeps_message_shape(self):
-        """精简后 content 仍是 [{type:text,text:...}] 结构，不能破坏协议形状。"""
+        """精简后 tool 消息 content 必须是纯字符串（OpenAI chat 协议）。
+
+        历史遗留：曾用 [{type:text}] 数组（Anthropic 格式），导致 sub2api
+        转 Responses API 时 agnes 上游 400/500。现在统一压平成字符串。
+        """
         msgs = self._msgs(50, 20000)
+        before = [m.get("content") for m in msgs[1:]]
         self.agent._shrink_inflight_context(msgs, 256 * 1024)
-        for m in msgs[1:]:
+        for idx, m in enumerate(msgs[1:]):
             self.assertEqual(m["role"], "tool")
-            self.assertIsInstance(m["content"], list)
-            self.assertEqual(m["content"][0]["type"], "text")
             self.assertIn("tool_call_id", m)
+            # 被精简过的消息必须写成纯字符串；未被改动的保持原样
+            if m["content"] != before[idx]:
+                self.assertIsInstance(m["content"], str)
 
     def test_zero_budget_disabled(self):
         msgs = self._msgs(50, 20000)
@@ -178,6 +220,70 @@ class InflightCompressTest(unittest.TestCase):
     def test_no_tool_messages(self):
         msgs = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "ok"}]
         self.assertEqual(self.agent._shrink_inflight_context(msgs, 1), 0)
+
+    # ---------- 第二级：整轮丢弃 ----------
+    def _rounds(self, n_rounds: int, chars: int):
+        """构造 n 轮完整对话：user + assistant(tool_calls) + tool。"""
+        msgs = []
+        for r in range(n_rounds):
+            msgs.append({"role": "user", "content": f"问题{r}"})
+            msgs.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": f"c{r}", "type": "function",
+                                "function": {"name": "Bash", "arguments": "{}"}}],
+            })
+            msgs.append({
+                "role": "tool", "tool_call_id": f"c{r}",
+                "content": [{"type": "text", "text": _bulk_text(chars, seed=r)}],
+            })
+        return msgs
+
+    def test_round_drop_when_tool_slimming_insufficient(self):
+        """第一级精简后仍超预算时，必须整轮丢弃最旧历史。"""
+        msgs = self._rounds(100, 20000)
+        before = len(msgs)
+        self.agent._shrink_inflight_context(msgs, 256 * 1024)
+        self.assertLess(len(msgs), before, "应丢弃部分历史轮次")
+        after_tokens = sum(
+            agent_mod.estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in msgs
+        )
+        self.assertLess(after_tokens, 256 * 1024)
+
+    def test_round_drop_keeps_tool_pairing(self):
+        """整轮丢弃后 tool_use 与 tool_result 必须仍然配对，否则协议报错。"""
+        msgs = self._rounds(100, 20000)
+        self.agent._shrink_inflight_context(msgs, 256 * 1024)
+        uses, results = set(), set()
+        for m in msgs:
+            for tc in (m.get("tool_calls") or []):
+                uses.add(tc["id"])
+            if m.get("role") == "tool":
+                results.add(m.get("tool_call_id"))
+        self.assertEqual(uses, results, "tool_use 与 tool_result 必须一一配对")
+
+    def test_round_drop_never_produces_negative_estimate(self):
+        """估算值不能为负（曾因重复扣减出现 -65925）。"""
+        msgs = self._rounds(100, 20000)
+        self.agent._shrink_inflight_context(msgs, 256 * 1024)
+        tokens = sum(
+            agent_mod.estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in msgs
+        )
+        self.assertGreaterEqual(tokens, 0)
+
+    def test_trigger_earlier_than_budget(self):
+        """85% 就该触发，不能等到 100%（撞上限时请求已被上游拒绝）。"""
+        # 构造刚好超过 85%、未到 100% 的体积
+        budget = 256 * 1024
+        msgs = self._rounds(40, 20000)
+        before_tokens = sum(
+            agent_mod.estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in msgs
+        )
+        self.assertGreater(before_tokens, budget * 0.85)
+        self.agent._shrink_inflight_context(msgs, budget)
+        after_tokens = sum(
+            agent_mod.estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in msgs
+        )
+        self.assertLess(after_tokens, before_tokens, "85% 阈值必须触发压缩")
 
 
 if __name__ == "__main__":

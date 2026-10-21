@@ -3601,10 +3601,8 @@ async def api_tools():
 @app.get("/api/metrics")
 async def api_metrics(format: str = "json"):
     """进程内运行指标：工具/LLM 调用计数与耗时。format=prometheus 返回文本格式。"""
-    from chat_client.metrics import get_metrics
-    m = get_metrics(
-        persist_path=os.path.join(BASE_DIR, "metrics", "tool_usage.json")
-    )
+    from chat_client.metrics import default_persist_path, get_metrics
+    m = get_metrics(persist_path=default_persist_path())
     if (format or "").lower() in ("prometheus", "text"):
         return PlainTextResponse(m.to_prometheus())
     return JSONResponse(public.return_data(True, data=m.snapshot()))
@@ -3675,6 +3673,45 @@ async def api_skill_status(request: Request):
     params = await _params(request)
     # 前端字段为 skill_name/enabled，与 agent_main.set_skill_status 一致，原样透传
     return JSONResponse(agent_main.set_skill_status(params))
+
+
+@app.get("/api/skills/usage")
+async def api_skills_usage(limit: int = 50):
+    """技能使用统计：按技能名的加载次数排行 + 从未被加载过的技能清单。
+
+    工具级指标只能看到 "Skills" 被调了多少次，无法回答「哪个技能真被用过」。
+    本接口把两者合起来，用于判断技能摘要（system prompt 里那 10.8KB）该保留
+    哪些、哪些可以移出常驻列表改为按需加载。
+    """
+    from chat_client.metrics import default_persist_path, get_metrics
+    from chat_client.skills import skill_manager
+
+    m = get_metrics(persist_path=default_persist_path())
+    lifetime = dict(m.snapshot().get("skills_lifetime") or {})
+
+    try:
+        all_names = [s.name for s in skill_manager.all()]
+    except Exception:
+        all_names = []
+
+    ranked = sorted(
+        (
+            {"name": n, **{k: int(v.get(k, 0)) for k in ("loads", "installs", "uninstalls", "errors")}}
+            for n, v in lifetime.items()
+        ),
+        key=lambda x: (x["loads"], x["installs"]),
+        reverse=True,
+    )
+    used = {r["name"] for r in ranked if r["loads"] or r["installs"]}
+    never_used = sorted(n for n in all_names if n not in used)
+
+    return JSONResponse(public.return_data(True, data={
+        "total_installed": len(all_names),
+        "used_count": len(used),
+        "never_used_count": len(never_used),
+        "ranked": ranked[:max(1, int(limit))],
+        "never_used": never_used,
+    }))
 
 
 # ── P2-a: 技能包（导出/导入）────────────────────────────────────

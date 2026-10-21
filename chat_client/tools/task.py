@@ -22,6 +22,7 @@ class AgentDefinition:
     system_prompt_template: str
     department: str = ""   # 所属部门名（空=未分配）
     skills: list[str] = None   # 该角色专属预加载技能（运行时自动注入系统提示词）
+    expert_dir: str = ""   # 专家目录（含 skills/ 子目录）；空=非专家成员
 
 class AgentRegistry:
     def __init__(self):
@@ -37,25 +38,55 @@ class AgentRegistry:
         """
         把某角色专属的预加载技能（agent_def.skills）内容拼成文本块，
         用于注入到该角色的系统提示词，使其开局即"带上"专属技能，无需再调 Skills 工具。
+
+        技能来源（按优先级）：
+        1. 专家目录自带 skills/<name>/（agent_def.expert_dir，Octop 式专家包）
+        2. 全局 skill_manager（项目 skills/ 目录）
         """
         names = agent_def.skills or []
         if not names:
             return ""
         from ..skills import skill_manager
+        expert_dir = (agent_def.expert_dir or "").strip()
+        expert_skills_root = os.path.join(expert_dir, "skills") if expert_dir else ""
         blocks = []
         for nm in names:
             nm = str(nm).strip()
             if not nm:
                 continue
-            sk = skill_manager.get_enabled(nm)
-            if not sk:
-                continue
-            skill_dir = os.path.dirname(sk.location)
+            # 优先从专家目录自带技能读取（自包含，不依赖全局技能是否启用）
+            skill_dir = ""
+            sk_content = ""
+            sk_name = nm
+            if expert_skills_root and os.path.isdir(expert_skills_root):
+                cand = os.path.join(expert_skills_root, nm)
+                skill_md = os.path.join(cand, "SKILL.md")
+                if os.path.isfile(skill_md):
+                    try:
+                        with open(skill_md, encoding="utf-8") as f:
+                            raw = f.read()
+                        # 去掉 YAML frontmatter，保留正文
+                        if raw.startswith("---"):
+                            parts = raw.split("---", 2)
+                            if len(parts) >= 3:
+                                raw = parts[2].lstrip("\n")
+                        sk_content = raw.strip()
+                        skill_dir = cand
+                    except Exception:
+                        sk_content = ""
+            if not sk_content:
+                # 回退全局技能库
+                sk = skill_manager.get_enabled(nm)
+                if not sk:
+                    continue
+                skill_dir = os.path.dirname(sk.location)
+                sk_content = sk.content.strip()
+                sk_name = sk.name
             files = skill_manager.list_files(skill_dir)
             file_list = "\n".join(f"<file>{f}</file>" for f in files)
             blocks.append(
-                f'<skill_content name="{sk.name}">\n'
-                f'# Skill: {sk.name}\n\n{sk.content.strip()}\n\n'
+                f'<skill_content name="{sk_name}">\n'
+                f'# Skill: {sk_name}\n\n{sk_content}\n\n'
                 f'Base directory: {skill_dir}\n'
                 f'Relative paths in this skill (e.g. scripts/, reference/) are relative to this base directory.\n'
                 f'<skill_files>\n{file_list}\n</skill_files>\n'
@@ -106,6 +137,7 @@ class AgentRegistry:
                     system_prompt_template=str(item.get("backstory", "")),
                     department=str(item.get("department", "")).strip(),
                     skills=list(item.get("skills", [])) or None,
+                    expert_dir=str(item.get("expert_dir", "")).strip(),
                 ))
         except Exception as e:
             print(f"[Crew] 加载自定义代理失败: {e}")
