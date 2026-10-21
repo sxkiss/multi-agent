@@ -517,8 +517,11 @@ class ChatJobManager:
                 return None
             self._prune_locked()
             key = self.make_key(session_id)
-            job = ChatJob(session_id, label)
-            job.key = key
+            # 必须把最终 key 直接传给构造函数：ChatJob.__init__ 会用它生成
+            # persist_path。若先构造再覆盖 job.key，persist_path 仍指向构造时
+            # 默认 key 的文件，导致所有 job 事件混写到一个随机文件、磁盘恢复
+            # 时 key 对不上、SSE 续传死锁（last_id 卡住不前进）。
+            job = ChatJob(session_id, label, key=key)
             self._jobs[key] = job
             return job
 
