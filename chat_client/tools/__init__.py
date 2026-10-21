@@ -124,6 +124,10 @@ class BackgroundTaskManager:
         self._tasks: dict[str, _BgTask] = {}
         self._lock = threading.Lock()
         self._MAX = 200
+        # 每个 session 一个 wake event：后台任务完成时 set()，唤醒主循环收尾段的
+        # 挂起等待（取代旧版 "轮询 + 过早终止"）。避免主循环在后台任务未跑完时
+        # 就 yield stop 终止会话、导致结果只推 SSE 进不了上下文。
+        self._wake_events: dict[str, threading.Event] = {}
 
     def register(self, task_id: str, tool: str, args: tuple,
                  future, session_id: str) -> None:
@@ -142,6 +146,36 @@ class BackgroundTaskManager:
         with self._lock:
             self._tasks.pop(task_id, None)
 
+    def get_wake_event(self, session_id: str) -> threading.Event:
+        """取（或惰性创建）本会话的 wake event；主循环收尾段挂起等待它。"""
+        with self._lock:
+            ev = self._wake_events.get(session_id)
+            if ev is None:
+                ev = threading.Event()
+                self._wake_events[session_id] = ev
+            return ev
+
+    def _wake(self, session_id: str) -> None:
+        """唤醒该会话挂起的主循环（若已存在 wake event）。"""
+        with self._lock:
+            ev = self._wake_events.get(session_id)
+        if ev is not None:
+            ev.set()
+
+    def _persist_result(self, task_id: str, tool: str, status: str, result: str) -> None:
+        """把完整结果落盘到 jobs/<key>.jsonl，进程重启后仍能回查（旧版只存 500 字预览）。"""
+        try:
+            job = getattr(_current_job_local, "job", None)
+            if job is not None and hasattr(job, "append"):
+                job.append("background_result", {
+                    "task_id": task_id,
+                    "tool": tool,
+                    "status": status,
+                    "result": result,
+                })
+        except Exception:
+            logger.warning("后台任务结果落盘失败 task=%s", task_id, exc_info=True)
+
     def notify_done(self, task_id: str, result: str) -> None:
         with self._lock:
             t = self._tasks.get(task_id)
@@ -149,8 +183,10 @@ class BackgroundTaskManager:
                 return
             t.status = "done"
             t.result = result
-        # 通知 job：通过 emit_progress 推一条 background_done 事件，
-        # 前端/agent 看到后就可以把结果注入到对话上下文里。
+            _sid = t.session_id
+        # 1) 完整结果落盘：进程重启后仍能回查（旧版 emit_progress 仅推 500 字预览）
+        self._persist_result(task_id, t.tool, "done", result)
+        # 2) 推 SSE 预览事件，前端可见状态
         try:
             emit_progress("background_done", {
                 "task_id": task_id,
