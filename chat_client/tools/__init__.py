@@ -214,6 +214,8 @@ class BackgroundTaskManager:
             })
         except Exception:
             logger.warning("后台任务完成通知失败 task=%s", task_id, exc_info=True)
+        # 3) 唤醒挂起的主循环收尾段，使其 drain_finished 注入结果后正常收尾
+        self._wake(_sid)
 
     def notify_failed(self, task_id: str, error: str) -> None:
         with self._lock:
@@ -222,6 +224,8 @@ class BackgroundTaskManager:
                 return
             t.status = "failed"
             t.result = f"[执行失败] {error}"
+            _sid = t.session_id
+        self._persist_result(task_id, t.tool, "failed", t.result)
         try:
             emit_progress("background_done", {
                 "task_id": task_id,
@@ -230,6 +234,7 @@ class BackgroundTaskManager:
             })
         except Exception:
             logger.warning("后台任务失败通知失败 task=%s", task_id, exc_info=True)
+        self._wake(_sid)
 
     def pending_count(self, session_id: str) -> int:
         """本会话中仍在运行、且结果尚未注入上下文的后台任务数。
