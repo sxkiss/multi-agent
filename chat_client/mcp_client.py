@@ -23,7 +23,7 @@ from typing import Any
 
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from chat_client.tools import registry
+from chat_client.tools import registry, sanitize_tool_name
 from mcp import ClientSession
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,11 @@ def _tool_schema_from_mcp(mcp_tool: Any) -> dict[str, Any]:
     return {
         "type": "function",
         "function": {
-            "name": tool_name,
+            # 协议层工具名清洗：MCP 工具名可能含点号（如 doc.copy_format），
+            # sub2api 转 OpenAI 协议会因非法字符拒绝（Only a-z, A-Z, 0-9, underscores, dashes）
+            # -> 多轮对话 500。对外统一暴露清洗名，执行时由 _register_func 的别名
+            # （registry 内部原始名 -> 清洗名）映射回原始 MCP 工具。
+            "name": sanitize_tool_name(tool_name),
             "description": tool_desc or f"MCP tool: {tool_name}",
             # MCP 工具的 input_schema 是任意 JSON Schema，未必满足 OpenAI strict 模式
             # （缺 additionalProperties:false、含嵌套/anyOf 等），强制 strict=True 会导致
@@ -210,6 +214,10 @@ class MCPClient:
                 continue
             self._tool_schemas.append(schema)
             self._tool_servers[tool_name] = name
+            # 清洗名别名：让 call_tool(清洗名) 也能路由到同一服务器
+            safe_name = sanitize_tool_name(tool_name)
+            if safe_name != tool_name:
+                self._tool_servers[safe_name] = name
             func = _make_http_call(tool_name, url, token, transport, headers)
             registry._register_func(func, tool_name, "mcp", f"MCP: {tool_name} ({name})", "medium")
 
@@ -260,6 +268,10 @@ class MCPClient:
             tool_name = mcp_tool.name
             self._tool_schemas.append(schema)
             self._tool_servers[tool_name] = name
+            # 清洗名别名：让 call_tool(清洗名) 也能路由到同一服务器
+            safe_name = sanitize_tool_name(tool_name)
+            if safe_name != tool_name:
+                self._tool_servers[safe_name] = name
 
             func = _make_sync_call(tool_name, name, tool_name)
             registry._register_func(func, tool_name, "mcp", f"MCP: {tool_name} ({name})", "medium")
