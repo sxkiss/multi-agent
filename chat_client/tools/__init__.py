@@ -25,6 +25,25 @@ from .base import _xml_response, inject_tool_name, inject_duration, tool_result_
 # 项目根目录（chat_client 的上一级），作为所有工具的默认工作目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 上游协议（OpenAI / sub2api 透传）对工具名有硬性规则：
+# 只允许 a-z A-Z 0-9 _ -，其他字符（如 MCP 工具的点号 doc.copy_format）会触发
+# "invalid name" 400，导致多轮对话 500「不符合 API 协议」。
+# 这里把非法字符清洗为下划线，保证对外暴露名合规且稳定可还原。
+_ALLOWED_TOOL_NAME_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
+_LEADING_NON_ALPHA = re.compile(r"^[^a-zA-Z]+")
+
+
+def sanitize_tool_name(name: str) -> str:
+    """把工具名清洗成上游协议允许的形状（点号等非法字符 -> 下划线）。"""
+    if not name:
+        return name
+    cleaned = _ALLOWED_TOOL_NAME_CHARS.sub("_", name)
+    # 首字符必须是字母，避免 _123 这类无法作为标识符的情况
+    if _LEADING_NON_ALPHA.match(cleaned):
+        cleaned = "t_" + cleaned
+    return cleaned
+
+
 # ============================================================
 # 工具下发策略（Tool Disclosure Policy）
 # 背景：单 Agent 模式默认把全部工具下发，工具数多时首 token 延迟偏高
@@ -901,8 +920,19 @@ class ToolRegistry:
         # 如果没有提供ID，使用函数名作为ID
         final_id = tool_id if tool_id else name
         
+        # 协议层工具名清洗：MCP/腾讯文档等工具名可能含点号（如 doc.copy_format），
+        # sub2api 转 OpenAI 协议时要求工具名只含 a-z A-Z 0-9 _ -，点号会导致
+        # "invalid name: Only a-z, A-Z, 0-9, underscores, and dashes are allowed" 400，
+        # BT 侧表现为第二轮对话 500「不符合 API 协议」。
+        # 这里把 . 替换为 _ 作为对外暴露名（safe_name），同时保留原始名注册，
+        # 使 get_tool_func/safe_name 能命中同一 wrapper 执行。
+        safe_name = sanitize_tool_name(name)
+
         self._tools[name] = wrapper
         schema = self._generate_schema(func)
+        # 对外 schema 使用清洗后的工具名，避免上游协议校验失败
+        if safe_name != name:
+            schema["function"]["name"] = safe_name
         self._schemas.append(schema)
         
         # 存储元数据
@@ -917,6 +947,11 @@ class ToolRegistry:
             "show": state.get("show", True),
             "timeout": int(timeout) if timeout else None,
         }
+        # 清洗名别名：让主循环用模型返回的 safe_name 也能找到工具
+        if safe_name != name:
+            self._tools[safe_name] = wrapper
+            self._metadata[safe_name] = dict(self._metadata[name])
+            self._metadata[safe_name]["name"] = safe_name
         
         return wrapper
 
