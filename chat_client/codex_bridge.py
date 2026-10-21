@@ -388,6 +388,8 @@ def query_codex_history(thread_id: str, workspace: str = "") -> list[dict]:
 
     history = []
     tool_results_cache = {}  # call_id -> output（function_call_output）
+    pending_reasoning = ""  # 尚未关联到 assistant 的 reasoning 文本
+    pending_tool_calls = []  # 尚未关联到 assistant 的 function_call 列表
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fp:
             for line in fp:
@@ -398,15 +400,7 @@ def query_codex_history(thread_id: str, workspace: str = "") -> list[dict]:
                 if d.get("type") != "response_item":
                     continue
                 payload = d.get("payload", {})
-                # 提前收集 function_call_output，按 call_id 索引
-                if payload.get("type") == "function_call_output":
-                    cid = payload.get("call_id", "")
-                    if cid:
-                        tool_results_cache[cid] = str(payload.get("output", "") or "")
-                    continue
-                if payload.get("type") != "message":
-                    continue
-                role = payload.get("role", "")
+                pt = payload.get("type", "")
                 ts_raw = d.get("timestamp", "")
                 try:
                     import datetime as _dt
@@ -414,6 +408,39 @@ def query_codex_history(thread_id: str, workspace: str = "") -> list[dict]:
                 except Exception:
                     ts = 0
 
+                # reasoning：独立 item，summary[0].text 是思考文本
+                if pt == "reasoning":
+                    summary = payload.get("summary") or []
+                    for s in summary:
+                        if isinstance(s, dict) and s.get("type") == "summary_text":
+                            t = s.get("text") or ""
+                            if t.strip():
+                                pending_reasoning += t
+                    continue
+
+                # function_call_output：按 call_id 缓存结果
+                if pt == "function_call_output":
+                    cid = payload.get("call_id", "")
+                    if cid:
+                        tool_results_cache[cid] = str(payload.get("output", "") or "")
+                    continue
+
+                # function_call：独立 item，记录调用名和参数
+                if pt == "function_call":
+                    fc_id = payload.get("call_id", payload.get("id", ""))
+                    name = payload.get("name", "")
+                    args = payload.get("arguments", "")
+                    if fc_id and name:
+                        pending_tool_calls.append({
+                            "id": fc_id,
+                            "function": {"name": name, "arguments": args},
+                        })
+                    continue
+
+                if pt != "message":
+                    continue
+
+                role = payload.get("role", "")
                 if role == "user":
                     texts = []
                     for c in payload.get("content", []):
@@ -427,38 +454,37 @@ def query_codex_history(thread_id: str, workspace: str = "") -> list[dict]:
                             "content": [{"type": "text", "text": t} for t in texts],
                             "timestamp": ts,
                         })
+                    # user 消息后重置 pending
+                    pending_reasoning = ""
+                    pending_tool_calls = []
+                    continue
 
-                elif role in ("developer", "assistant"):
+                if role in ("developer", "assistant"):
                     text = ""
-                    tool_calls = []
                     for c in payload.get("content", []):
-                        if isinstance(c, dict):
-                            ctype = c.get("type", "")
-                            if ctype in ("input_text", "output_text"):
-                                text += (c.get("text") or "")
-                            elif ctype == "tool_use":
-                                tool_calls.append({
-                                    "id": c.get("id", ""),
-                                    "function": {
-                                        "name": c.get("name", ""),
-                                        "arguments": json.dumps(c.get("input", {}), ensure_ascii=False),
-                                    },
-                                })
-                    if not text.strip() and not tool_calls:
+                        if isinstance(c, dict) and c.get("type") in ("input_text", "output_text"):
+                            text += (c.get("text") or "")
+                    text = text.strip()
+                    # 合并 pending_reasoning 和 pending_tool_calls
+                    reasoning_content = pending_reasoning.strip()
+                    tool_calls = list(pending_tool_calls)
+                    pending_reasoning = ""
+                    pending_tool_calls = []
+                    if not text and not tool_calls:
                         continue
                     history.append({
                         "role": "assistant",
                         "content": text,
                         "tool_calls": tool_calls,
+                        "reasoning_content": reasoning_content or None,
                         "timestamp": ts,
                     })
-                    # 补发 tool 结果（用 call_id 匹配 codex 的 function_call_output）
+                    # 补发 tool 结果
                     for tc in tool_calls:
-                        tid = tc["id"]
-                        out = tool_results_cache.get(tid, "")
+                        out = tool_results_cache.get(tc["id"], "")
                         history.append({
                             "role": "tool",
-                            "tool_call_id": tid,
+                            "tool_call_id": tc["id"],
                             "content": out,
                             "timestamp": ts + 0.001,
                         })
