@@ -670,7 +670,9 @@ class ToolRegistry:
         # P3-b 可观测性：工具调用指标（延迟导入避免循环依赖）
         try:
             from ..metrics import get_metrics
-            _metrics = get_metrics()
+            _metrics = get_metrics(
+                persist_path=os.path.join(PROJECT_ROOT, "metrics", "tool_usage.json")
+            )
         except Exception:
             _metrics = None
 
@@ -1145,6 +1147,149 @@ registry = ToolRegistry()
 # 装饰器别名
 def register_tool(tool_id=None, **kwargs):
     return registry.register_tool(tool_id, **kwargs)
+
+
+# ============================================================
+# MCP 工具按需加载（Tool Search）
+#
+# 背景（2026-10-21 调研）：
+#   BT 启动时全量注入 MCP 工具 schema，实测 275 个 MCP 工具 + 83 个内置工具，
+#   schema 体积远超内置部分，且历史统计显示 MCP 工具调用次数为 0。
+#   对照 Codex CLI：MCP 工具默认 defer（不注入 schema），模型搜索后才展开，
+#   内置工具只有 3~15 个，因此固定开销极低。
+#
+# 方案：
+#   - MCP 工具仍正常注册到 registry（执行链路不变，get_tool_func 照常命中）；
+#   - 但默认不下发 schema（从 tools 数组里剔除），只下发一个 ToolSearch 工具；
+#   - 模型需要 MCP 能力时调用 ToolSearch 关键词搜索，命中后本会话内解锁，
+#     后续请求才带上这些工具的完整 schema。
+#   - 解锁状态按 session 隔离，避免一个会话开了工具影响其他会话。
+#   - 配置：mcp_tool_defer（默认 true）/ mcp_defer_always_include（始终下发名单）
+# ============================================================
+
+# session_id -> 已解锁的 MCP 工具名集合
+_mcp_unlocked: dict[str, set[str]] = {}
+_mcp_unlocked_lock = threading.Lock()
+
+
+def unlock_mcp_tools(session_id: str, names: set[str]):
+    """把若干 MCP 工具标记为本会话已解锁（下一轮请求会带上其 schema）。"""
+    if not session_id or not names:
+        return
+    with _mcp_unlocked_lock:
+        _mcp_unlocked.setdefault(session_id, set()).update(names)
+
+
+def get_unlocked_mcp_tools(session_id: str) -> set[str]:
+    if not session_id:
+        return set()
+    with _mcp_unlocked_lock:
+        return set(_mcp_unlocked.get(session_id) or ())
+
+
+def clear_unlocked_mcp_tools(session_id: str):
+    with _mcp_unlocked_lock:
+        _mcp_unlocked.pop(session_id, None)
+
+
+def is_mcp_tool(name: str) -> bool:
+    """该工具是否为 MCP 来源（注册时 category == "mcp"）。"""
+    meta = registry._metadata.get(name) or {}
+    return meta.get("category") == "mcp"
+
+
+@register_tool(category="系统", name_cn="搜索并解锁 MCP 工具", risk_level="low")
+def ToolSearch(query: str = "", limit: int = 15) -> str:
+    """
+    - 搜索当前已连接但尚未下发的 MCP 工具（腾讯文档、地图、浏览器等）
+    - 适用：需要操作文档/表格/幻灯片、地图、外部服务，但当前工具列表里没有对应工具时
+    - 参数：query（关键词，如 "文档 表格"、"slide"、"地图"；留空列出全部可解锁工具）、
+            limit（最多返回条数，默认 15）
+    - 命中后会立即解锁这些工具，下一次回复即可直接调用
+
+    设计说明：MCP 工具默认不注入模型上下文以节省固定开销。搜索是唯一入口，
+    解锁仅对当前会话生效。
+    """
+    try:
+        limit = max(1, min(int(limit or 15), 50))
+    except Exception:
+        limit = 15
+    sid = _current_session_id() or ""
+
+    # 候选：注册为 mcp 分类、且尚未解锁的工具。
+    # 注意：_register_func 会为含点号的工具名同时登记「原名」和「清洗名」两条
+    # metadata（如 doc.copy_format / doc_copy_format），必须按 id 去重，
+    # 否则同一工具会被算两次、搜索结果里也出现重复项。
+    unlocked = get_unlocked_mcp_tools(sid)
+    candidates = []
+    seen_ids: set[str] = set()
+    for name, meta in registry._metadata.items():
+        if meta.get("category") != "mcp":
+            continue
+        tid = meta.get("id") or name
+        if tid in seen_ids:
+            continue
+        seen_ids.add(tid)
+        if name in unlocked or tid in unlocked:
+            continue
+        desc = (meta.get("description") or "")[:200]
+        candidates.append((name, desc))
+
+    if not candidates:
+        return tool_result_for_model(
+            "当前没有待解锁的 MCP 工具（可能已全部解锁，或未连接任何 MCP 服务器）。"
+        )
+
+    q = (query or "").strip().lower()
+    if q:
+        terms = [t for t in re.split(r"[\s,，、]+", q) if t]
+        scored = []
+        for name, desc in candidates:
+            hay = (name + " " + desc).lower()
+            score = sum(1 for t in terms if t in hay)
+            if score:
+                scored.append((score, name, desc))
+        if not scored:
+            # 中文查询常匹配不上英文工具名/描述，回退为「列出全部」并给出提示，
+            # 避免模型因一次空结果就认为没有可用 MCP 能力。
+            scored = [(0, n, d) for n, d in candidates]
+            _hint = (
+                f"没有找到精确匹配「{query}」的 MCP 工具（工具名/描述多为英文）。"
+                f"以下列出全部 {len(candidates)} 个可解锁工具供挑选：\n"
+            )
+        else:
+            _hint = ""
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        matched = [(n, d) for _, n, d in scored]
+    else:
+        _hint = ""
+        matched = sorted(candidates, key=lambda x: x[0])
+
+    picked = matched[:limit]
+    # 解锁时同时登记「对外名（清洗名）」和「注册 id（原始名）」：
+    # schema 数组里的 function.name 是清洗名，而 metadata 的 id 是原始名
+    # （如 doc.copy_format）。只记其中一个会导致解锁后仍过滤不到 schema。
+    names: set[str] = set()
+    for n, _ in picked:
+        names.add(n)
+        _tid = (registry._metadata.get(n) or {}).get("id")
+        if _tid:
+            names.add(_tid)
+    unlock_mcp_tools(sid, names)
+
+    lines = []
+    if _hint:
+        lines.append(_hint.rstrip())
+        lines.append("")
+    # 计数用「实际选中的工具数」，不能用 names 集合大小
+    # （含点号工具会同时登记原名与清洗名，集合大小会翻倍）
+    lines.append(f"已解锁 {len(picked)} 个 MCP 工具（本会话有效），现在可以直接调用：")
+    for n, d in picked:
+        lines.append(f"- {n}: {d or '(无描述)'}")
+    if len(matched) > len(picked):
+        lines.append(f"……另有 {len(matched) - len(picked)} 个匹配项，可提高 limit 或细化 query。")
+    return tool_result_for_model("\n".join(lines))
+
 
 
 # ============================================================

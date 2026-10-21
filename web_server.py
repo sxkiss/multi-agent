@@ -3602,7 +3602,9 @@ async def api_tools():
 async def api_metrics(format: str = "json"):
     """进程内运行指标：工具/LLM 调用计数与耗时。format=prometheus 返回文本格式。"""
     from chat_client.metrics import get_metrics
-    m = get_metrics()
+    m = get_metrics(
+        persist_path=os.path.join(BASE_DIR, "metrics", "tool_usage.json")
+    )
     if (format or "").lower() in ("prometheus", "text"):
         return PlainTextResponse(m.to_prometheus())
     return JSONResponse(public.return_data(True, data=m.snapshot()))
