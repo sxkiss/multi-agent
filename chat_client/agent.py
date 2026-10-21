@@ -667,12 +667,12 @@ class Agent:
                     logger.debug("MCP 尚未加载完成（预加载线程处理中），跳过")
                 else:
                     self._mcp_loaded = True
-                    if not self.strict_tools:
-                        for schema in mcp_client.get_tool_schemas():
-                            tid = schema["function"]["name"]
-                            if tid not in self.enabled_tools:
-                                self.enabled_tools.append(tid)
-                    logger.info(f"MCP 客户端已加载，{len(mcp_client.get_tool_schemas())} 个工具可用")
+                    # 【MCP 按需加载】不再把 275 个 MCP 工具 id 塞进 enabled_tools。
+                    # 旧行为会让 _build_tools(enabled_ids=...) 走过滤分支、绕过延迟加载，
+                    # 导致 MCP schema 仍然全量下发（实测 236KB/轮）。
+                    # 现在 enabled_tools 只保留内置工具，MCP 工具由 _build_tools
+                    # 按「已解锁集合」单独追加。
+                    logger.info(f"MCP 客户端已加载，{len(mcp_client.get_tool_schemas())} 个工具可用（按需加载）")
             except Exception as e:
                 logger.warning(f"MCP 客户端初始化失败（不影响核心功能）: {e}")
         
@@ -1111,12 +1111,44 @@ Here is some useful information about the environment you are running in:
             # 工具配置：首次迭代只用用户指定工具（避免 GLM 因工具过多混淆）
             def _build_tools(enabled_ids):
                 t = registry.get_openai_tools(enabled_ids=enabled_ids)
-                # 仅当全量模式（enabled_ids=None）时才注入 MCP 工具
-                if self._mcp_loaded and enabled_ids is None:
+
+                # MCP 工具单独处理（内置工具已由 registry 返回）。
+                # 无论走 enabled_ids 过滤还是全量分支，MCP 都按「已解锁集合」追加，
+                # 保证延迟加载在两种分支下都生效。
+                if self._mcp_loaded:
                     from chat_client.mcp_client import get_mcp_client
                     mcp_client = get_mcp_client()
-                    t = [x for x in t if registry._metadata.get(x["function"]["name"], {}).get("category") != "mcp"]
+                    # 先剔除 registry 里可能混入的 MCP 工具（按 category 判断），
+                    # 避免与下面追加的 mcp_client schema 重复。
+                    t = [
+                        x for x in t
+                        if registry._metadata.get(x["function"]["name"], {}).get("category") != "mcp"
+                    ]
                     mcp_tools = mcp_client.get_tool_schemas()
+
+                    if mcp_tools and self._mcp_defer_enabled():
+                        from .tools import get_unlocked_mcp_tools
+                        _unlocked = get_unlocked_mcp_tools(self.session_id)
+                        _always = set(self.config.get("mcp_defer_always_include") or [])
+                        _keep = _unlocked | _always
+                        _before = len(mcp_tools)
+
+                        # schema 的 function.name 是清洗名，metadata 的 id 可能是
+                        # 原始名（含点号）。两者都要匹配，否则解锁了也过滤不出来。
+                        def _allowed(schema):
+                            _fn = schema["function"]["name"]
+                            if _fn in _keep:
+                                return True
+                            _tid = (registry._metadata.get(_fn) or {}).get("id")
+                            return bool(_tid and _tid in _keep)
+
+                        mcp_tools = [x for x in mcp_tools if _allowed(x)]
+                        logger.info(
+                            "[MCP-Defer] 按需加载：已解锁 %d 个，注入 %d/%d 个 MCP 工具"
+                            "（其余可经 ToolSearch 解锁）",
+                            len(_unlocked), len(mcp_tools), _before,
+                        )
+
                     if mcp_tools:
                         t.extend(mcp_tools)
                     # 过滤+合并后仍需去重：内置与 MCP 同名工具可能在过滤后再次共存，
@@ -1131,6 +1163,17 @@ Here is some useful information about the environment you are running in:
                 all_tools = _build_tools(self.original_tools) if self.original_tools else _build_tools(None)
             else:
                 all_tools = _build_tools(self.enabled_tools) if self.enabled_tools else _build_tools(None)
+
+            # ToolSearch 是 MCP 按需加载的唯一入口，必须始终可用；
+            # 否则 strict 模式（经理）按 original_tools 过滤时会把它一起过滤掉，
+            # 模型就永远无法解锁 MCP 工具。
+            if self._mcp_loaded and self._mcp_defer_enabled():
+                if not any(x["function"]["name"] == "ToolSearch" for x in all_tools):
+                    _ts = [x for x in registry.get_openai_tools()
+                           if x["function"]["name"] == "ToolSearch"]
+                    if _ts:
+                        all_tools = all_tools + _ts
+
             tools = all_tools
             first_tools = all_tools
             
@@ -1667,6 +1710,14 @@ Here is some useful information about the environment you are running in:
 
                     tool_exists = registry.tool_exists(func_name)
                     tool_enabled = registry.is_tool_enabled(func_name, self.enabled_tools) if tool_exists else False
+                    # ToolSearch 是 MCP 按需加载的唯一入口，必须在执行期放行：
+                    # 严格模式（经理）的 enabled_tools 来自 original_tools，
+                    # 不含 ToolSearch，若不特判会被权限校验拦掉，
+                    # 模型就永远无法解锁 MCP 工具。
+                    if (not tool_enabled and tool_exists
+                            and func_name == "ToolSearch"
+                            and self._mcp_loaded and self._mcp_defer_enabled()):
+                        tool_enabled = True
 
                     # 处理不存在的工具
                     if not tool_exists:
@@ -2440,6 +2491,22 @@ Here is some useful information about the environment you are running in:
                 shrunk, current + 0, current, budget_tokens,
             )
         return shrunk
+
+    def _mcp_defer_enabled(self) -> bool:
+        """是否启用 MCP 工具按需加载（默认启用）。
+
+        优先级：config["mcp_tool_defer"] > 环境变量 AI_AGENT_MCP_DEFER > True。
+        设为 False 可回退到「全量注入 MCP 工具 schema」的旧行为。
+        """
+        v = self.config.get("mcp_tool_defer")
+        if v is None:
+            env = os.environ.get("AI_AGENT_MCP_DEFER", "").strip().lower()
+            if env in ("0", "false", "off", "no"):
+                return False
+            return True
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() not in ("0", "false", "off", "no")
 
     def _build_messages(self, context_str: str) -> list[dict[str, Any]]:
         """构建包含系统指令、上下文和滑动窗口的 Prompt。"""

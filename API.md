@@ -570,6 +570,8 @@ GET /api/chat/events?session_id=xxx&job=xxx&last_id=42
   "tool_result_max_chars": 8000,   // 超过此字符数才精简（闸门内强制 ≤4000）
   "tool_result_head_chars": 3000,  // 精简后保留头部字符数
   "tool_result_tail_chars": 1500,  // 精简后保留尾部字符数
+  "mcp_tool_defer": true,          // MCP 工具按需加载：默认不下发 schema，经 ToolSearch 解锁
+  "mcp_defer_always_include": [],  // 始终下发 schema 的 MCP 工具名（白名单）
   "enable_mcp": true,              // 是否加载 MCP 工具
   "agent": {
     "max_tool_iterations": 999999,  // 最大工具调用轮次
