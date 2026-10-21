@@ -669,10 +669,9 @@ class ToolRegistry:
 
         # P3-b 可观测性：工具调用指标（延迟导入避免循环依赖）
         try:
-            from ..metrics import get_metrics
-            _metrics = get_metrics(
-                persist_path=os.path.join(PROJECT_ROOT, "metrics", "tool_usage.json")
-            )
+            from ..metrics import default_persist_path, get_metrics
+            # 用统一的路径解析：测试通过 BT_METRICS_DIR 隔离，避免污染生产统计
+            _metrics = get_metrics(persist_path=default_persist_path())
         except Exception:
             _metrics = None
 

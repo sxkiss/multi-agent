@@ -269,6 +269,8 @@ def InstallExpert(name: str, department: str = "experts", member_name: str = "",
         # 本地专家可携带推荐工具
         if not tools and local.tools:
             tools = list(local.tools)
+        expert_skills = list(getattr(local, "skills", None) or [])
+        expert_dir = str(getattr(local, "directory", "") or "")
     else:
         # 1. 取专家市场提示词 + 元数据
         try:
@@ -282,6 +284,8 @@ def InstallExpert(name: str, department: str = "experts", member_name: str = "",
         display = _expert_field(meta, "displayName", "name", "Name", "title") if meta else ""
         desc = _expert_field(meta, "description", "desc", "summary", "intro") if meta else ""
         category = _expert_field(meta, "categoryName", "category", "group", "type") if meta else ""
+        expert_skills = []
+        expert_dir = ""
 
     # 2. 规范化成员名：优先 member_name，其次专家标识；非法字符转 -
     raw_member = (member_name or key or "").strip().lower()
@@ -347,6 +351,8 @@ def InstallExpert(name: str, department: str = "experts", member_name: str = "",
             "expert_source": key,          # 溯源：记录来源专家标识
             "expert_category": category[:80],
             "identity": identity.strip()[:2000],
+            "skills": expert_skills,        # 专家自带技能（随专家目录注入子 agent）
+            "expert_dir": expert_dir,       # 专家目录（含 skills/），供 load_agent_skills_block 读取
         })
         _crew_save_file(data)
 

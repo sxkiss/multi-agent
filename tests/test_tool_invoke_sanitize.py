@@ -276,7 +276,9 @@ class SanitizeHistoryTest(unittest.TestCase):
         ]
         out = Agent._sanitize_messages_for_api(msgs)
         tool = [m for m in out if m.get("role") == "tool"][0]
-        self.assertIn("<tool_name>", tool["content"][0]["text"])
+        # 数组 content 会被压平成纯字符串（OpenAI chat 协议要求）
+        self.assertIsInstance(tool["content"], str)
+        self.assertIn("<tool_name>", tool["content"])
 
     def test_unclosed_invoke_stripped_from_history(self):
         """_sanitize_messages_for_api 对不闭合 <invoke> 的 assistant 历史也做剥离。"""

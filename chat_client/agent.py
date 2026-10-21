@@ -912,25 +912,19 @@ Here is some useful information about the environment you are running in:
         return out
 
     def _create_completion_stream(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None):
-        # 前缀缓存：对 system 消息打 cache_control，使稳定的 system 前缀命中缓存，
-        # 避免每轮全量重复计费（兼容 litellm/OpenAI 前缀缓存；不支持的代理会忽略该字段）
-        if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
-            messages = [dict(messages[0], cache_control={"type": "ephemeral"})] + messages[1:]
+        # 协议分流：responses / anthropic 各自在 build_request 内部打 cache_control
+        # （Anthropic 协议合法字段，命中前缀缓存）。本函数只负责 chat（OpenAI）分支。
+        # 注意：OpenAI 官方协议**不支持** message/tool 上的 cache_control 字段，
+        # 严格网关（如 ccload）会直接报 400/500。因此 chat 分支不再注入该字段，
+        # 前缀缓存交由 anthropic 适配层处理，避免污染 OpenAI 协议请求体。
 
-        # 工具定义是稳定的固定税（83 工具 ≈ 21.5K tokens/轮），单独打缓存标记。
-        # 只给最后一个工具打 cache_control，使整个 tools 数组构成缓存前缀
-        # （Anthropic / 支持前缀缓存的代理会命中；不支持的会忽略该字段）。
-        # 注意：这里做浅拷贝，避免污染调用方持有的 tools 列表。
-        cached_tools = None
-        if tools:
-            cached_tools = list(tools)
-            if isinstance(cached_tools[-1], dict):
-                cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
+        # 发送前最后一道保险：tool 消息 content 必须是纯字符串（见 _coerce_tool_contents）。
+        safe_messages = self._coerce_tool_contents(messages)
 
         params = {
             "model": self.model_name,
-            "messages": messages,
-            "tools": cached_tools if cached_tools else None,
+            "messages": safe_messages,
+            "tools": list(tools) if tools else None,
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": self.temperature,
@@ -1915,15 +1909,16 @@ Here is some useful information about the environment you are running in:
                     except Exception as _arch_err:
                         logger.debug(f"工具结果归档失败（按原样返回）: {_arch_err!s}")
 
-                    content_structure = [{
-                        "type": "text",
-                        "text": self._tool_content_for_model(result_str),
-                    }]
-                    self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
+                    # 注意：btag 走 OpenAI chat 协议（messages[].role=tool.content
+                    # 必须是纯字符串），不能用 Anthropic 的 [{type:text}] 数组——
+                    # 否则 sub2api 转 Responses API 时 agnes 上游拒绝
+                    # （did not match any variant of untagged enum ResponseInput → 500）。
+                    tool_text = self._tool_content_for_model(result_str)
+                    self.memory.add_message("tool", tool_text, tool_call_id=call_id, id=ai_msg_id)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call_id,
-                        "content": content_structure
+                        "content": tool_text
                     })
 
                 # 【单轮内上下文闸门】工具结果回填后检查一次 messages 体积。
@@ -2071,24 +2066,59 @@ Here is some useful information about the environment you are running in:
         return content
 
     @staticmethod
-    def _tool_content_for_model(content: Any) -> Any:
-        """把 role=tool 的 content 归一化为纯文本（兼容字符串与 text 块列表）。
+    def _tool_content_for_model(content: Any) -> str:
+        """把 role=tool 的 content 归一化为**纯文本字符串**。
 
         工具结果内部用 <tool> XML 封装；回灌给模型时去掉外壳，避免模型把
         工具结果格式误当成工具调用格式。归档/展示不受影响。
+
+        重要（2026-10-21）：返回值必须是 str，不能是 [{type:text}] 数组。
+        OpenAI chat 协议规定 role=tool 的 content 只能是字符串；数组是
+        Anthropic Messages 的格式。上游 sub2api 会把 chat 转成 Responses API
+        转发给 agnes，agnes 的 ResponseInput 枚举不认 {"type":"text"}，直接
+        400（did not match any variant of untagged enum ResponseInput）→ 500。
+        历史会话里可能已存了数组，这里统一压平，保证发出去的永远是字符串。
         """
         if isinstance(content, str):
             return tool_result_for_model(content)
         if isinstance(content, list):
-            out = []
+            parts: list[str] = []
             for p in content:
-                if isinstance(p, dict):
-                    p = dict(p)
-                    if p.get("type") in ("text", "input_text", "output_text") and isinstance(p.get("text"), str):
-                        p["text"] = tool_result_for_model(p["text"])
-                out.append(p)
-            return out
-        return content
+                if isinstance(p, str):
+                    parts.append(p)
+                elif isinstance(p, dict):
+                    # 只取文本块；image_url 等非文本块在 tool 结果里无意义
+                    if p.get("type") in (None, "text", "input_text", "output_text"):
+                        t = p.get("text")
+                        if isinstance(t, str):
+                            parts.append(t)
+            return tool_result_for_model("".join(parts))
+        if content is None:
+            return ""
+        return tool_result_for_model(str(content))
+
+    @classmethod
+    def _coerce_tool_contents(cls, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """发送前兜底：把 role=tool 的数组 content 全部压平成字符串。
+
+        历史会话里可能残留 [{type:text,text:...}]（Anthropic Messages 格式）。
+        OpenAI chat 协议要求 role=tool 的 content 只能是字符串，数组会被
+        sub2api 转 Responses API 后由上游 agnes 拒绝
+        （did not match any variant of untagged enum ResponseInput → 500）。
+
+        返回新列表，不修改调用方的原始消息。
+        """
+        if not any(
+            isinstance(m, dict) and m.get("role") == "tool" and isinstance(m.get("content"), list)
+            for m in messages
+        ):
+            return messages
+        return [
+            ({**m, "content": cls._tool_content_for_model(m.get("content"))}
+             if isinstance(m, dict) and m.get("role") == "tool"
+             and isinstance(m.get("content"), list) else m)
+            for m in messages
+        ]
 
     @staticmethod
     def _normalize_reasoning_sentence(sentence: str) -> str:
@@ -2198,16 +2228,13 @@ Here is some useful information about the environment you are running in:
             call_id = tc.get("id")
             if not call_id or call_id in replied:
                 continue
-            content_structure = [{
-                "type": "text",
-                "text": self._tool_content_for_model(
-                    _xml_response("error", "任务被用户停止，该工具未执行。")),
-            }]
-            self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
+            tool_text = self._tool_content_for_model(
+                _xml_response("error", "任务被用户停止，该工具未执行。"))
+            self.memory.add_message("tool", tool_text, tool_call_id=call_id, id=ai_msg_id)
             messages.append({
                 "role": "tool",
                 "tool_call_id": call_id,
-                "content": content_structure,
+                "content": tool_text,
             })
 
 
@@ -2316,13 +2343,11 @@ Here is some useful information about the environment you are running in:
             return {
                 "role": "tool",
                 "tool_call_id": tid,
-                "content": [{
-                    "type": "text",
-                    "text": Agent._tool_content_for_model(_xml_response(
-                        "error",
-                        "工具未执行：该调用在上一次执行中断（进程退出或服务重启），无可用结果。",
-                    )),
-                }],
+                # content 用纯字符串（OpenAI chat 协议），不要 [{type:text}] 数组
+                "content": Agent._tool_content_for_model(_xml_response(
+                    "error",
+                    "工具未执行：该调用在上一次执行中断（进程退出或服务重启），无可用结果。",
+                )),
             }
 
         # 声明有结果 vs 无结果，必须在重建（会 pop）之前统计，否则计数不准
@@ -2388,12 +2413,18 @@ Here is some useful information about the environment you are running in:
         工具调用（max_tool_iterations 默认 300），messages 会在这条 while 循环里一路膨胀，
         直到本轮结束、下一轮才压缩 —— 中途极易撞上模型上下文上限（400/413/500）。
 
-        策略（保守、可逆、不丢信息）：
+        策略（分两级，保守、可逆、不丢信息）：
+        第一级——归档式精简（保留消息骨架）：
         - 只处理 role == "tool" 的消息（它们是体积大头，且可重新归档）；
         - 从最旧的开始，超过阈值的正文走 archive_result 精简（头+尾+折叠标记），
           完整内容落盘 tool_archives/，模型仍可用 ReadToolArchive 按需召回；
-        - 最近 keep_recent 条 tool 结果不动（模型当前正在用）；
-        - 估算已降到预算 70% 以下即停止，避免过度精简。
+        - 最近 keep_recent 条 tool 结果不动（模型当前正在用）。
+
+        第二级——整轮丢弃（第一级不够时）：
+        单轮工具循环可能跑到上百次调用，仅精简正文仍有下限（每条 tool 消息
+        至少有 XML 外壳与折叠标记）。若精简后仍超预算，按「user 消息」为边界
+        整轮丢弃最旧的历史，保留最近 keep_recent_rounds 轮。
+        以整轮为单位可保证 tool_use / tool_result 不会拆散，避免协议不匹配。
 
         返回被精简的消息条数（0 表示未触发或无需处理）。
         """
@@ -2406,11 +2437,19 @@ Here is some useful information about the environment you are running in:
             )
         except Exception:
             return 0
-        if current <= budget_tokens:
+
+        # 触发点必须早于 100%：等撞到上限再压，请求本身已被上游拒绝，
+        # 而且压完还要留给后续工具调用继续增长的空间。
+        trigger_ratio = float(self.config.get("inflight_trigger_ratio", 0.85) or 0.85)
+        trigger = int(budget_tokens * max(0.5, min(trigger_ratio, 1.0)))
+        if current <= trigger:
             return 0
 
-        # 目标：降到预算的 70%，给后续若干轮留出余量
-        target = int(budget_tokens * 0.7)
+        # 记录压缩前体积（current 会在循环里递减，必须提前留存用于日志）
+        original = current
+        # 目标：降到预算的 60%，给后续若干轮留出余量
+        target_ratio = float(self.config.get("inflight_target_ratio", 0.6) or 0.6)
+        target = int(budget_tokens * max(0.3, min(target_ratio, 0.9)))
         keep_recent = max(0, int(self.config.get("inflight_keep_recent_tools", 6)))
 
         # 收集可精简的 tool 消息下标（最旧优先），排除最近 N 条
@@ -2418,8 +2457,7 @@ Here is some useful information about the environment you are running in:
                     if isinstance(m, dict) and m.get("role") == "tool"]
         if keep_recent:
             tool_idx = tool_idx[:-keep_recent] if len(tool_idx) > keep_recent else []
-        if not tool_idx:
-            return 0
+        # 注意：tool_idx 为空不能直接 return —— 第一级够不着时还要走第二级整轮丢弃
 
         from .tool_archive import archive_result
         _base = self.config.get("base_dir") or PROJECT_ROOT
@@ -2436,15 +2474,15 @@ Here is some useful information about the environment you are running in:
                 break
             m = messages[i]
             content = m.get("content")
-            # content 可能是 str 或 [{type:text,text:...}]（本项目统一用后者）
+            # content 可能是 str 或 [{type:text,text:...}]（历史残留的 Anthropic 格式）。
+            # 无论哪种，压平后一律写回**纯字符串**——OpenAI chat 协议要求
+            # role=tool 的 content 是字符串，数组会被上游 agnes 判为非法（500）。
             if isinstance(content, list):
                 text = "".join(
                     str(p.get("text") or "") for p in content if isinstance(p, dict)
                 )
-                wrapper = content
             elif isinstance(content, str):
                 text = content
-                wrapper = None
             else:
                 continue
             if not text:
@@ -2468,29 +2506,69 @@ Here is some useful information about the environment you are running in:
             if after >= before:
                 continue
 
-            if wrapper is not None:
-                new_content = []
-                for p in wrapper:
-                    if isinstance(p, dict) and p.get("type") == "text":
-                        new_content.append({**p, "text": slim})
-                        # 只替换第一段文本，其余段落保持
-                        break
-                    new_content.append(p)
-                if len(new_content) < len(wrapper):
-                    new_content.extend(wrapper[len(new_content):])
-                messages[i] = {**m, "content": new_content}
-            else:
-                messages[i] = {**m, "content": slim}
+            messages[i] = {**m, "content": slim}
 
             current -= (before - after)
             shrunk += 1
 
-        if shrunk:
+        # ---- 第二级：整轮丢弃（第一级不够时兜底）----
+        # 单轮工具循环可能有几百次调用，每条 tool 消息即便精简也有下限
+        # （XML 外壳 + 折叠标记）。若不整轮丢弃，总量仍可能超模型上限 → 上游 500。
+        # 以 user 消息为轮边界，保留最近 keep_recent_rounds 轮，其余整段删除，
+        # 保证 tool_use / tool_result 不被拆散。
+        dropped = 0
+        if current > target:
+            keep_rounds = max(1, int(self.config.get("inflight_keep_recent_rounds", 8)))
+            # 以 user 消息为轮边界。但单轮工具循环里 user 极少、assistant/tool 极多
+            # （实测 1244 条历史里只有 20 条 user），此时「保留 N 轮」等于几乎不丢，
+            # 必须同时按条数兜底：至少保留最近 keep_recent_msgs 条。
+            keep_recent_msgs = max(20, int(self.config.get("inflight_keep_recent_msgs", 80)))
+            user_idx = [i for i, m in enumerate(messages)
+                        if isinstance(m, dict) and m.get("role") == "user"]
+            while current > target:
+                cut = None
+                if len(user_idx) > keep_rounds:
+                    cut = user_idx[1]                 # 丢最旧一轮（user 边界，天然安全）
+                else:
+                    # user 轮次不足：仍必须从 user 处切，否则会切断 tool_use 链
+                    # （实测从 assistant 切导致 tool_use/tool_result 失配 → 上游 400/500）。
+                    # 若剩余 user 已不够 keep_rounds，退化为「保留最近 keep_recent_msgs 条
+                    # 且起点对齐到最近的 user」。
+                    limit = len(messages) - keep_recent_msgs
+                    if limit <= 0:
+                        break
+                    for j in range(limit, 0, -1):
+                        if messages[j].get("role") == "user":
+                            cut = j
+                            break
+                    if cut is None:
+                        break
+                if not cut or cut <= 0:
+                    break
+                removable = messages[:cut]
+                if not removable:
+                    break
+                messages[:] = messages[cut:]
+                dropped += len(removable)
+                current = sum(
+                    estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in messages
+                )
+                user_idx = [i for i, m in enumerate(messages)
+                            if isinstance(m, dict) and m.get("role") == "user"]
+            if dropped:
+                logger.warning(
+                    "[Inflight] 单轮内上下文仍超预算，丢弃最旧历史："
+                    "丢弃 %d 条，剩余 %d 条（%d 轮）；估算 %d → %d tokens（预算 %d）",
+                    dropped, len(messages), len(user_idx), original, current, budget_tokens,
+                )
+
+        if shrunk or dropped:
             logger.info(
-                "[Inflight] 单轮内上下文压缩：精简 %d 条工具结果，估算 %d → %d tokens（预算 %d）",
-                shrunk, current + 0, current, budget_tokens,
+                "[Inflight] 单轮内上下文压缩：精简 %d 条工具结果%s，估算 %d → %d tokens（预算 %d）",
+                shrunk, f"、整轮丢弃 {dropped} 条" if dropped else "",
+                original, current, budget_tokens,
             )
-        return shrunk
+        return shrunk + dropped
 
     def _mcp_defer_enabled(self) -> bool:
         """是否启用 MCP 工具按需加载（默认启用）。

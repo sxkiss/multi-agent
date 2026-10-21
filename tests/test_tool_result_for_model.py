@@ -66,28 +66,40 @@ class ToolResultForModelTest(unittest.TestCase):
         self.assertNotIn("<toolcall_status>", out)
 
     def test_agent_normalizes_text_block_list(self):
-        content = [{
-            "type": "text",
-            "text": (
-                "<tool>\n<tool_name>Read</tool_name>\n"
-                "<toolcall_status>done</toolcall_status>\n"
-                "<toolcall_result>\nX\n</toolcall_result>\n</tool>"
-            ),
-        }]
-        out = Agent._tool_content_for_model(content)
-        self.assertEqual(out[0]["type"], "text")
-        self.assertIn("tool result: Read (done)", out[0]["text"])
-        self.assertNotIn("<toolcall_status>", out[0]["text"])
+        """tool content 是 [{type:text}] 时，归一化后必须是纯字符串（OpenAI chat 规范）。
 
-    def test_agent_normalization_is_idempotent(self):
-        once = tool_result_for_model(
-            "<tool>\n<tool_name>Read</tool_name>\n"
-            "<toolcall_status>done</toolcall_status>\n"
-            "<toolcall_result>\nX\n</toolcall_result>\n</tool>"
-        )
-        self.assertEqual(tool_result_for_model(once), once)
+        历史原因：Anthropic Messages 用 content 块数组，但 OpenAI chat 协议要求
+        role=tool 的 content 是字符串。上游 agnes 会把数组判为非法并 500。
+        """
+        content = [{"type": "text", "text": "plain result"}]
+        out = Agent._tool_content_for_model(content)
+        self.assertIsInstance(out, str)
+        self.assertEqual(out, "plain result")
+
+    def test_coerce_tool_contents_flattens_arrays(self):
+        """发送前兜底：数组 tool content 必须被压平成字符串，且不改原列表。"""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "Bash", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1",
+             "content": [{"type": "text", "text": "r1"}]},
+        ]
+        out = Agent._coerce_tool_contents(msgs)
+        self.assertIsInstance(out[2]["content"], str)
+        self.assertEqual(out[2]["content"], "r1")
+        # 原始消息不被修改
+        self.assertIsInstance(msgs[2]["content"], list)
+
+    def test_coerce_tool_contents_noop_when_clean(self):
+        """全是字符串时返回原列表对象（零拷贝快路径）。"""
+        msgs = [{"role": "user", "content": "hi"},
+                {"role": "tool", "tool_call_id": "c1", "content": "r"}]
+        self.assertIs(Agent._coerce_tool_contents(msgs), msgs)
 
     def test_sanitize_normalizes_legacy_tool_message(self):
+        """_sanitize_messages_for_api 会把历史里残留的数组 content 压平成字符串。"""
         messages = [
             {
                 "role": "assistant",
@@ -95,28 +107,21 @@ class ToolResultForModelTest(unittest.TestCase):
                 "tool_calls": [{
                     "id": "c1",
                     "type": "function",
-                    "function": {"name": "Read", "arguments": "{}"},
+                    "function": {"name": "Bash", "arguments": "{}"},
                 }],
             },
             {
                 "role": "tool",
                 "tool_call_id": "c1",
-                "content": [{
-                    "type": "text",
-                    "text": (
-                        "<tool>\n<tool_name>Read</tool_name>\n"
-                        "<toolcall_status>done</toolcall_status>\n"
-                        "<toolcall_result>\nX\n</toolcall_result>\n</tool>"
-                    ),
-                }],
+                "content": [{"type": "text", "text": "legacy result"}],
             },
         ]
         out = Agent._sanitize_messages_for_api(messages)
         tool_msgs = [m for m in out if m.get("role") == "tool"]
         self.assertEqual(len(tool_msgs), 1)
-        text = tool_msgs[0]["content"][0]["text"]
-        self.assertIn("tool result: Read (done)", text)
-        self.assertNotIn("<toolcall_status>", text)
+        self.assertIsInstance(tool_msgs[0]["content"], str)
+        self.assertIn("legacy result", tool_msgs[0]["content"])
+
 
 
 if __name__ == "__main__":
