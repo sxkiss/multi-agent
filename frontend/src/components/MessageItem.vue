@@ -489,10 +489,13 @@ export default {
       }
     }
 
-    // 判断工具结果是否含 Markdown 图片（如浏览器截图）—— 若是则走 Markdown 渲染
+    // 判断工具结果是否含 Markdown 图片（如浏览器截图、ViewImage 返回的 data URL）
+    // —— 若是则走 Markdown 渲染。data URL 没有 .png 后缀，需单独识别。
     function isMarkdownImage(result) {
       if (!result) return false
-      return /!\[[^\]]*\]\([^)]+\.(?:png|jpe?g|gif|webp|bmp|svg)\)/i.test(String(result))
+      const s = String(result)
+      return /!\[[^\]]*\]\([^)]+\.(?:png|jpe?g|gif|webp|bmp|svg)\)/i.test(s) ||
+             /!\[[^\]]*\]\(data:image\/[^)]+\)/i.test(s)
     }
 
     function toggleBlockCollapse(block) {

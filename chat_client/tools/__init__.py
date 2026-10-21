@@ -1147,4 +1147,5 @@ from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注�
     websearch,
     wechat_media,
     gateway_media_send,  # 统一出站媒体发送工具
+    view_image,  # 查看本地图片（元信息 + base64 data URL）
 )

@@ -22,4 +22,5 @@
 | `skill.py` | Tools | 技能安装/卸载工具 |
 | `summary.py` | Tools | 摘要生成工具 |
 | `todo.py` | Tools | TODO 管理工具 |
+| `view_image.py` | Tools | ViewImage 看图工具（元信息 + base64 data URL，前端可直接渲染） |
 | `webfetch.py` | Tools | 网页获取工具（curl/WebFetch/http_check） |
