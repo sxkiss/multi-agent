@@ -66,7 +66,7 @@ def _get_skill_doc(max_context_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS) -> s
         selected_skills = sorted_skills[:1]
     
     skill_list = "\n".join([
-        f"  <skill>\n    <name>{s.name}</name>\n    <description>{s.description}</description>\n  </skill>"
+        f"  {s.name}: {s.description[:100]}..." if len(s.description) > 100 else f"  {s.name}: {s.description}"
         for s in selected_skills
     ])
 
