@@ -110,3 +110,35 @@ class SingleAgentPromptTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SingleAgentHighFreqTest(unittest.TestCase):
+    """有历史统计时切换到高频工具集"""
+
+    def test_no_history_uses_default_core(self):
+        """无历史数据时，核心工具 = DEFAULT_CORE_TOOL_NAMES (43个)"""
+        from chat_client.metrics import get_metrics, reset_metrics
+        get_metrics(persist_path="/dev/null").reset()
+        agent = _make_agent()
+        _ = agent.system_prompt
+        from chat_client.tools import DEFAULT_CORE_TOOL_NAMES, registry
+        all_names = {t["function"]["name"] for t in registry.get_openai_tools()}
+        deferred = all_names - DEFAULT_CORE_TOOL_NAMES
+        self.assertGreater(len(deferred), 0)
+
+    def test_has_history_uses_high_freq(self):
+        """有历史数据时，核心工具 = HIGH_FREQ_TOOL_NAMES (34个)，减少9个"""
+        tmp = tempfile.mkdtemp()
+        persist = os.path.join(tmp, "tool_usage.json")
+        with open(persist, "w") as f:
+            json.dump({"tools": {"Bash": {"calls": 100}, "Read": {"calls": 50}}}, f)
+        from chat_client.metrics import get_metrics
+        get_metrics(persist_path=persist).reset()
+        # 重新获取单例（已持久化）
+        from chat_client.tools import HIGH_FREQ_TOOL_NAMES, DEFAULT_CORE_TOOL_NAMES, registry
+        from chat_client.metrics import has_history
+        self.assertTrue(has_history())
+        all_names = {t["function"]["name"] for t in registry.get_openai_tools()}
+        deferred = all_names - HIGH_FREQ_TOOL_NAMES
+        # 比默认核心少 9 个（Skills, SkillMarket等低频工具被移入延迟）
+        self.assertLess(len(HIGH_FREQ_TOOL_NAMES), len(DEFAULT_CORE_TOOL_NAMES))
