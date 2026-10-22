@@ -186,8 +186,6 @@ if _builtin_defer_enabled:
 
 ---
 
-
-
 ## 5. 多智能体与部门
 
 - 内置角色：search/planner/coder（task.py `_register_default_agents`，已归部）
