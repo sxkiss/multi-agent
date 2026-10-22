@@ -1197,48 +1197,16 @@ def is_mcp_tool(name: str) -> bool:
     return meta.get("category") == "mcp"
 
 
-def is_builtin_defer_tool(name: str) -> bool:
-    """该内置工具是否属于「非核心、可延迟下发」集合。"""
-    if name not in DEFAULT_CORE_TOOL_NAMES:
-        return True
-    return False
-
-
-# session_id -> 已解锁的内置工具名集合
-_builtin_unlocked: dict[str, set[str]] = {}
-_builtin_unlocked_lock = threading.Lock()
-
-
-def unlock_builtin_tools(session_id: str, names: set[str]):
-    """把若干内置工具标记为本会话已解锁。"""
-    if not session_id or not names:
-        return
-    with _builtin_unlocked_lock:
-        _builtin_unlocked.setdefault(session_id, set()).update(names)
-
-
-def get_unlocked_builtin_tools(session_id: str) -> set[str]:
-    if not session_id:
-        return set()
-    with _builtin_unlocked_lock:
-        return set(_builtin_unlocked.get(session_id) or set())
-
-
-def clear_builtin_unlocked_tools(session_id: str):
-    with _builtin_unlocked_lock:
-        _builtin_unlocked.pop(session_id, None)
-
-
-@register_tool(category="系统", name_cn="搜索并解锁工具", risk_level="low")
+@register_tool(category="系统", name_cn="搜索并解锁 MCP 工具", risk_level="low")
 def ToolSearch(query: str = "", limit: int = 15) -> str:
     """
-    - 搜索当前已连接但尚未下发的工具（MCP 工具和内置非核心工具）
-    - 适用：需要文档/表格/幻灯片、地图、服务器运维、知识库等能力，但当前工具列表里没有对应工具时
-    - 参数：query（关键词，如 "文档 表格"、"slide"、"地图"、"Docker"、"日志"；留空列出全部可解锁工具）、
+    - 搜索当前已连接但尚未下发的 MCP 工具（腾讯文档、地图、浏览器等）
+    - 适用：需要操作文档/表格/幻灯片、地图、外部服务，但当前工具列表里没有对应工具时
+    - 参数：query（关键词，如 "文档 表格"、"slide"、"地图"；留空列出全部可解锁工具）、
             limit（最多返回条数，默认 15）
     - 命中后会立即解锁这些工具，下一次回复即可直接调用
 
-    设计说明：非核心工具默认不注入模型上下文以节省固定开销。搜索是唯一入口，
+    设计说明：MCP 工具默认不注入模型上下文以节省固定开销。搜索是唯一入口，
     解锁仅对当前会话生效。
     """
     try:
@@ -1247,25 +1215,13 @@ def ToolSearch(query: str = "", limit: int = 15) -> str:
         limit = 15
     sid = _current_session_id() or ""
 
-    # --- 内置非核心工具 ---
-    builtin_unlocked = get_unlocked_builtin_tools(sid)
-    builtin_candidates: list[tuple[str, str]] = []
+    # 候选：注册为 mcp 分类、且尚未解锁的工具。
+    # 注意：_register_func 会为含点号的工具名同时登记「原名」和「清洗名」两条
+    # metadata（如 doc.copy_format / doc_copy_format），必须按 id 去重，
+    # 否则同一工具会被算两次、搜索结果里也出现重复项。
+    unlocked = get_unlocked_mcp_tools(sid)
+    candidates = []
     seen_ids: set[str] = set()
-    for name in registry._metadata:
-        if name in DEFAULT_CORE_TOOL_NAMES:
-            continue
-        tid = registry._metadata.get(name, {}).get("id") or name
-        if tid in seen_ids:
-            continue
-        seen_ids.add(tid)
-        if name in builtin_unlocked or (tid and tid in builtin_unlocked):
-            continue
-        desc = (registry._metadata.get(name, {}).get("description") or "")[:200]
-        builtin_candidates.append((name, desc))
-
-    # --- MCP 工具 ---
-    mcp_unlocked = get_unlocked_mcp_tools(sid)
-    mcp_candidates: list[tuple[str, str]] = []
     for name, meta in registry._metadata.items():
         if meta.get("category") != "mcp":
             continue
@@ -1273,65 +1229,64 @@ def ToolSearch(query: str = "", limit: int = 15) -> str:
         if tid in seen_ids:
             continue
         seen_ids.add(tid)
-        if name in mcp_unlocked or tid in mcp_unlocked:
+        if name in unlocked or tid in unlocked:
             continue
         desc = (meta.get("description") or "")[:200]
-        mcp_candidates.append((name, desc))
+        candidates.append((name, desc))
 
-    all_candidates = builtin_candidates + mcp_candidates
-
-    if not all_candidates:
+    if not candidates:
         return tool_result_for_model(
-            "当前没有待解锁的工具（可能已全部解锁，或未连接任何 MCP 服务器）。"
+            "当前没有待解锁的 MCP 工具（可能已全部解锁，或未连接任何 MCP 服务器）。"
         )
 
     q = (query or "").strip().lower()
     if q:
         terms = [t for t in re.split(r"[\s,，、]+", q) if t]
-        scored: list[tuple[int, str, str]] = []
-        for name, desc in all_candidates:
+        scored = []
+        for name, desc in candidates:
             hay = (name + " " + desc).lower()
             score = sum(1 for t in terms if t in hay)
             if score:
                 scored.append((score, name, desc))
         if not scored:
-            scored = [(0, n, d) for n, d in all_candidates]
+            # 中文查询常匹配不上英文工具名/描述，回退为「列出全部」并给出提示，
+            # 避免模型因一次空结果就认为没有可用 MCP 能力。
+            scored = [(0, n, d) for n, d in candidates]
             _hint = (
-                f"没有找到精确匹配「{query}」的工具（工具名/描述多为英文）。"
-                f"以下列出全部 {len(all_candidates)} 个可解锁工具供挑选：\n"
+                f"没有找到精确匹配「{query}」的 MCP 工具（工具名/描述多为英文）。"
+                f"以下列出全部 {len(candidates)} 个可解锁工具供挑选：\n"
             )
         else:
             _hint = ""
         scored.sort(key=lambda x: (-x[0], x[1]))
-        picked_items = [(n, d) for _, n, d in scored[:limit]]
+        matched = [(n, d) for _, n, d in scored]
     else:
         _hint = ""
-        picked_items = sorted(all_candidates, key=lambda x: x[0])[:limit]
+        matched = sorted(candidates, key=lambda x: x[0])
 
-    # 解锁内置工具
-    for n, _ in picked_items:
-        if is_builtin_defer_tool(n):
-            unlock_builtin_tools(sid, {n})
-    # 解锁 MCP 工具（同时登记原名和清洗名）
-    for n, _ in picked_items:
-        if not is_builtin_defer_tool(n):
-            names_unlock: set[str] = {n}
-            _tid = (registry._metadata.get(n) or {}).get("id")
-            if _tid:
-                names_unlock.add(_tid)
-            unlock_mcp_tools(sid, names_unlock)
+    picked = matched[:limit]
+    # 解锁时同时登记「对外名（清洗名）」和「注册 id（原始名）」：
+    # schema 数组里的 function.name 是清洗名，而 metadata 的 id 是原始名
+    # （如 doc.copy_format）。只记其中一个会导致解锁后仍过滤不到 schema。
+    names: set[str] = set()
+    for n, _ in picked:
+        names.add(n)
+        _tid = (registry._metadata.get(n) or {}).get("id")
+        if _tid:
+            names.add(_tid)
+    unlock_mcp_tools(sid, names)
 
     lines = []
     if _hint:
         lines.append(_hint.rstrip())
         lines.append("")
-    lines.append(f"已解锁 {len(picked_items)} 个工具（本会话有效），现在可以直接调用：")
-    for n, d in picked_items:
-        src = "built-in" if is_builtin_defer_tool(n) else "MCP"
-        lines.append(f"- {n} [{src}]: {d or '(无描述)'}")
-    if len((scored if q else sorted(all_candidates, key=lambda x: x[0]))) > len(picked_items):
-        total = len(scored if q else sorted(all_candidates, key=lambda x: x[0]))
-        lines.append(f"……另有 {total - len(picked_items)} 个工具，可提高 limit 或细化 query。")
+    # 计数用「实际选中的工具数」，不能用 names 集合大小
+    # （含点号工具会同时登记原名与清洗名，集合大小会翻倍）
+    lines.append(f"已解锁 {len(picked)} 个 MCP 工具（本会话有效），现在可以直接调用：")
+    for n, d in picked:
+        lines.append(f"- {n}: {d or '(无描述)'}")
+    if len(matched) > len(picked):
+        lines.append(f"……另有 {len(matched) - len(picked)} 个匹配项，可提高 limit 或细化 query。")
     return tool_result_for_model("\n".join(lines))
 
 
@@ -1411,62 +1366,6 @@ from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注�
     webfetch,
     websearch,
     wechat_media,
-    wechat_route,  # WeChatRoute 消息回复工具（文本/图片/视频/语音/链接/文件/名片/音乐卡片）
     gateway_media_send,  # 统一出站媒体发送工具
     view_image,  # 查看本地图片（元信息 + base64 data URL）
 )
-
-# ============================================================
-# 内置工具按需加载（Defer）
-#
-# 背景：单 Agent 模式下全量下发 85 个工具会导致首轮 prompt 达到 109 KB，
-# 其中 ~42 个低频工具（web/系统/知识/市场等）实际很少用到。
-# 方案：核心工具常驻，其余通过 ToolSearch 按需解锁。
-# ============================================================
-
-# 默认常驻的核心工具集合（单 Agent 模式下始终下发）
-DEFAULT_CORE_TOOL_NAMES: frozenset[str] = frozenset([
-    # 文件操作
-    "Bash", "Read", "Write", "Edit", "Grep", "Glob", "Patch",
-    "LargeFileEdit", "ReadToolArchive",
-    # 命令管理
-    "CheckCommandStatus", "StopCommand",
-    # Agent/子任务
-    "Task", "TaskStatus", "TaskStop", "TaskSummary",
-    "TodoRead", "TodoWrite",
-    # 媒体/微信
-    "WeChatRoute", "ClawbotSendMedia", "SendMedia", "ViewImage",
-    # 浏览器
-    "browser_use",
-    # 搜索/知识
-    "WebSearch", "WebFetch", "curl_url", "http_check",
-    # 市场/技能/专家
-    "Skills", "SkillMarket", "ExpertMarket", "GetExpertPrompt",
-    "InstallExpert", "SkillCategories", "ExpertScenes",
-    # 按需加载入口
-    "ToolSearch", "MCP",
-    # 记忆/知识库
-    "mem0_search", "mem0_add", "mem0_list",
-    "KnowledgeSearch", "KnowledgeAdd",
-    # 定时任务
-    "ScheduleTask", "ListScheduledTasks",
-    # 系统
-    "get_current_time",
-])
-
-# 高频工具（有历史统计数据时使用，替代 DEFAULT_CORE_TOOL_NAMES）
-# 来源：metrics 累计调用次数，≥10 次视为高频；按实际使用频率裁剪
-HIGH_FREQ_TOOL_NAMES: frozenset[str] = frozenset([
-    "Bash", "Read", "Write", "Edit", "Grep", "Glob", "Patch",
-    "CheckCommandStatus", "StopCommand",
-    "Task", "TaskStatus", "TaskStop", "TaskSummary",
-    "TodoRead", "TodoWrite",
-    "WeChatRoute", "ClawbotSendMedia", "SendMedia", "ViewImage",
-    "browser_use",
-    "WebSearch", "WebFetch", "curl_url", "http_check",
-    "ToolSearch", "MCP",
-    "mem0_search", "mem0_add", "mem0_list",
-    "KnowledgeSearch", "KnowledgeAdd",
-    "ScheduleTask", "ListScheduledTasks",
-    "get_current_time",
-])
