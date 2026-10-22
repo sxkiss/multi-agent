@@ -1216,6 +1216,15 @@ Here is some useful information about the environment you are running in:
                     t = registry.dedup_tools(t)
                 return t
 
+            # 内置非核心工具延迟加载：单 Agent / Codex-X 模式下只下发核心工具，
+            # 其余工具通过 ToolSearch 按需解锁。
+            mode = self.config.get("mode", "group")
+            _builtin_defer_enabled = (
+                self._mcp_defer_enabled()
+                and mode in ("single", "codex_x")
+                and not self.strict_tools
+            )
+
             # 构建工具列表：使用 enabled_tools（已排除集团工具）而非 _build_tools(None)（返回全部工具含 RunCrew）
             # strict_tools 模式（集团经理）：按 original_tools 过滤，未指定则用全量
             # 非 strict 模式（单 Agent / Codex-X）：用 enabled_tools（已排除 _GROUP_TOOLS）
@@ -1224,9 +1233,22 @@ Here is some useful information about the environment you are running in:
             else:
                 all_tools = _build_tools(self.enabled_tools) if self.enabled_tools else _build_tools(None)
 
-            # ToolSearch 是 MCP 按需加载的唯一入口，必须始终可用；
+            # 内置非核心工具过滤（单 Agent / Codex-X 模式下生效）
+            if _builtin_defer_enabled:
+                from .tools import DEFAULT_CORE_TOOL_NAMES, get_unlocked_builtin_tools
+                _unlocked = get_unlocked_builtin_tools(self.session_id)
+                _all_names = {x["function"]["name"] for x in all_tools}
+                _deferred = _all_names - DEFAULT_CORE_TOOL_NAMES - _unlocked
+                if _deferred:
+                    all_tools = [x for x in all_tools if x["function"]["name"] not in _deferred]
+                    logger.info(
+                        "[Builtin-Defer] 延迟下发 %d 个非核心内置工具，常驻 %d 个核心工具",
+                        len(_deferred), len(all_tools),
+                    )
+
+            # ToolSearch 是按需加载的唯一入口，必须始终可用；
             # 否则 strict 模式（经理）按 original_tools 过滤时会把它一起过滤掉，
-            # 模型就永远无法解锁 MCP 工具。
+            # 模型就永远无法解锁工具。
             if self._mcp_loaded and self._mcp_defer_enabled():
                 if not any(x["function"]["name"] == "ToolSearch" for x in all_tools):
                     _ts = [x for x in registry.get_openai_tools()
