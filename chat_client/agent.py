@@ -480,18 +480,47 @@ class Agent:
             logger.debug(f"current_dir in config: {self.current_dir}")
             self.system_prompt += self._get_environment_info()
         
-        # 加载 AGENTS.md 层级指令
-        # 集团模式下始终加载；单 Agent 模式下仅在未指定系统提示词时加载
+        # 加载 AGENTS.md / SOUL / USER / MEMORY 层级指令
+        # 集团模式下始终加载；单 Agent 模式下也加载（让 hermes 等工作区能读到 SOUL 等文件）
         # 单 Agent 模式下自动过滤集团模式相关内容（如 RunCrew 调度规则），减少 token 消耗
         if self.config.get("enable_agents_md", True):
             mode = self.config.get("mode", "group")
-            # 单 Agent 模式已指定预设提示词时跳过 AGENTS.md
-            should_load_md = mode == "group" or not self.system_prompt
-            if should_load_md:
+            if mode in ("single", "codex_x"):
+                # 单 Agent 模式：从 cwd 加载 AGENTS.md（过滤集团内容），再从 cwd 加载 SOUL/USER/MEMORY
                 agents_md = self._load_agents_md()
                 if agents_md:
-                    if mode in ("single", "codex_x"):
-                        agents_md = self._filter_agents_md_for_single(agents_md)
+                    agents_md = self._filter_agents_md_for_single(agents_md)
+                    self.system_prompt += f"\n\n## Project Instructions (AGENTS.md)\n\n{agents_md}"
+                # 追加 SOUL / USER / MEMORY（hermes 等工作区需要）
+                _ctx_parts = []
+                for fname, title in [("SOUL.md", "身份与行为准则（SOUL）"),
+                                     ("USER.md", "用户信息（USER）"),
+                                     ("MEMORY.md", "记忆与历史（MEMORY）")]:
+                    fpath = os.path.join(self.current_dir, fname) if hasattr(self, 'current_dir') and self.current_dir else None
+                    if not fpath:
+                        continue
+                    alt_paths = [fpath,
+                                 os.path.join(os.path.dirname(fpath), "memories", fname),
+                                 os.path.join(os.path.dirname(fpath), fname)]
+                    for ap in alt_paths:
+                        if os.path.exists(ap):
+                            try:
+                                with open(ap, "r", encoding="utf-8") as f:
+                                    content = f.read().strip()
+                                if content:
+                                    # MEMORY.md 截断控制 token
+                                    if "MEMORY" in title and len(content) > 12000:
+                                        content = content[:12000] + "\n...[截断，总长{}字]...".format(len(content))
+                                    _ctx_parts.append(f"## {title}\n{content}")
+                            except Exception:
+                                pass
+                            break
+                if _ctx_parts:
+                    self.system_prompt += "\n\n" + "\n\n".join(_ctx_parts)
+            else:
+                # 集团模式：原有逻辑
+                agents_md = self._load_agents_md()
+                if agents_md:
                     self.system_prompt += f"\n\n## Project Instructions (AGENTS.md)\n\n{agents_md}"
 
         # 注入技能摘要，让 AI 知道有哪些技能可用（Codex 式三层披露 Layer 1）
