@@ -3887,6 +3887,28 @@ async def api_hotreload(request: Request):
     return JSONResponse({"status": ok, "data": results, "msg": "; ".join(f"{k}: {v}" for k, v in results.items())})
 
 
+@app.post("/api/restart")
+async def api_restart(request: Request):
+    """安全重启服务（异步执行，立即返回）。仅管理员可用。"""
+    err = _admin_guard(request)
+    if err:
+        return err
+
+    def _do_restart():
+        import subprocess as _sp
+        import time as _time
+        _sp.Popen(
+            ["bash", os.path.join(BASE_DIR, "restart_bt.sh"), "3"],
+            cwd=BASE_DIR,
+            stdout=_sp.DEVNULL,
+            stderr=_sp.DEVNULL,
+            start_new_session=True,
+        )
+
+    threading.Thread(target=_do_restart, daemon=True).start()
+    return JSONResponse({"status": True, "msg": "重启已触发，约 5 秒后服务恢复"})
+
+
 @app.get("/api/chat")
 async def api_chat_get(request: Request):
     params = dict(request.query_params)

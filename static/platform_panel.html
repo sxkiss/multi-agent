@@ -219,7 +219,7 @@
     <button class="tab" data-tab="memory" onclick="switchTab('memory')">🧠 记忆</button>
     <button class="tab" data-tab="usage" onclick="switchTab('usage')">📊 用量</button>
     <button class="tab" data-tab="settings" onclick="switchTab('settings')">⚙️ 设置</button>
-    <button class="tab hotreload-tab" onclick="doHotReload()" title="不重启服务，立即生效外部修改（工具/配置/团队/MCP）">⟳ 热重载</button>
+    <button class="tab hotreload-tab" onclick="doRestart()" title="重启服务，加载最新代码与配置">⟳ 重启服务</button>
   </div>
 
   <div id="tab-gateway" class="panel active">
@@ -1423,12 +1423,17 @@
         rag_final_count: parseInt($('set_rag_final_count').value) || 5
       }
     }
-    var res = await apiRaw('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: JSON.stringify(payload) }) })
-    if (res.status) {
-      toast('设置已保存')
-      _cfg = payload
-    } else {
-      toast(res.msg || '保存失败', 'err')
+    try {
+      var res = await apiRaw('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: JSON.stringify(payload) }) })
+      if (res.status) {
+        toast('设置已保存')
+        _cfg = payload
+      } else {
+        toast(res.msg || '保存失败', 'err')
+      }
+    } catch (e) {
+      console.error('[saveSettingsConfig] 异常:', e)
+      toast('保存出错: ' + (e.message || String(e)), 'err')
     }
   }
 
@@ -1823,31 +1828,39 @@ window.renderSearchProviderOpts = function renderSearchProviderOpts() {
   // DOMContentLoaded 中调用
   initSettings()
 
-  // ── 热重载 ─────────────────────────────
-  var _reloading = false
-  async function doHotReload() {
-    if (_reloading) return
-    _reloading = true
+  // ── 重启服务 ─────────────────────────────
+  var _restarting = false
+  async function doRestart() {
+    if (_restarting) return
+    _restarting = true
     var btn = document.querySelector('.hotreload-tab')
-    if (btn) { btn.disabled = true; btn.textContent = '⟳ 重载中...' }
+    if (btn) { btn.disabled = true; btn.textContent = '⟳ 重启中...' }
     try {
-      var res = await apiRaw('/hotreload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: 'all' }) })
+      var res = await apiRaw('/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
       if (res.status) {
-        toast('热重载完成')
-        // 重载相关数据
-        loadSettingsConfig(); loadSearchConfig(); fetchMcpServers(); loadCrew(); loadSkills()
+        toast('重启已触发，约 5 秒后恢复')
+        // 轮询等待服务恢复
+        var reconnect = setInterval(function() {
+          fetch('http://' + location.host + '/', { mode: 'no-cors' }).catch(function(){});
+        }, 3000)
+        setTimeout(function() { clearInterval(reconnect); location.reload(); }, 30000)
       } else {
-        toast(res.msg || '热重载部分失败', 'err')
+        toast(res.msg || '重启失败', 'err')
       }
     } catch(e) {
-      toast('热重载请求失败: ' + (e.message || e), 'err')
+      toast('重启请求失败: ' + (e.message || e), 'err')
     } finally {
-      _reloading = false
-      if (btn) { btn.disabled = false; btn.textContent = '⟳ 热重载' }
+      _restarting = false
+      if (btn) { btn.disabled = false; btn.textContent = '⟳ 重启服务' }
     }
   }
-  window.doHotReload = doHotReload
+  window.doRestart = doRestart
 
+  // 设置面板的保存/加载函数必须挂到 window：
+  // 按钮用 onclick="saveSettingsConfig()" 走全局作用域，
+  // 定义在 IIFE 闭包里不挂 window 会导致点击无任何反应（静默失败）。
+  window.saveSettingsConfig = saveSettingsConfig
+  window.loadSettingsConfig = loadSettingsConfig
 
 })();
 </script>
