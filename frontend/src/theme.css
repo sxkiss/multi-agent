@@ -1,0 +1,308 @@
+/* ============================================================
+ * theme.css — 视觉美化增强层（2026-10-15）
+ * 非侵入式：作为全局样式覆盖在组件 scoped 样式之上，
+ * 只改「外观」（配色/阴影/圆角/过渡/间距），不动布局与逻辑。
+ * 因组件样式为 scoped（特异性较高），此处对视觉属性用 !important。
+ * 支持浅色（默认）/ 深色（html[data-theme="dark"]）双主题。
+ * ============================================================ */
+
+/* ---------- 设计令牌 ---------- */
+:root {
+  --bt-primary: #07c160;
+  --bt-primary-dark: #06ad56;
+  --bt-primary-soft: rgba(7, 193, 96, 0.10);
+  --bt-accent: #3b82f6;
+  --bt-bg: #f6f7f9;
+  --bt-surface: #ffffff;
+  --bt-surface-2: #f9fafb;
+  --bt-border: #e8eaed;
+  --bt-text: #1f2937;
+  --bt-text-2: #6b7280;
+  --bt-text-3: #9ca3af;
+  --bt-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --bt-shadow: 0 4px 14px rgba(16, 24, 40, 0.08);
+  --bt-shadow-lg: 0 12px 40px rgba(16, 24, 40, 0.16);
+  --bt-radius: 12px;
+  --bt-radius-sm: 8px;
+  --bt-transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+html[data-theme="dark"] {
+  --bt-bg: #0f1115;
+  --bt-surface: #171a21;
+  --bt-surface-2: #1d2129;
+  --bt-border: #2a2f3a;
+  --bt-text: #e5e7eb;
+  --bt-text-2: #9ca3af;
+  --bt-text-3: #6b7280;
+  --bt-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --bt-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  --bt-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
+  --bt-primary-soft: rgba(7, 193, 96, 0.16);
+}
+
+/* ---------- 全局基础 ---------- */
+body {
+  background: var(--bt-bg) !important;
+  color: var(--bt-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 自定义滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(140, 145, 155, 0.45) transparent;
+}
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(140, 145, 155, 0.35);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(140, 145, 155, 0.6); background-clip: content-box; }
+
+/* 选中文本 */
+::selection { background: var(--bt-primary-soft); }
+
+/* ---------- 整体容器 ---------- */
+.ai-chat-container {
+  background: var(--bt-bg) !important;
+}
+
+/* ---------- 侧边栏 ---------- */
+.chat-sidebar {
+  background: var(--bt-surface) !important;
+  border-right: 1px solid var(--bt-border) !important;
+  box-shadow: 1px 0 0 rgba(0, 0, 0, 0.01);
+}
+.top-actions {
+  border-bottom: 1px solid var(--bt-border) !important;
+  background: linear-gradient(180deg, var(--bt-surface-2), var(--bt-surface)) !important;
+}
+.top-btn {
+  border: 1px solid var(--bt-border) !important;
+  background: var(--bt-surface) !important;
+  color: var(--bt-text-2) !important;
+  border-radius: var(--bt-radius-sm) !important;
+  transition: all var(--bt-transition) !important;
+}
+.top-btn:hover {
+  background: var(--bt-primary-soft) !important;
+  border-color: var(--bt-primary) !important;
+  color: var(--bt-primary) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(7, 193, 96, 0.18) !important;
+}
+.top-btn.active {
+  background: var(--bt-primary) !important;
+  border-color: var(--bt-primary) !important;
+  color: #fff !important;
+}
+
+/* 历史列表项 */
+.history-item,
+.conversation-item,
+.folder-group-header,
+.history-list-header {
+  transition: background var(--bt-transition);
+}
+.history-item:hover,
+.conversation-item:hover {
+  background: var(--bt-surface-2) !important;
+}
+.history-item.active,
+.conversation-item.active {
+  background: var(--bt-primary-soft) !important;
+  border-left: 3px solid var(--bt-primary);
+}
+
+/* ---------- 消息气泡 ---------- */
+.ai-chat-container .message.user .message-content {
+  background: linear-gradient(135deg, #e8f7ee, #dff2e6) !important;
+  border: 1px solid #cdebd8 !important;
+  border-radius: 14px 14px 4px 14px !important;
+  box-shadow: var(--bt-shadow-sm) !important;
+}
+.ai-chat-container .message.assistant .assistant-content {
+  background: var(--bt-surface) !important;
+  border: 1px solid var(--bt-border) !important;
+  border-radius: 14px 14px 14px 4px !important;
+  box-shadow: var(--bt-shadow-sm) !important;
+}
+.ai-chat-container .message.assistant .assistant-content::before {
+  color: var(--bt-primary) !important;
+  font-weight: 600;
+}
+
+/* ---------- 输入区 ---------- */
+.chat-input,
+.input-wrapper {
+  background: var(--bt-surface) !important;
+  border-color: var(--bt-border) !important;
+}
+.input-textarea {
+  color: var(--bt-text) !important;
+  background: transparent !important;
+}
+.input-textarea::placeholder { color: var(--bt-text-3) !important; }
+.send-btn {
+  background: linear-gradient(135deg, var(--bt-primary), var(--bt-primary-dark)) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 3px 10px rgba(7, 193, 96, 0.3) !important;
+  transition: all var(--bt-transition) !important;
+}
+.send-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 5px 16px rgba(7, 193, 96, 0.4) !important;
+}
+.send-btn:disabled { opacity: 0.45 !important; box-shadow: none !important; }
+
+/* ---------- 表单 ---------- */
+.form-section-group {
+  background: var(--bt-surface-2) !important;
+  border: 1px solid var(--bt-border) !important;
+  border-radius: var(--bt-radius) !important;
+}
+.form-input, .form-textarea {
+  background: var(--bt-surface) !important;
+  border-color: var(--bt-border) !important;
+  color: var(--bt-text) !important;
+  border-radius: var(--bt-radius-sm) !important;
+}
+.form-input:focus, .form-textarea:focus {
+  border-color: var(--bt-primary) !important;
+  box-shadow: 0 0 0 3px var(--bt-primary-soft) !important;
+}
+
+/* ---------- 工具卡片 / 思考块 ---------- */
+.tool-call, .think-section, .streaming-block {
+  border-radius: var(--bt-radius-sm) !important;
+  transition: box-shadow var(--bt-transition);
+}
+.tool-call:hover { box-shadow: var(--bt-shadow-sm) !important; }
+
+/* ---------- 建议卡片 ---------- */
+.suggestion-card {
+  border-radius: var(--bt-radius) !important;
+  transition: all var(--bt-transition) !important;
+}
+.suggestion-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--bt-shadow) !important;
+  border-color: var(--bt-primary) !important;
+}
+
+/* ---------- 弹层 ---------- */
+.custom-popover, .history-panel {
+  border-radius: var(--bt-radius) !important;
+  box-shadow: var(--bt-shadow-lg) !important;
+  border: 1px solid var(--bt-border) !important;
+  background: var(--bt-surface) !important;
+}
+
+/* ---------- 深色模式补充 ---------- */
+html[data-theme="dark"] body,
+html[data-theme="dark"] .ai-chat-container,
+html[data-theme="dark"] .chat-main-area { background: var(--bt-bg) !important; }
+html[data-theme="dark"] .chat-sidebar,
+html[data-theme="dark"] .chat-input,
+html[data-theme="dark"] .input-wrapper,
+html[data-theme="dark"] .custom-popover,
+html[data-theme="dark"] .history-panel,
+html[data-theme="dark"] .suggestion-card,
+html[data-theme="dark"] .tool-call { background: var(--bt-surface) !important; color: var(--bt-text) !important; }
+html[data-theme="dark"] .ai-chat-container .message.assistant .assistant-content {
+  background: var(--bt-surface-2) !important;
+  border-color: var(--bt-border) !important;
+  color: var(--bt-text) !important;
+}
+html[data-theme="dark"] .ai-chat-container .message.user .message-content {
+  background: linear-gradient(135deg, #12351f, #0e2a19) !important;
+  border-color: #1c4a2c !important;
+  color: var(--bt-text) !important;
+}
+html[data-theme="dark"] .form-section-group { background: var(--bt-surface-2) !important; }
+html[data-theme="dark"] .form-input,
+html[data-theme="dark"] .form-textarea { background: var(--bt-bg) !important; color: var(--bt-text) !important; }
+html[data-theme="dark"] .top-actions { background: linear-gradient(180deg, #1d2129, #171a21) !important; }
+html[data-theme="dark"] .drawer-header { background: linear-gradient(180deg, #1d2129, #171a21) !important; }
+html[data-theme="dark"] .mode-status-bar,
+html[data-theme="dark"] .codex-bar { background: var(--bt-surface-2) !important; border-color: var(--bt-border) !important; color: var(--bt-text-2) !important; }
+
+/* ---------- 主题切换按钮 ---------- */
+#bt-theme-toggle {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 99999;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid var(--bt-border);
+  background: var(--bt-surface);
+  color: var(--bt-text-2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  box-shadow: var(--bt-shadow);
+  transition: all var(--bt-transition);
+}
+#bt-theme-toggle:hover {
+  transform: translateY(-2px) scale(1.05);
+  color: var(--bt-primary);
+  border-color: var(--bt-primary);
+  box-shadow: 0 6px 20px rgba(7, 193, 96, 0.25);
+}
+
+/* ---------- 快捷键提示 ---------- */
+#bt-shortcut-hint {
+  position: fixed;
+  right: 18px;
+  bottom: 68px;
+  z-index: 99999;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(31, 41, 55, 0.9);
+  color: #fff;
+  font-size: 12px;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: all 0.25s;
+  pointer-events: none;
+}
+#bt-shortcut-hint.show { opacity: 1; transform: translateY(0); }
+
+/* ---------- 对话搜索框 ---------- */
+#bt-conv-search {
+  margin: 6px 10px 4px;
+  padding: 7px 10px;
+  border-radius: var(--bt-radius-sm);
+  border: 1px solid var(--bt-border);
+  background: var(--bt-surface-2);
+  color: var(--bt-text);
+  font-size: 13px;
+  width: calc(100% - 20px);
+  transition: all var(--bt-transition);
+}
+#bt-conv-search:focus {
+  outline: none;
+  border-color: var(--bt-primary);
+  box-shadow: 0 0 0 3px var(--bt-primary-soft);
+  background: var(--bt-surface);
+}
+#bt-conv-search::placeholder { color: var(--bt-text-3); }
+
+/* ---------- 消息操作按钮美化 ---------- */
+.message-action-btn {
+  border-radius: 6px !important;
+  transition: all var(--bt-transition) !important;
+}
+.message-action-btn:hover {
+  background: var(--bt-primary-soft) !important;
+  color: var(--bt-primary) !important;
+}

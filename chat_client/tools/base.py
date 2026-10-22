@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 import inspect
+import re
 
 
 @dataclass
@@ -32,6 +33,35 @@ def _xml_response(status: str, result: str, metadata: dict = None, tool_name: st
     resp = ToolResponse(status=status, content=result, metadata=metadata,
                         is_error=(status == "error"), tool_name=tool_name)
     return resp.to_xml()
+
+
+_TOOL_NAME_RE = re.compile(r"<tool_name>(.*?)</tool_name>", re.DOTALL)
+_TOOL_STATUS_RE = re.compile(r"<toolcall_status>(.*?)</toolcall_status>", re.DOTALL)
+_TOOL_BODY_RE = re.compile(r"<toolcall_result>(.*?)</toolcall_result>", re.DOTALL)
+
+
+def tool_result_for_model(result: Any) -> Any:
+    """把工具结果转换成面向模型的纯文本，去掉 <tool> XML 外壳。
+
+    背景：工具执行结果内部统一用 <tool>...</tool> 封装（便于归档/展示），但
+    模型侧走的是原生 function calling。把 XML 结果原样回灌，部分模型会误以为
+    工具调用协议也是 XML，进而在 reasoning/正文里输出 <invoke>/<parameter>
+    等伪调用标签，长会话下退化成重复闭合标签死循环。
+
+    这里只在「发给模型」的边界做归一化：保留状态与正文，去掉工具调用标签；
+    归档、前端展示仍使用原始 XML。非 <tool> 结构原样返回。
+    """
+    if not isinstance(result, str) or "<tool>" not in result:
+        return result
+    body_m = _TOOL_BODY_RE.search(result)
+    if not body_m:
+        return result
+    name_m = _TOOL_NAME_RE.search(result)
+    status_m = _TOOL_STATUS_RE.search(result)
+    name = (name_m.group(1).strip() if name_m else "") or "unknown"
+    status = (status_m.group(1).strip() if status_m else "done") or "done"
+    body = body_m.group(1).strip("\n")
+    return f"--- tool result: {name} ({status}) ---\n{body}\n--- end tool result ---"
 
 
 def _infer_tool_name() -> str:

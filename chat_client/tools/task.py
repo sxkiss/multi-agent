@@ -1,13 +1,17 @@
 import json
+import logging
 import os
 import re
 import threading
 import uuid
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any
 
 from . import PROJECT_ROOT, emit_progress, register_tool
 from .base import _xml_response
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -18,6 +22,7 @@ class AgentDefinition:
     system_prompt_template: str
     department: str = ""   # 所属部门名（空=未分配）
     skills: list[str] = None   # 该角色专属预加载技能（运行时自动注入系统提示词）
+    expert_dir: str = ""   # 专家目录（含 skills/ 子目录）；空=非专家成员
 
 class AgentRegistry:
     def __init__(self):
@@ -33,25 +38,55 @@ class AgentRegistry:
         """
         把某角色专属的预加载技能（agent_def.skills）内容拼成文本块，
         用于注入到该角色的系统提示词，使其开局即"带上"专属技能，无需再调 Skills 工具。
+
+        技能来源（按优先级）：
+        1. 专家目录自带 skills/<name>/（agent_def.expert_dir，Octop 式专家包）
+        2. 全局 skill_manager（项目 skills/ 目录）
         """
         names = agent_def.skills or []
         if not names:
             return ""
         from ..skills import skill_manager
+        expert_dir = (agent_def.expert_dir or "").strip()
+        expert_skills_root = os.path.join(expert_dir, "skills") if expert_dir else ""
         blocks = []
         for nm in names:
             nm = str(nm).strip()
             if not nm:
                 continue
-            sk = skill_manager.get_enabled(nm)
-            if not sk:
-                continue
-            skill_dir = os.path.dirname(sk.location)
+            # 优先从专家目录自带技能读取（自包含，不依赖全局技能是否启用）
+            skill_dir = ""
+            sk_content = ""
+            sk_name = nm
+            if expert_skills_root and os.path.isdir(expert_skills_root):
+                cand = os.path.join(expert_skills_root, nm)
+                skill_md = os.path.join(cand, "SKILL.md")
+                if os.path.isfile(skill_md):
+                    try:
+                        with open(skill_md, encoding="utf-8") as f:
+                            raw = f.read()
+                        # 去掉 YAML frontmatter，保留正文
+                        if raw.startswith("---"):
+                            parts = raw.split("---", 2)
+                            if len(parts) >= 3:
+                                raw = parts[2].lstrip("\n")
+                        sk_content = raw.strip()
+                        skill_dir = cand
+                    except Exception:
+                        sk_content = ""
+            if not sk_content:
+                # 回退全局技能库
+                sk = skill_manager.get_enabled(nm)
+                if not sk:
+                    continue
+                skill_dir = os.path.dirname(sk.location)
+                sk_content = sk.content.strip()
+                sk_name = sk.name
             files = skill_manager.list_files(skill_dir)
             file_list = "\n".join(f"<file>{f}</file>" for f in files)
             blocks.append(
-                f'<skill_content name="{sk.name}">\n'
-                f'# Skill: {sk.name}\n\n{sk.content.strip()}\n\n'
+                f'<skill_content name="{sk_name}">\n'
+                f'# Skill: {sk_name}\n\n{sk_content}\n\n'
                 f'Base directory: {skill_dir}\n'
                 f'Relative paths in this skill (e.g. scripts/, reference/) are relative to this base directory.\n'
                 f'<skill_files>\n{file_list}\n</skill_files>\n'
@@ -102,6 +137,7 @@ class AgentRegistry:
                     system_prompt_template=str(item.get("backstory", "")),
                     department=str(item.get("department", "")).strip(),
                     skills=list(item.get("skills", [])) or None,
+                    expert_dir=str(item.get("expert_dir", "")).strip(),
                 ))
         except Exception as e:
             print(f"[Crew] 加载自定义代理失败: {e}")
@@ -179,9 +215,10 @@ When NOT to use the Task tool:
 
 
 Usage notes:
-1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
-2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result. The output includes a task_id you can reuse later to continue the same subagent session.
+1. This tool is ASYNCHRONOUS: it starts the sub-agent in the background and returns immediately with a task_id. It does NOT block the main conversation. Launch multiple agents concurrently whenever possible — either in one message with multiple tool uses, or by calling Task repeatedly in successive turns.
+2. The sub-agent result is delivered automatically as a <background_task_done> system message once it finishes. Do NOT poll with TaskStatus and do NOT call Task again with the same parameters — the task is already running. When the result arrives, summarize it back to the user.
 3. Each agent invocation starts with a fresh context unless you provide task_id to resume the same subagent session (which continues with its previous messages and tool outputs). When starting fresh, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.
+4. The returned task_id is the background task id (use with TaskStatus). The returned subagent_session_id can be passed as task_id later to continue the same sub-agent session.
 4. The agent's outputs should generally be trusted
 5. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent. Tell it how to verify its work if possible (e.g., relevant test commands).
 6. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
@@ -291,44 +328,99 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
 
     # 4. Initialize Agent
     agent = Agent(session_id=session_id, config=config)
-    
-    try:
-        # 5. Execute Agent Loop
-        # Agent.chat is a generator. We need to consume it to let the agent run.
-        # We collect the final response content.
-        
-        full_response = ""
-        
-        # Add a clear instruction to the prompt
-        full_prompt = f"Task: {description}\n\nInstructions:\n{prompt}"
-        if expected_output:
-            full_prompt += f"\n\n[Expected Output] {expected_output.strip()}"
-        
-        generator = agent.chat(full_prompt)
-        
-        for chunk in generator:
-            if chunk.get("type") == "content":
-                full_response += chunk.get("response", "")
-            elif chunk.get("type") == "error":
-                return _xml_response("error", f"Agent error: {chunk.get('data')}")
-                
-        # 6. Return Result
-        output = [
-            f"task_id: {session_id}",
-            "",
-            "<task_result>",
-            full_response,
-            "</task_result>"
-        ]
-        
-        return _xml_response("done", "\n".join(output))
 
-    except Exception as e:
-        return _xml_response("error", f"Task execution failed: {e!s}")
-    finally:
-        # Clean up agent resources
-        if hasattr(agent, "close"):
-            agent.close()
+    # 5. 异步执行：立即返回，子代理在后台线程跑，不阻塞主会话。
+    #    结果通过 BackgroundTaskManager 回灌到父会话上下文（主循环每轮
+    #    drain_finished 注入），模型无需轮询。
+    full_prompt = f"Task: {description}\n\nInstructions:\n{prompt}"
+    if expected_output:
+        full_prompt += f"\n\n[Expected Output] {expected_output.strip()}"
+
+    bg_task_id = str(uuid.uuid4())
+    fut: Future = Future()
+
+    try:
+        from . import get_current_job, get_background_manager, _restore_job_ctx
+        parent_job = get_current_job()
+        bg_manager = get_background_manager()
+    except Exception:
+        parent_job = None
+        bg_manager = None
+
+    # 先注册再启动：避免子代理瞬间完成时 notify 早于 register 而丢结果
+    if bg_manager is not None:
+        bg_manager.register(
+            bg_task_id, "Task", (description,), fut, parent_session_id or ""
+        )
+
+    def _on_subagent_done(f: Future):
+        if bg_manager is None:
+            return
+        try:
+            if f.cancelled():
+                return
+            exc = f.exception()
+            if exc is None:
+                bg_manager.notify_done(bg_task_id, f.result())
+            else:
+                bg_manager.notify_failed(bg_task_id, str(exc))
+        except Exception:
+            logger.warning("子代理完成回调失败 bg_task=%s", bg_task_id, exc_info=True)
+
+    fut.add_done_callback(_on_subagent_done)
+
+    def _run_subagent():
+        # 继承父会话的 job 上下文：子代理的工具进度/取消检查跟随父会话
+        if parent_job is not None:
+            try:
+                _restore_job_ctx(parent_job)
+            except Exception:
+                pass
+        try:
+            full_response = ""
+            for chunk in agent.chat(full_prompt):
+                if chunk.get("type") == "content":
+                    full_response += chunk.get("response", "")
+                elif chunk.get("type") == "error":
+                    raise RuntimeError(chunk.get("data") or "子代理执行出错")
+            output = [
+                f"subagent_session_id: {session_id}",
+                "",
+                "<task_result>",
+                full_response,
+                "</task_result>",
+            ]
+            fut.set_result(_xml_response("done", "\n".join(output)))
+        except Exception as e:
+            fut.set_exception(e)
+        finally:
+            if hasattr(agent, "close"):
+                try:
+                    agent.close()
+                except Exception:
+                    logger.warning("子代理资源清理失败", exc_info=True)
+
+    threading.Thread(
+        target=_run_subagent,
+        daemon=True,
+        name=f"subagent-{subagent_type}-{bg_task_id[:8]}",
+    ).start()
+
+    # 6. 立即返回：主会话可以继续派发其他子代理或处理其他工作
+    return _xml_response(
+        "running",
+        f"子代理已启动并在后台运行（不阻塞主会话）。\n"
+        f"<task_id>{bg_task_id}</task_id>\n"
+        f"<subagent_session_id>{session_id}</subagent_session_id>\n"
+        f"<subagent_type>{subagent_type}</subagent_type>\n"
+        f"<description>{description}</description>\n\n"
+        f"【重要】\n"
+        f"1. 不要用相同参数重复调用 Task——子代理已在运行。\n"
+        f"2. 结果完成后会自动回灌到对话上下文，无需轮询 TaskStatus。\n"
+        f"3. 主动查询用 TaskStatus(task_id=\"{bg_task_id}\")；"
+        f"续聊同一子代理时把 task_id 设为 \"{session_id}\"。\n"
+        f"4. 你可以继续派发其他子代理或处理其他工作。"
+    )
 
 
 # ============================================================
@@ -646,94 +738,127 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
 
         return i, sname, stask, step_out
 
-    # 1) 规整每步 depends_on（步骤序号或成员名，1-based；空/无=无依赖）
-    _name_to_idx = {str(s.get("agent", "")).strip(): i for i, s in enumerate(steps, 1)}
-    _deps = {}
-    for i, step in enumerate(steps, 1):
-        raw = step.get("depends_on") or step.get("depends") or []
-        if isinstance(raw, str):
-            raw = [raw]
-        deps = set()
-        for d in raw:
-            d = str(d).strip()
-            if d in ("", "无", "none", "null", "[]", "无依赖"):
-                continue
-            if d.isdigit():
-                di = int(d)
-            elif d in _name_to_idx:
-                di = _name_to_idx[d]
-            else:
-                _m = re.search(r"\d+", d)
-                di = int(_m.group()) if _m else None
-            if di and 1 <= di < i:  # 仅允许依赖更早步骤，避免自环/后向边
-                deps.add(di)
-        _deps[i] = deps
-
-    # 2) 计算拓扑层级（wave 等级）；含环则降级为全部并行（level=0）
-    _level = {}
-    def _calc(i):
-        if i in _level:
-            return _level[i]
-        ds = _deps.get(i, set())
-        if not ds:
-            _level[i] = 0
-            return 0
-        _level[i] = 0
-        _level[i] = 1 + max(_calc(x) for x in ds)
-        return _level[i]
-    try:
-        for i in range(1, len(steps) + 1):
-            _calc(i)
-    except (RecursionError, ValueError):
-        _level = {i: 0 for i in range(1, len(steps) + 1)}
-
-    # 3) 按 wave 分批并发（同 level 并发；依赖必在更早 wave 完成）；parallel=False 退化为逐条串行
-    # 捕获当前线程的 job，传给 worker 线程以便子步骤 emit_progress 能推到 SSE
-    from chat_client.tools import get_current_job, _restore_job_ctx
+    # ---- 后台异步执行：专家团队在后台线程跑，不阻塞主会话 ----
+    # 与 Task 子代理共用 BackgroundTaskManager 回传链路：完成后 notify_done
+    # 推 SSE + 落盘完整结果 + 唤醒挂起的主循环收尾段，结果自动回灌上下文。
+    import uuid as _uuid
+    from . import get_background_manager, get_current_job, _restore_job_ctx
     _ctx_job = get_current_job()
-    _done = {}
-    _remaining = set(range(1, len(steps) + 1))
-    if parallel:
-        from concurrent.futures import ThreadPoolExecutor
-        _MAX_WORKERS = 5
-        while _remaining:
-            _cur = min(_level[i] for i in _remaining)
-            _wave = sorted([i for i in _remaining if _level[i] == _cur])
-            with ThreadPoolExecutor(max_workers=min(len(_wave), _MAX_WORKERS)) as _ex:
-                def _submit_with_job(args, _job=_ctx_job):
-                    _restore_job_ctx(_job)
-                    return _run_one_step(*args)
-                _futs = {_ex.submit(_submit_with_job, (i, steps[i - 1], _deps[i])): i for i in _wave}
-                for _fut, i in _futs.items():
-                    _ri, _rsn, _rst, _rso = _fut.result()
-                    _done[i] = (_rsn, _rst, _rso)
-                    transcript.append({"agent": _rsn, "task": _rst, "output": _rso})
-                    plan_lines.append(f"步骤{_ri} [{_rsn}] {_rst} → 完成({len(_rso)} 字)")
-            _remaining -= set(_wave)
-    else:
-        # 串行：每步跑完立即累积 _done，后续步骤可衔接其依赖产出
-        for _i, _step in enumerate(steps, 1):
-            _ri, _rsn, _rst, _rso = _run_one_step(_i, _step, _deps[_i])
-            _done[_i] = (_rsn, _rst, _rso)
-            transcript.append({"agent": _rsn, "task": _rst, "output": _rso})
-            plan_lines.append(f"步骤{_ri} [{_rsn}] {_rst} → 完成({len(_rso)} 字)")
 
-    # ---- 最后：经理汇总 ----
-    emit_progress("crew_step", {"agent": "manager", "dept": "经理", "status": "running", "step": "汇总"})
-    final = _crew_synthesis(parent_config, objective, transcript)
-    emit_progress("crew_step", {"agent": "manager", "dept": "经理", "status": "done", "step": "汇总"})
+    def _run_crew_body():
+        # 在后台线程恢复 job 上下文，使子步骤 emit_progress 能推到 SSE
+        if _ctx_job is not None:
+            try:
+                _restore_job_ctx(_ctx_job)
+            except Exception:
+                pass
+        # 1) 规整每步 depends_on（步骤序号或成员名，1-based；空/无=无依赖）
+        _name_to_idx = {str(s.get("agent", "")).strip(): i for i, s in enumerate(steps, 1)}
+        _deps = {}
+        for i, step in enumerate(steps, 1):
+            raw = step.get("depends_on") or step.get("depends") or []
+            if isinstance(raw, str):
+                raw = [raw]
+            deps = set()
+            for d in raw:
+                d = str(d).strip()
+                if d in ("", "无", "none", "null", "[]", "无依赖"):
+                    continue
+                if d.isdigit():
+                    di = int(d)
+                elif d in _name_to_idx:
+                    di = _name_to_idx[d]
+                else:
+                    _m = re.search(r"\d+", d)
+                    di = int(_m.group()) if _m else None
+                if di and 1 <= di < i:  # 仅允许依赖更早步骤，避免自环/后向边
+                    deps.add(di)
+            _deps[i] = deps
 
-    report = [
-        "<crew_report>",
-        "<plan>",
-        *plan_lines,
-        "</plan>",
-        "<final_answer>",
-        final,
-        "</final_answer>",
-        "</crew_report>",
-    ]
-    return _xml_response("done", "\n".join(report))
+        # 2) 计算拓扑层级（wave 等级）；含环则降级为全部并行（level=0）
+        _level = {}
+        def _calc(i):
+            if i in _level:
+                return _level[i]
+            ds = _deps.get(i, set())
+            if not ds:
+                _level[i] = 0
+                return 0
+            _level[i] = 0
+            _level[i] = 1 + max(_calc(x) for x in ds)
+            return _level[i]
+        try:
+            for i in range(1, len(steps) + 1):
+                _calc(i)
+        except (RecursionError, ValueError):
+            _level = {i: 0 for i in range(1, len(steps) + 1)}
+
+        # 3) 按 wave 分批并发（同 level 并发；依赖必在更早 wave 完成）；parallel=False 退化为逐条串行
+        _done = {}
+        _transcript = []
+        _plan_lines = []
+        _remaining = set(range(1, len(steps) + 1))
+        if parallel:
+            from concurrent.futures import ThreadPoolExecutor
+            _MAX_WORKERS = 5
+            while _remaining:
+                _cur = min(_level[i] for i in _remaining)
+                _wave = sorted([i for i in _remaining if _level[i] == _cur])
+                with ThreadPoolExecutor(max_workers=min(len(_wave), _MAX_WORKERS)) as _ex:
+                    def _submit_with_job(args, _job=_ctx_job):
+                        _restore_job_ctx(_job)
+                        return _run_one_step(*args)
+                    _futs = {_ex.submit(_submit_with_job, (i, steps[i - 1], _deps[i])): i for i in _wave}
+                    for _fut, i in _futs.items():
+                        _ri, _rsn, _rst, _rso = _fut.result()
+                        _done[i] = (_rsn, _rst, _rso)
+                        _transcript.append({"agent": _rsn, "task": _rst, "output": _rso})
+                        _plan_lines.append(f"步骤{_ri} [{_rsn}] {_rst} → 完成({len(_rso)} 字)")
+                _remaining -= set(_wave)
+        else:
+            # 串行：每步跑完立即累积 _done，后续步骤可衔接其依赖产出
+            for _i, _step in enumerate(steps, 1):
+                _ri, _rsn, _rst, _rso = _run_one_step(_i, _step, _deps[_i])
+                _done[_i] = (_rsn, _rst, _rso)
+                _transcript.append({"agent": _rsn, "task": _rst, "output": _rso})
+                _plan_lines.append(f"步骤{_ri} [{_rsn}] {_rst} → 完成({len(_rso)} 字)")
+
+        # ---- 最后：经理汇总 ----
+        emit_progress("crew_step", {"agent": "manager", "dept": "经理", "status": "running", "step": "汇总"})
+        final = _crew_synthesis(parent_config, objective, _transcript)
+        emit_progress("crew_step", {"agent": "manager", "dept": "经理", "status": "done", "step": "汇总"})
+
+        report = [
+            "<crew_report>",
+            "<plan>",
+            *_plan_lines,
+            "</plan>",
+            "<final_answer>",
+            final,
+            "</final_answer>",
+            "</crew_report>",
+        ]
+        return _xml_response("done", "\n".join(report))
+
+    bg_task_id = str(_uuid.uuid4())
+    bgm = get_background_manager()
+    bgm.register(bg_task_id, "RunCrew", (objective,), None, parent_session_id or "")
+    def _crew_thread():
+        try:
+            _out = _run_crew_body()
+            bgm.notify_done(bg_task_id, _out)
+        except Exception as _e:
+            bgm.notify_failed(bg_task_id, str(_e))
+    threading.Thread(target=_crew_thread, daemon=True, name=f"crew-{bg_task_id[:8]}").start()
+    return _xml_response(
+        "running",
+        f"专家团队已在后台启动并运行（不阻塞主会话）。\n"
+        f"<task_id>{bg_task_id}</task_id>\n\n"
+        f"【重要】\n"
+        f"1. 不要用相同目标重复调用 RunCrew——团队已在运行。\n"
+        f"2. 结果完成后会自动回灌到对话上下文，无需轮询 TaskStatus。\n"
+        f"3. 主动查询用 TaskStatus(task_id=\"{bg_task_id}\")。",
+    )
 
 
 @register_tool(category="Agent", name_cn="咨询同事", risk_level="low", timeout=300)

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>浏览器控制台</title>
+<link rel="icon" href="/favicon.png" />
+<style>
+  :root { --bg:#0f1115; --surface:#171a21; --border:#2a2f3a; --text:#e5e7eb; --text2:#9ca3af; --accent:#3b82f6; --green:#07c160; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC',sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  header .logo { width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#2563eb);display:flex;align-items:center;justify-content:center;font-size:16px }
+  header h1 { font-size:16px; font-weight:600; }
+  .urlbar { flex:1; display:flex; gap:8px; min-width:200px; }
+  .urlbar input { flex:1; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:#0d1117; color:var(--text); font-size:13px; }
+  .urlbar input:focus { outline:none; border-color:var(--accent); }
+  button { padding:8px 14px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.primary:hover { background:#2563eb; }
+  button.danger:hover { border-color:#ef4444; color:#ef4444; }
+  .status { font-size:12px; color:var(--text2); display:flex; align-items:center; gap:6px; }
+  .dot { width:8px;height:8px;border-radius:50%;background:#6b7280; }
+  .dot.on { background:var(--green); box-shadow:0 0 8px var(--green); }
+  .dot.off { background:#ef4444; }
+  .dot.connecting { background:#f59e0b; }
+  .main { flex:1; display:flex; min-height:0; }
+  .viewport { flex:1; display:flex; align-items:center; justify-content:center; background:#0a0c10; position:relative; overflow:hidden; }
+  #screen { max-width:100%; max-height:100%; object-fit:contain; display:none; }
+  #placeholder { color:#4b5563; font-size:14px; }
+  .sidebar { width:240px; background:var(--surface); border-left:1px solid var(--border); padding:10px; overflow-y:auto; display:none; }
+  .sidebar.visible { display:block; }
+  .sidebar h3 { font-size:12px; color:var(--text2); text-transform:uppercase; letter-spacing:.5px; margin-bottom:8px; }
+  .tab-item { padding:8px 10px; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; font-size:13px; }
+  .tab-item:hover { background:#1f242e; }
+  .tab-item.active { background:#1e293b; color:var(--accent); }
+  .tab-item .close { color:#6b7280; }
+  .tab-item .close:hover { color:#ef4444; }
+  .actions { display:flex; gap:6px; flex-wrap:wrap; }
+  .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#1f2937; padding:10px 20px; border-radius:20px; font-size:13px; opacity:0; transition:.3s; z-index:100; pointer-events:none; }
+  .toast.show { opacity:1; }
+  .recording { display:none; align-items:center; gap:6px; color:#ef4444; font-size:12px; }
+  .recording.on { display:flex; }
+  .recording .rdot { width:8px;height:8px;border-radius:50%;background:#ef4444;animation:blink 1s infinite; }
+  @keyframes blink { 50% { opacity:.2; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">🌐</div>
+  <h1>浏览器控制台</h1>
+  <div class="urlbar">
+    <input id="urlInput" placeholder="输入网址，回车打开（如 example.com）" />
+    <button class="primary" id="goBtn">前往</button>
+    <button id="backBtn" title="后退">←</button>
+    <button id="fwdBtn" title="前进">→</button>
+    <button id="reloadBtn" title="刷新">⟳</button>
+  </div>
+  <button id="newTabBtn">+ 新标签页</button>
+  <button id="sidebarToggle">标签页</button>
+  <button class="danger" id="closeBtn">关闭</button>
+  <div class="status">
+    <span class="dot" id="statusDot"></span>
+    <span id="statusText">未连接</span>
+    <span class="recording" id="recordingBadge"><span class="rdot"></span>录制中</span>
+  </div>
+</header>
+<div class="main">
+  <div class="viewport">
+    <img id="screen" alt="browser" />
+    <div id="placeholder">浏览器未启动<br/>点击「启动浏览器」或输入网址</div>
+  </div>
+  <div class="sidebar" id="sidebar">
+    <h3>标签页</h3>
+    <div id="tabList"></div>
+    <h3 style="margin-top:14px">录制回放</h3>
+    <div class="actions">
+      <button id="recordBtn">● 录制</button>
+      <button id="stopRecordBtn" style="display:none">■ 停止</button>
+      <button id="genSkillBtn" style="display:none">生成技能</button>
+    </div>
+    <div id="recordings" style="margin-top:8px;font-size:12px;color:var(--text2)"></div>
+    <h3 style="margin-top:14px">代理设置</h3>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:6px">
+      当前：<span id="proxyEffective">-</span>
+    </div>
+    <div class="actions" style="flex-direction:column;align-items:stretch">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)">
+        <input type="checkbox" id="proxyEnabled" checked /> 启用代理
+      </label>
+      <input id="proxyInput" placeholder="如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:#0d1117;color:var(--text);font-size:12px" />
+      <button id="proxySaveBtn">保存代理</button>
+      <button id="proxyClearBtn">清除代理</button>
+    </div>
+    <div style="font-size:11px;color:var(--text2);margin-top:6px">保存后需重启浏览器会话生效（点击「关闭」再重新连接）。</div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+(function () {
+  'use strict';
+  var $ = function (s) { return document.querySelector(s); };
+  var API = '/api/v2/browser';
+  var ws = null, connected = false, recordingId = null;
+  var token = '';
+  try { token = localStorage.getItem('bt_agent_token') || ''; } catch (e) {}
+
+  function toast(msg, type) {
+    var t = $('#toast'); t.textContent = msg; t.className = 'toast show';
+    setTimeout(function () { t.className = 'toast'; }, 2500);
+  }
+  function setStatus(text, state) {
+    $('#statusText').textContent = text;
+    var dot = $('#statusDot');
+    dot.className = 'dot ' + (state || 'off');
+  }
+  function authOpts(opts) {
+    opts = opts || {};
+    if (!token) return opts;
+    var headers = opts.headers || {};
+    headers['Authorization'] = 'Bearer ' + token;
+    opts.headers = headers;
+    return opts;
+  }
+  async function api(path, opts) {
+    var r = await fetch(API + path, authOpts(opts));
+    return r.json();
+  }
+
+  function connect() {
+    if (ws) { try { ws.close(); } catch (e) {} }
+    setStatus('连接中…', 'connecting');
+    var base = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    var url = base + location.host + '/api/v2/browser-stream/ws';
+    if (token) url += '?token=' + encodeURIComponent(token);
+    ws = new WebSocket(url);
+    ws.onopen = function () {
+      connected = true; setStatus('已连接', 'on');
+      ws.send(JSON.stringify({ type: 'start', url: '', width: 1280, height: 800, session_id: 'default' }));
+    };
+    ws.onclose = function () { connected = false; setStatus('已断开', 'off'); };
+    ws.onerror = function () { setStatus('连接错误', 'off'); };
+    ws.onmessage = function (ev) {
+      var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      handleServer(msg);
+    };
+  }
+
+  function handleServer(msg) {
+    switch (msg.type) {
+      case 'status':
+        if (msg.status === 'streaming') setStatus('已连接', 'on');
+        break;
+      case 'frame':
+        $('#screen').style.display = 'block';
+        $('#placeholder').style.display = 'none';
+        $('#screen').src = 'data:image/jpeg;base64,' + msg.data;
+        break;
+      case 'tabs':
+        renderTabs(msg.tabs || []);
+        break;
+      case 'session_update':
+        if (msg.current_url) $('#urlInput').value = msg.current_url;
+        break;
+      case 'error':
+        setStatus('错误: ' + (msg.message || ''), 'off');
+        toast(msg.message || '错误', 'err');
+        break;
+    }
+  }
+
+  function send(obj) { if (ws && connected) ws.send(JSON.stringify(obj)); }
+  function renderTabs(tabs) {
+    var el = $('#tabList'); el.innerHTML = '';
+    tabs.forEach(function (t) {
+      var d = document.createElement('div');
+      d.className = 'tab-item' + (t.active ? ' active' : '');
+      d.innerHTML = '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (t.title || t.url || t.id || 'tab') + '</span>' +
+        '<span class="close" data-id="' + (t.id || '') + '">✕</span>';
+      d.onclick = function (e) {
+        if (e.target.classList.contains('close')) {
+          send({ type: 'tab_close', tab_id: t.id });
+        } else {
+          send({ type: 'tab_switch', tab_id: t.id });
+        }
+      };
+      el.appendChild(d);
+    });
+  }
+
+  // ── 控制 ───────────────────────────────────────────────
+  $('#goBtn').onclick = go;
+  $('#urlInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+  function go() {
+    var url = $('#urlInput').value.trim();
+    if (!url) return;
+    send({ type: 'navigate', url: url });
+  }
+  $('#backBtn').onclick = function () { send({ type: 'goback' }); };
+  $('#fwdBtn').onclick = function () { send({ type: 'goforward' }); };
+  $('#reloadBtn').onclick = function () { send({ type: 'reload' }); };
+  $('#newTabBtn').onclick = function () { send({ type: 'tab_new' }); };
+  $('#sidebarToggle').onclick = function () { $('#sidebar').classList.toggle('visible'); };
+  $('#closeBtn').onclick = async function () {
+    if (ws) { try { ws.send(JSON.stringify({ type: 'stop' })); ws.close(); } catch (e) {} }
+    await api('/close', { method: 'POST' });
+    setStatus('已关闭', 'off');
+    toast('浏览器已关闭');
+  };
+
+  // 鼠标控制（坐标基于显示区域）
+  var screen = $('#screen');
+  function pos(e) {
+    var r = screen.getBoundingClientRect();
+    return {
+      x: Math.round((e.clientX - r.left) / r.width * 1280),
+      y: Math.round((e.clientY - r.top) / r.height * 800)
+    };
+  }
+  var mouseDown = false;
+  screen.addEventListener('mousedown', function (e) {
+    mouseDown = true; var p = pos(e);
+    send({ type: 'mousedown', x: p.x, y: p.y, button: 'left', buttons: 1, clickCount: 1 });
+  });
+  screen.addEventListener('mousemove', function (e) {
+    var p = pos(e);
+    send({ type: 'mousemove', x: p.x, y: p.y, button: mouseDown ? 'left' : 'none', buttons: mouseDown ? 1 : 0 });
+  });
+  screen.addEventListener('mouseup', function (e) {
+    mouseDown = false; var p = pos(e);
+    send({ type: 'mouseup', x: p.x, y: p.y, button: 'left', buttons: 0 });
+  });
+  screen.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var p = pos(e);
+    send({ type: 'scroll', deltaY: e.deltaY, x: p.x, y: p.y });
+  }, { passive: false });
+  screen.addEventListener('dblclick', function (e) {
+    var p = pos(e); send({ type: 'dblclick', x: p.x, y: p.y });
+  });
+
+  // ── 录制回放 ───────────────────────────────────────────
+  $('#recordBtn').onclick = async function () {
+    var r = await api('/record-replay/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (r.status) { recordingId = r.data.recordingId; $('#recordingBadge').classList.add('on'); $('#recordBtn').style.display = 'none'; $('#stopRecordBtn').style.display = 'inline'; $('#genSkillBtn').style.display = 'inline'; toast('开始录制'); }
+    else toast(r.msg || '录制失败', 'err');
+  };
+  $('#stopRecordBtn').onclick = async function () {
+    var r = await api('/record-replay/stop', { method: 'POST' });
+    if (r.status) { $('#recordingBadge').classList.remove('on'); $('#recordBtn').style.display = 'inline'; $('#stopRecordBtn').style.display = 'none'; toast('已停止录制'); }
+    else toast(r.msg || '停止失败', 'err');
+  };
+  $('#genSkillBtn').onclick = async function () {
+    var r = await api('/record-replay/stop-and-generate-skill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    if (r.status) { $('#recordingBadge').classList.remove('on'); $('#recordBtn').style.display = 'inline'; $('#stopRecordBtn').style.display = 'none'; $('#genSkillBtn').style.display = 'none'; toast('已生成技能草稿'); }
+    else toast(r.msg || '生成失败', 'err');
+  };
+  async function loadRecordings() {
+    var r = await api('/record-replay/recordings');
+    if (r.status) {
+      var el = $('#recordings');
+      el.innerHTML = r.data.recordings.length ? r.data.recordings.map(function (x) {
+        return '<div style="padding:4px 0">' + x.recording_id + '</div>';
+      }).join('') : '<div>（暂无录制）</div>';
+    }
+  }
+
+  // ── 代理设置 ───────────────────────────────────────────
+  async function loadProxyConfig() {
+    var r = await api('/proxy');
+    if (!r.status || !r.data) return;
+    var d = r.data;
+    var cfg = d.configured || { enabled: false, proxy: '' };
+    $('#proxyEnabled').checked = !!cfg.enabled;
+    $('#proxyInput').value = cfg.proxy || '';
+    var eff = d.effective_proxy || '-';
+    $('#proxyEffective').textContent = eff;
+    $('#proxyEffective').title = eff === '-' ? '未配置代理' : eff;
+  }
+  $('#proxySaveBtn').onclick = async function () {
+    var proxy = $('#proxyInput').value.trim();
+    var enabled = $('#proxyEnabled').checked;
+    if (enabled && !proxy) { toast('请输入代理地址或取消启用', 'err'); return; }
+    var r = await api('/proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: enabled, proxy: proxy })
+    });
+    if (r.status) {
+      toast(r.msg || '代理已保存');
+      $('#proxyEffective').textContent = r.data.effective_proxy || '-';
+    } else {
+      toast(r.msg || '保存失败', 'err');
+    }
+  };
+  $('#proxyClearBtn').onclick = async function () {
+    var r = await api('/proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false, proxy: '' })
+    });
+    if (r.status) {
+      $('#proxyEnabled').checked = false;
+      $('#proxyInput').value = '';
+      $('#proxyEffective').textContent = r.data.effective_proxy || '-';
+      toast('已清除代理配置');
+    } else {
+      toast(r.msg || '清除失败', 'err');
+    }
+  };
+
+  // ── 初始化 ─────────────────────────────────────────────
+  connect();
+  loadRecordings();
+  loadProxyConfig();
+})();
+</script>
+<script src="/static/js/panel-auth.js"></script>
+</body>
+</html>

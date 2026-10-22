@@ -55,7 +55,7 @@ PBKDF2_ITERATIONS = 200_000
 # 免鉴权路径。登录接口本身 + 静态资源 + 首页 HTML。
 # 首页必须放行：否则用户连登录页都加载不出来，形成"没 token → 打不开页面 →
 # 无法登录"的死锁。静态资源同理。
-PUBLIC_EXACT = {"/", "/index.html", "/static/card-login.html"}
+PUBLIC_EXACT = {"/", "/index.html", "/static/card-login.html", "/connectors", "/browser"}
 PUBLIC_PREFIX = (
     "/api/auth/login",
     # 微信登录必须放行：用户此刻还没有 token，若要求先鉴权就形成
@@ -81,6 +81,14 @@ PUBLIC_PREFIX = (
     # 与 clawbot 同模式——白名单放行 + 接口内部校验，
     # 中间件放行不等于无鉴权，安全性由 v1_compat 内部校验保证。
     "/v1/",
+    # connector-hub gateway 连接器的内部 MCP 端点：由 MCP SDK 客户端调用，
+    # 只带 ?token=<internal_token>，无法携带用户 Bearer。与 /v1/ 同模式——
+    # 中间件放行，安全性由路由内部 verify_internal_token 校验保证。
+    "/api/internal/mcp",
+    "/api/v2/connectors/internal/mcp",
+    # OAuth2 授权回调：厂商授权页重定向回本服务时浏览器不会携带用户 Bearer，
+    # 故必须免鉴权放行；安全性由回调内部校验 state + 交换 token 保证。
+    "/api/v2/connectors/oauth2",
     "/favicon.png",
     "/static/",
     "/assets/",

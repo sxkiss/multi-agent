@@ -329,7 +329,9 @@ def Write(file_path: str, content: str) -> str:
         file_path: The absolute path to the file to write (must be absolute, not relative)
     """
     try:
-        from .edit import _is_path_allowed
+        from .edit import _is_path_allowed, _is_protected_global_file
+        if _is_protected_global_file(file_path):
+            return _xml_response("error", f"Access denied: 全局敏感配置不允许直接读写，请使用专用 API ({file_path})")
         if not _is_path_allowed(file_path):
             return _xml_response("error", f"Path not allowed: {file_path}")
         with open(file_path, 'w', encoding='utf-8') as f:

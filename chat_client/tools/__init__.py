@@ -20,10 +20,90 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FutureTimeout
 from typing import Any, get_type_hints
 
-from .base import _xml_response, inject_tool_name, inject_duration  # noqa: F401  (工具结果统一封装)
+from .base import _xml_response, inject_tool_name, inject_duration, tool_result_for_model  # noqa: F401  (工具结果统一封装)
 
 # 项目根目录（chat_client 的上一级），作为所有工具的默认工作目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 上游协议（OpenAI / sub2api 透传）对工具名有硬性规则：
+# 只允许 a-z A-Z 0-9 _ -，其他字符（如 MCP 工具的点号 doc.copy_format）会触发
+# "invalid name" 400，导致多轮对话 500「不符合 API 协议」。
+# 这里把非法字符清洗为下划线，保证对外暴露名合规且稳定可还原。
+_ALLOWED_TOOL_NAME_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
+_LEADING_NON_ALPHA = re.compile(r"^[^a-zA-Z]+")
+
+
+def sanitize_tool_name(name: str) -> str:
+    """把工具名清洗成上游协议允许的形状（点号等非法字符 -> 下划线）。"""
+    if not name:
+        return name
+    cleaned = _ALLOWED_TOOL_NAME_CHARS.sub("_", name)
+    # 首字符必须是字母，避免 _123 这类无法作为标识符的情况
+    if _LEADING_NON_ALPHA.match(cleaned):
+        cleaned = "t_" + cleaned
+    return cleaned
+
+
+# ============================================================
+# 工具下发策略（Tool Disclosure Policy）
+# 背景：单 Agent 模式默认把全部工具下发，工具数多时首 token 延迟偏高
+#   1. CRITICAL_TOOLS：核心工具，永不被裁剪（保证基础能力）
+#   2. 条件门控（gated）：按配置/环境启用的工具，默认不下发，需显式开启
+#   3. 其余工具：正常下发
+# 通过环境变量 AI_AGENT_TOOL_DISCLOSURE=trim 开启裁剪（默认 off = 全量，保持向后兼容）。
+# 通过 AI_AGENT_TOOL_EXTRA_GATE 追加门控工具（逗号分隔）。
+# ============================================================
+CRITICAL_TOOLS: frozenset[str] = frozenset({
+    "Read", "Glob", "Grep", "Write", "Edit", "Patch", "Bash",
+    "Task", "TodoWrite", "Skills", "CheckCommandStatus", "StopCommand",
+    "WebFetch", "WebSearch",
+})
+
+# 条件门控工具：默认不下发，需通过 config["tool_gate_enabled"] 或环境变量显式开启。
+# 分组便于按需开启（如只开媒体组）。
+GATED_TOOL_GROUPS: dict[str, frozenset[str]] = {
+    # 媒体/多模态
+    "media": frozenset({"WechatMedia", "SendMedia", "ImageGenerate"}),
+    # 数据库
+    "database": frozenset({"MySQLQuery", "SQLQuery", "DatabaseQuery"}),
+    # 知识库（文档 RAG）
+    "knowledge": frozenset({"KnowledgeAdd", "KnowledgeSearch", "KnowledgeList", "KnowledgeDelete"}),
+    # 记忆
+    "memory": frozenset({"mem0_search", "mem0_add", "mem0_list", "mem0_delete", "mem0_import",
+                         "Mem0Search", "Mem0Add"}),
+    # 市场发现
+    "market": frozenset({"ExpertMarket", "GetExpertPrompt", "InstallExpert",
+                         "SkillMarket", "SkillCategories", "ExpertScenes"}),
+    # 定时任务
+    "scheduler": frozenset({"ScheduleTask", "ListScheduledTasks", "CancelScheduledTask",
+                            "RunScheduledTaskNow"}),
+    # 网站/运维
+    "website": frozenset({"SiteList", "SiteConf", "SiteLogs", "SiteAnalysis", "ServerStatus",
+                          "FirewallStatus", "DockerInfo", "DockerContainers"}),
+}
+
+
+def get_gated_tools(enabled_groups: set[str] | None = None,
+                    extra: set[str] | None = None) -> set[str]:
+    """返回当前应被门控（不下发）的工具集合。
+
+    enabled_groups：显式启用的门控组名（这些组**不**被门控，正常下发）。
+    extra：额外门控的工具名（无条件门控）。
+    """
+    enabled_groups = enabled_groups or set()
+    gated: set[str] = set()
+    for grp, tools in GATED_TOOL_GROUPS.items():
+        if grp not in enabled_groups:
+            gated |= tools
+    if extra:
+        gated |= extra
+    return gated - CRITICAL_TOOLS  # 核心工具永不被门控
+
+
+def disclosure_mode() -> str:
+    """当前工具下发模式：'trim'（裁剪）或 'full'（全量，默认）。"""
+    return os.environ.get("AI_AGENT_TOOL_DISCLOSURE", "").strip().lower() or "full"
+
 
 # ============================================================
 # 后台任务管理器：所有工具超时后自动转入后台执行
@@ -63,6 +143,10 @@ class BackgroundTaskManager:
         self._tasks: dict[str, _BgTask] = {}
         self._lock = threading.Lock()
         self._MAX = 200
+        # 每个 session 一个 wake event：后台任务完成时 set()，唤醒主循环收尾段的
+        # 挂起等待（取代旧版 "轮询 + 过早终止"）。避免主循环在后台任务未跑完时
+        # 就 yield stop 终止会话、导致结果只推 SSE 进不了上下文。
+        self._wake_events: dict[str, threading.Event] = {}
 
     def register(self, task_id: str, tool: str, args: tuple,
                  future, session_id: str) -> None:
@@ -81,6 +165,36 @@ class BackgroundTaskManager:
         with self._lock:
             self._tasks.pop(task_id, None)
 
+    def get_wake_event(self, session_id: str) -> threading.Event:
+        """取（或惰性创建）本会话的 wake event；主循环收尾段挂起等待它。"""
+        with self._lock:
+            ev = self._wake_events.get(session_id)
+            if ev is None:
+                ev = threading.Event()
+                self._wake_events[session_id] = ev
+            return ev
+
+    def _wake(self, session_id: str) -> None:
+        """唤醒该会话挂起的主循环（若已存在 wake event）。"""
+        with self._lock:
+            ev = self._wake_events.get(session_id)
+        if ev is not None:
+            ev.set()
+
+    def _persist_result(self, task_id: str, tool: str, status: str, result: str) -> None:
+        """把完整结果落盘到 jobs/<key>.jsonl，进程重启后仍能回查（旧版只存 500 字预览）。"""
+        try:
+            job = getattr(_current_job_local, "job", None)
+            if job is not None and hasattr(job, "append"):
+                job.append("background_result", {
+                    "task_id": task_id,
+                    "tool": tool,
+                    "status": status,
+                    "result": result,
+                })
+        except Exception:
+            logger.warning("后台任务结果落盘失败 task=%s", task_id, exc_info=True)
+
     def notify_done(self, task_id: str, result: str) -> None:
         with self._lock:
             t = self._tasks.get(task_id)
@@ -88,8 +202,10 @@ class BackgroundTaskManager:
                 return
             t.status = "done"
             t.result = result
-        # 通知 job：通过 emit_progress 推一条 background_done 事件，
-        # 前端/agent 看到后就可以把结果注入到对话上下文里。
+            _sid = t.session_id
+        # 1) 完整结果落盘：进程重启后仍能回查（旧版 emit_progress 仅推 500 字预览）
+        self._persist_result(task_id, t.tool, "done", result)
+        # 2) 推 SSE 预览事件，前端可见状态
         try:
             emit_progress("background_done", {
                 "task_id": task_id,
@@ -98,6 +214,8 @@ class BackgroundTaskManager:
             })
         except Exception:
             logger.warning("后台任务完成通知失败 task=%s", task_id, exc_info=True)
+        # 3) 唤醒挂起的主循环收尾段，使其 drain_finished 注入结果后正常收尾
+        self._wake(_sid)
 
     def notify_failed(self, task_id: str, error: str) -> None:
         with self._lock:
@@ -106,6 +224,8 @@ class BackgroundTaskManager:
                 return
             t.status = "failed"
             t.result = f"[执行失败] {error}"
+            _sid = t.session_id
+        self._persist_result(task_id, t.tool, "failed", t.result)
         try:
             emit_progress("background_done", {
                 "task_id": task_id,
@@ -114,6 +234,7 @@ class BackgroundTaskManager:
             })
         except Exception:
             logger.warning("后台任务失败通知失败 task=%s", task_id, exc_info=True)
+        self._wake(_sid)
 
     def pending_count(self, session_id: str) -> int:
         """本会话中仍在运行、且结果尚未注入上下文的后台任务数。
@@ -215,6 +336,81 @@ def is_allow_high() -> bool:
 
 
 # ============================================================
+# 三档：ask（默认，高风险需确认）/ allow_all（破甲，放行全部）/
+#       allow_tools（放行白名单内的高风险工具）
+# 独立于 _session_allow_high（后者由 strict_tools 决定，是基线），
+# HITL 是在基线之上由用户显式选择的会话级覆盖。
+# ============================================================
+_session_hitl: dict[str, dict[str, Any]] = {}
+_hitl_lock = threading.Lock()
+
+HITL_MODES = ("ask", "allow_all", "allow_tools")
+
+# - 确认类工具永不跳过（即使用户开了 allow_all 也必须弹确认）
+# - 工具名长度/数量校验，防注入超长名单
+_HITL_NEVER_SKIP: frozenset[str] = frozenset({"AskUserQuestion", "ask_user_question"})
+_HITL_MAX_TOOLS = 64
+_HITL_MAX_TOOL_NAME = 128
+
+
+def set_session_hitl(session_id: str, mode: str = "ask", tools: list[str] | None = None) -> None:
+    """设置指定会话的 HITL 审批模式（ask/allow_all/allow_tools）。
+
+    P7 硬保护：确认类工具（AskUserQuestion）永不进入白名单；工具名超长/超量
+    """
+    if not session_id:
+        return
+    mode = (mode or "ask").strip().lower()
+    if mode not in HITL_MODES:
+        mode = "ask"
+    # 校验工具白名单：过滤确认类、超长、超量
+    clean: set[str] = set()
+    for t in (tools or []):
+        name = str(t).strip()
+        if not name or name in _HITL_NEVER_SKIP:
+            continue
+        if len(name) > _HITL_MAX_TOOL_NAME:
+            continue
+        if len(clean) >= _HITL_MAX_TOOLS:
+            break
+        clean.add(name)
+    with _hitl_lock:
+        if mode == "ask":
+            _session_hitl.pop(session_id, None)
+        else:
+            _session_hitl[session_id] = {"mode": mode, "tools": clean}
+
+
+def get_session_hitl(session_id: str) -> dict[str, Any]:
+    """返回会话的 HITL 设置（默认 ask）。"""
+    with _hitl_lock:
+        cfg = _session_hitl.get(session_id)
+        if not cfg:
+            return {"mode": "ask", "tools": set()}
+        return {"mode": cfg["mode"], "tools": set(cfg["tools"])}
+
+
+def is_high_allowed(tool_name: str = "") -> bool:
+    """综合判断当前会话是否放行指定工具的高风险执行。
+
+    优先级：HITL allow_all > HITL allow_tools(命中) > 基线 allow_high。
+    P7 硬保护：确认类工具（AskUserQuestion）永不跳过——即使 allow_all 也返回 False。
+    """
+    if tool_name and tool_name in _HITL_NEVER_SKIP:
+        return False
+    sid = _current_session_id()
+    if sid:
+        with _hitl_lock:
+            cfg = _session_hitl.get(sid)
+        if cfg:
+            if cfg["mode"] == "allow_all":
+                return True
+            if cfg["mode"] == "allow_tools" and tool_name and tool_name in cfg["tools"]:
+                return True
+    return is_allow_high()
+
+
+# ============================================================
 # 线程安全的 job 上下文（替代原模块级 _current_job_ref）
 # - web_server 的 chat 线程通过 set_current_job(job) 设置
 # - 工具在线程池执行时，_guarded_execute 提交任务前捕获当前 job，
@@ -286,7 +482,10 @@ _DANGEROUS_CMD_PATTERNS = [
 
 
 def _scan_dangerous_payload(kwargs: dict[str, Any]):
-    """扫描工具参数中的高危命令特征，命中返回 (True, 描述)"""
+    """扫描工具参数中的高危命令特征，命中返回 (True, 描述)。
+
+    P7（2026-10-15）：优先用**可编辑 YAML 护栏规则库**（chat_client/guard_rules.py，
+    """
     import re as _re
     texts = []
     for v in kwargs.values():
@@ -295,6 +494,16 @@ def _scan_dangerous_payload(kwargs: dict[str, Any]):
         elif isinstance(v, (list, tuple)):
             texts.extend(str(i) for i in v if isinstance(i, str))
     payload = "\n".join(texts)
+    # 1) YAML 护栏规则库（可编辑、可热加载）
+    try:
+        from ..guard_rules import get_guard_rules
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        blocked, rule = get_guard_rules(base_dir).scan(payload)
+        if blocked:
+            return True, f"{rule.get('id')}:{rule.get('description')}"
+    except Exception:
+        pass  # 规则库异常不阻断，回退硬编码
+    # 2) 回退：硬编码黑名单（向后兼容）
     for pat in _DANGEROUS_CMD_PATTERNS:
         try:
             m = _re.search(pat, payload)
@@ -458,6 +667,14 @@ class ToolRegistry:
         risk = meta.get("risk_level", "low")
         audit_kwargs = dict(kwargs)
 
+        # P3-b 可观测性：工具调用指标（延迟导入避免循环依赖）
+        try:
+            from ..metrics import default_persist_path, get_metrics
+            # 用统一的路径解析：测试通过 BT_METRICS_DIR 隔离，避免污染生产统计
+            _metrics = get_metrics(persist_path=default_persist_path())
+        except Exception:
+            _metrics = None
+
         # 1. 危险命令黑名单：仅集团模式（严格模式，is_allow_high()=False）下强制拦截
         #    单 Agent / Codex-X 破甲模式不拦截，放行专业操作
         if not is_allow_high():
@@ -465,6 +682,8 @@ class ToolRegistry:
             if danger:
                 logger.warning("[RiskGuard] 工具 %s 命中危险命令黑名单 (%s)，已拦截", tool_label, pattern)
                 self._audit(tool_label, risk, audit_kwargs, 0, "blocked-dangerous", pattern or "")
+                if _metrics:
+                    _metrics.record_tool(tool_label, (time.time() - t0) * 1000, "blocked-dangerous")
                 return _risk_denied_response(
                     "此操作命中危险命令黑名单，已被安全策略拦截，拒绝执行。"
                     "请勿尝试绕过，请告知用户该操作被禁止。",
@@ -472,10 +691,13 @@ class ToolRegistry:
                 )
 
         # 2. high 风险工具：需用户确认；成员代理豁免（招聘即授权）
+        #    HITL 三档覆盖：allow_all / allow_tools(命中) 直接放行。
         if (self.risk_guard_enabled and risk == "high"
-                and not is_allow_high()):
+                and not is_high_allowed(tool_label)):
             logger.warning("[RiskGuard] 拦截高风险工具调用: %s", tool_label)
             self._audit(tool_label, risk, audit_kwargs, 0, "blocked-high-risk", "")
+            if _metrics:
+                _metrics.record_tool(tool_label, (time.time() - t0) * 1000, "blocked-high-risk")
             return _risk_denied_response(
                 f"此操作（{tool_label}）为高风险操作，执行前必须获得用户的明确确认。"
                 "请停止调用该工具，向用户说明将要执行的操作内容与潜在风险，"
@@ -544,10 +766,14 @@ class ToolRegistry:
         except Exception as e:
             dur = int((time.time() - t0) * 1000)
             self._audit(tool_label, risk, audit_kwargs, dur, "error", str(e))
+            if _metrics:
+                _metrics.record_tool(tool_label, dur, "error")
             raise
 
         dur = int((time.time() - t0) * 1000)
         self._audit(tool_label, risk, audit_kwargs, dur, "ok", str(result)[:200])
+        if _metrics:
+            _metrics.record_tool(tool_label, dur, "ok")
         # 注入本次工具调用耗时（秒）：沿用 Bash 既有 duration 约定，便于模型
         # 感知各工具开销；工具自带 duration 时（如 Bash）不覆盖。
         _elapsed = time.time() - t0
@@ -700,8 +926,19 @@ class ToolRegistry:
         # 如果没有提供ID，使用函数名作为ID
         final_id = tool_id if tool_id else name
         
+        # 协议层工具名清洗：MCP/腾讯文档等工具名可能含点号（如 doc.copy_format），
+        # sub2api 转 OpenAI 协议时要求工具名只含 a-z A-Z 0-9 _ -，点号会导致
+        # "invalid name: Only a-z, A-Z, 0-9, underscores, and dashes are allowed" 400，
+        # BT 侧表现为第二轮对话 500「不符合 API 协议」。
+        # 这里把 . 替换为 _ 作为对外暴露名（safe_name），同时保留原始名注册，
+        # 使 get_tool_func/safe_name 能命中同一 wrapper 执行。
+        safe_name = sanitize_tool_name(name)
+
         self._tools[name] = wrapper
         schema = self._generate_schema(func)
+        # 对外 schema 使用清洗后的工具名，避免上游协议校验失败
+        if safe_name != name:
+            schema["function"]["name"] = safe_name
         self._schemas.append(schema)
         
         # 存储元数据
@@ -716,6 +953,11 @@ class ToolRegistry:
             "show": state.get("show", True),
             "timeout": int(timeout) if timeout else None,
         }
+        # 清洗名别名：让主循环用模型返回的 safe_name 也能找到工具
+        if safe_name != name:
+            self._tools[safe_name] = wrapper
+            self._metadata[safe_name] = dict(self._metadata[name])
+            self._metadata[safe_name]["name"] = safe_name
         
         return wrapper
 
@@ -907,6 +1149,149 @@ def register_tool(tool_id=None, **kwargs):
 
 
 # ============================================================
+# MCP 工具按需加载（Tool Search）
+#
+# 背景（2026-10-21 调研）：
+#   BT 启动时全量注入 MCP 工具 schema，实测 275 个 MCP 工具 + 83 个内置工具，
+#   schema 体积远超内置部分，且历史统计显示 MCP 工具调用次数为 0。
+#   对照 Codex CLI：MCP 工具默认 defer（不注入 schema），模型搜索后才展开，
+#   内置工具只有 3~15 个，因此固定开销极低。
+#
+# 方案：
+#   - MCP 工具仍正常注册到 registry（执行链路不变，get_tool_func 照常命中）；
+#   - 但默认不下发 schema（从 tools 数组里剔除），只下发一个 ToolSearch 工具；
+#   - 模型需要 MCP 能力时调用 ToolSearch 关键词搜索，命中后本会话内解锁，
+#     后续请求才带上这些工具的完整 schema。
+#   - 解锁状态按 session 隔离，避免一个会话开了工具影响其他会话。
+#   - 配置：mcp_tool_defer（默认 true）/ mcp_defer_always_include（始终下发名单）
+# ============================================================
+
+# session_id -> 已解锁的 MCP 工具名集合
+_mcp_unlocked: dict[str, set[str]] = {}
+_mcp_unlocked_lock = threading.Lock()
+
+
+def unlock_mcp_tools(session_id: str, names: set[str]):
+    """把若干 MCP 工具标记为本会话已解锁（下一轮请求会带上其 schema）。"""
+    if not session_id or not names:
+        return
+    with _mcp_unlocked_lock:
+        _mcp_unlocked.setdefault(session_id, set()).update(names)
+
+
+def get_unlocked_mcp_tools(session_id: str) -> set[str]:
+    if not session_id:
+        return set()
+    with _mcp_unlocked_lock:
+        return set(_mcp_unlocked.get(session_id) or ())
+
+
+def clear_unlocked_mcp_tools(session_id: str):
+    with _mcp_unlocked_lock:
+        _mcp_unlocked.pop(session_id, None)
+
+
+def is_mcp_tool(name: str) -> bool:
+    """该工具是否为 MCP 来源（注册时 category == "mcp"）。"""
+    meta = registry._metadata.get(name) or {}
+    return meta.get("category") == "mcp"
+
+
+@register_tool(category="系统", name_cn="搜索并解锁 MCP 工具", risk_level="low")
+def ToolSearch(query: str = "", limit: int = 15) -> str:
+    """
+    - 搜索当前已连接但尚未下发的 MCP 工具（腾讯文档、地图、浏览器等）
+    - 适用：需要操作文档/表格/幻灯片、地图、外部服务，但当前工具列表里没有对应工具时
+    - 参数：query（关键词，如 "文档 表格"、"slide"、"地图"；留空列出全部可解锁工具）、
+            limit（最多返回条数，默认 15）
+    - 命中后会立即解锁这些工具，下一次回复即可直接调用
+
+    设计说明：MCP 工具默认不注入模型上下文以节省固定开销。搜索是唯一入口，
+    解锁仅对当前会话生效。
+    """
+    try:
+        limit = max(1, min(int(limit or 15), 50))
+    except Exception:
+        limit = 15
+    sid = _current_session_id() or ""
+
+    # 候选：注册为 mcp 分类、且尚未解锁的工具。
+    # 注意：_register_func 会为含点号的工具名同时登记「原名」和「清洗名」两条
+    # metadata（如 doc.copy_format / doc_copy_format），必须按 id 去重，
+    # 否则同一工具会被算两次、搜索结果里也出现重复项。
+    unlocked = get_unlocked_mcp_tools(sid)
+    candidates = []
+    seen_ids: set[str] = set()
+    for name, meta in registry._metadata.items():
+        if meta.get("category") != "mcp":
+            continue
+        tid = meta.get("id") or name
+        if tid in seen_ids:
+            continue
+        seen_ids.add(tid)
+        if name in unlocked or tid in unlocked:
+            continue
+        desc = (meta.get("description") or "")[:200]
+        candidates.append((name, desc))
+
+    if not candidates:
+        return tool_result_for_model(
+            "当前没有待解锁的 MCP 工具（可能已全部解锁，或未连接任何 MCP 服务器）。"
+        )
+
+    q = (query or "").strip().lower()
+    if q:
+        terms = [t for t in re.split(r"[\s,，、]+", q) if t]
+        scored = []
+        for name, desc in candidates:
+            hay = (name + " " + desc).lower()
+            score = sum(1 for t in terms if t in hay)
+            if score:
+                scored.append((score, name, desc))
+        if not scored:
+            # 中文查询常匹配不上英文工具名/描述，回退为「列出全部」并给出提示，
+            # 避免模型因一次空结果就认为没有可用 MCP 能力。
+            scored = [(0, n, d) for n, d in candidates]
+            _hint = (
+                f"没有找到精确匹配「{query}」的 MCP 工具（工具名/描述多为英文）。"
+                f"以下列出全部 {len(candidates)} 个可解锁工具供挑选：\n"
+            )
+        else:
+            _hint = ""
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        matched = [(n, d) for _, n, d in scored]
+    else:
+        _hint = ""
+        matched = sorted(candidates, key=lambda x: x[0])
+
+    picked = matched[:limit]
+    # 解锁时同时登记「对外名（清洗名）」和「注册 id（原始名）」：
+    # schema 数组里的 function.name 是清洗名，而 metadata 的 id 是原始名
+    # （如 doc.copy_format）。只记其中一个会导致解锁后仍过滤不到 schema。
+    names: set[str] = set()
+    for n, _ in picked:
+        names.add(n)
+        _tid = (registry._metadata.get(n) or {}).get("id")
+        if _tid:
+            names.add(_tid)
+    unlock_mcp_tools(sid, names)
+
+    lines = []
+    if _hint:
+        lines.append(_hint.rstrip())
+        lines.append("")
+    # 计数用「实际选中的工具数」，不能用 names 集合大小
+    # （含点号工具会同时登记原名与清洗名，集合大小会翻倍）
+    lines.append(f"已解锁 {len(picked)} 个 MCP 工具（本会话有效），现在可以直接调用：")
+    for n, d in picked:
+        lines.append(f"- {n}: {d or '(无描述)'}")
+    if len(matched) > len(picked):
+        lines.append(f"……另有 {len(matched) - len(picked)} 个匹配项，可提高 limit 或细化 query。")
+    return tool_result_for_model("\n".join(lines))
+
+
+
+# ============================================================
 # TaskStatus / TaskStop：查询/停止后台任务
 # 所有工具超时后转入后台，都通过这两个工具管理
 # ============================================================
@@ -964,6 +1349,7 @@ def TaskStop(task_id: str) -> str:
 # 导入所有工具以确保它们被注册
 from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注册副作用)
     agent_tools,
+    browser,
     edit,
     knowledge,
     market,
@@ -976,7 +1362,10 @@ from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注�
     task,
     terminal,
     todo,
+    tool_archive,
     webfetch,
     websearch,
     wechat_media,
+    gateway_media_send,  # 统一出站媒体发送工具
+    view_image,  # 查看本地图片（元信息 + base64 data URL）
 )

@@ -38,7 +38,7 @@ import logging
 import uvicorn
 from fastapi import FastAPI, File, Request, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 # suppress verbose logging
@@ -203,6 +203,7 @@ def _load_session_history(session_file: str) -> list:
 _KNOWN_SSE_EVENTS = {
     "content", "reasoning", "error", "stop", "meta_info",
     "tool_call", "tool_result", "message_end", "usage",
+    "stream_reset",
 }
 
 
@@ -247,7 +248,7 @@ def _is_terminal_channel(params) -> bool:
 # 注意：必须定义在模块级——chat_events 属于 AgentMain 类，此前误将常量放进
 # ChatJob 类，导致 self._HIDDEN... 抛 AttributeError、SSE 生成器整体崩溃、
 # 小程序收不到任何回复。
-HIDDEN_EVENTS_FOR_TERMINAL = {"message_think", "compact_summary"}
+HIDDEN_EVENTS_FOR_TERMINAL = {"message_think", "compact_summary", "stream_reset"}
 
 
 # 终端渠道（小程序 / clawbot）的输出约束：严禁泄露服务端内部信息。
@@ -302,6 +303,10 @@ def _map_agent_chunk(chunk):
         return [("message", str(chunk.get("response", "")))]
     if t == "reasoning":
         return [("message_think", str(chunk.get("response", "")))]
+    if t == "stream_reset":
+        # reasoning 退化重试：通知前端清空本轮已流出的正文/思考/工具占位块，
+        # 随后服务端会用新请求重新输出，不结束任务。
+        return [("stream_reset", {"reason": str(chunk.get("data", ""))})]
     if t == "error":
         return [("error", {"msg": str(chunk.get("data", ""))})]
     if t == "stop":
@@ -512,8 +517,11 @@ class ChatJobManager:
                 return None
             self._prune_locked()
             key = self.make_key(session_id)
-            job = ChatJob(session_id, label)
-            job.key = key
+            # 必须把最终 key 直接传给构造函数：ChatJob.__init__ 会用它生成
+            # persist_path。若先构造再覆盖 job.key，persist_path 仍指向构造时
+            # 默认 key 的文件，导致所有 job 事件混写到一个随机文件、磁盘恢复
+            # 时 key 对不上、SSE 续传死锁（last_id 卡住不前进）。
+            job = ChatJob(session_id, label, key=key)
             self._jobs[key] = job
             return job
 
@@ -635,6 +643,50 @@ class ChatJobManager:
                  if not j.is_running and now - j.created_at > self.JOB_TTL]
         for k in stale:
             self._jobs.pop(k, None)
+
+    # 内存回收单批上限：避免一次性清理上千僵尸任务卡住事件循环
+    MEMORY_PRUNE_BATCH = int(os.environ.get("AI_AGENT_MEMORY_PRUNE_BATCH", "500"))
+
+    def prune_memory_jobs(self, max_batch: int | None = None):
+        """周期性回收内存 _jobs 中已终结的僵尸任务，并释放 agent 引用。
+
+        背景：内存增长主因是"对话后再也不活跃"的会话，其已完成 job 永久驻留
+        _jobs 字典——_prune_locked 只在 create_if_idle（新消息到来）时触发，
+        对长期静默的会话从不生效。job.agent 持有 MemoryManager.history 全量
+        历史（sessions.json + journal），只要 job 不被移除，这些 Python 大对象
+        就永远不会被 GC 回收，导致 RSS 越用越大。
+
+        这里独立周期扫描：终结（done/stopped/error）且超过 JOB_TTL 的 job 直接
+        移除，并置空 agent/events 引用，让 GC 及时回收历史与事件缓存。
+        任务正 running 或仍在 TTL 内的 job 保留（用户可能续播）。
+        """
+        ttl = self.JOB_TTL
+        if ttl <= 0:
+            return 0
+        batch = self.MEMORY_PRUNE_BATCH if max_batch is None else max_batch
+        now = time.time()
+        removed = 0
+        with self._lock:
+            stale = [k for k, j in self._jobs.items()
+                     if not j.is_running and now - j.created_at > ttl]
+            for k in stale:
+                j = self._jobs.pop(k, None)
+                if j is None:
+                    continue
+                # 释放大对象引用，帮助 GC 及时回收历史/事件缓存
+                try:
+                    if j.agent is not None:
+                        j.agent.close()
+                except Exception:
+                    logger.warning("[ChatJob] 内存回收 agent.close 失败", exc_info=True)
+                j.agent = None
+                j.events = []
+                removed += 1
+                if removed >= batch:
+                    break
+        if removed:
+            logger.info("[ChatJob] 内存回收 %d 个已终结僵尸任务", removed)
+        return removed
 
     # 磁盘上 sessions/ 会话目录的保留时长（秒）。默认 3 天。
     # sessions/ 只增不删（每个会话一个目录，含 sessions.json / journal / meta），
@@ -1916,6 +1968,12 @@ class AgentMain:
                 skill_summary = skill_manager.generate_skill_summary()
             except Exception:
                 skill_summary = ""
+            # P5: 注入本地专家库摘要（自动发现），供经理派任务时选用
+            try:
+                from chat_client.experts import get_catalog
+                expert_summary = get_catalog(BASE_DIR).generate_expert_summary()
+            except Exception:
+                expert_summary = ""
             # 注入 MCP 工具清单，让经理知道成员可通过 MCP 调用的外部能力
             mcp_lines = []
             try:
@@ -1950,10 +2008,13 @@ class AgentMain:
 【成员可用的技能与工具】
 你本人不直接执行任务，但要知道团队有哪些能力，以便在派任务时指示成员使用：
 {skill_summary or '（暂无技能摘要）'}
+{f"""{expert_summary}
+""" if expert_summary else ""}
 {f"""[MCP 外部工具（成员可调用）]
 {chr(10).join(mcp_lines)}
 """ if mcp_lines else ""}
 派任务时，如果某目标需要特定技能，在 Task/RunCrew 的 prompt 中写明「使用 Skills(name='技能名') 加载对应技能」或直接调用对应 MCP 工具。
+若目标匹配上方【本地专家库】中的某位专家，可用 InstallExpert(name='专家id') 落地为团队成员，或指示成员调用 GetExpertPrompt 取人设。
 
 【技能使用铁律（必须遵守）】
 1. 拆解任务的第一步，先在上方技能清单中查找匹配技能（比对"遇到以下情况就使用/适用场景/触发词"段落）。
@@ -2039,6 +2100,21 @@ class AgentMain:
                 False,
                 f"该会话并行任务已满（{chat_jobs.MAX_PARALLEL}），等待任一任务完成后自动继续派发",
             )
+
+        # ── per-thread HITL 审批模式（P1，2026-10-15）──────────────────
+        # 请求可携带 hitl（ask/allow_all/allow_tools）+ hitl_tools（allow_tools 白名单）。
+        # 会话级覆盖，作用于本次及后续该会话的高风险工具放行判断。
+        try:
+            _hitl = str(get.get('hitl', '') or '').strip().lower()
+            if _hitl in ('ask', 'allow_all', 'allow_tools'):
+                from chat_client.tools import set_session_hitl
+                _hitl_tools = get.get('hitl_tools') or []
+                if isinstance(_hitl_tools, str):
+                    _hitl_tools = [t.strip() for t in _hitl_tools.split(',') if t.strip()]
+                set_session_hitl(session_id, _hitl, _hitl_tools)
+                logger.info("[chat_start] HITL 模式=%s tools=%s session=%s", _hitl, _hitl_tools, session_id)
+        except Exception:
+            logger.warning("[chat_start] 设置 HITL 模式失败", exc_info=True)
 
         # ── opencode 模式 ────────────────────────────────────────────
         if mode == 'opencode':
@@ -2388,8 +2464,10 @@ class AgentMain:
         self.config['opencode'] = new_oc
         path = os.path.join(self.plugin_path, 'config.json')
         try:
-            with open(path, 'w', encoding='utf-8') as f:
+            tmp = path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
         except Exception as e:
             return public.returnMsg(False, f"保存配置失败: {e!s}")
         return public.return_data(True, data=self.config['opencode'])
@@ -3219,20 +3297,32 @@ class AgentMain:
 # ============================================================
 
 async def _periodic_job_cleanup():
-    """周期性回收 jobs/ 下过期文件（服务长期运行时持续写入）。
+    """周期性回收 jobs/ 下过期文件 + 内存中已终结的僵尸任务。
 
-    prune_job_files 是同步阻塞 I/O（glob + stat + unlink），用 to_thread
-    丢到线程池，避免卡住事件循环。
+    服务长期运行会持续写入 jobs/（磁盘）并在 _jobs 字典驻留已终结 job
+    （内存）。两者都是同步阻塞 I/O / CPU 操作，统一用 to_thread 丢到线程池。
     """
-    interval = ChatJobManager.JOB_FILE_TTL
-    if interval <= 0:
-        return
-    # 清理间隔：TTL 的 1/4，但不少于 1 小时、不超过 24 小时
-    interval = max(3600, min(24 * 3600, interval // 4))
+    # 磁盘清理间隔：由 JOB_FILE_TTL 推导（TTL 的 1/4，1h~24h）
+    file_interval = ChatJobManager.JOB_FILE_TTL
+    # 内存回收间隔：独立且更短（默认 1 小时），与磁盘 TTL 解耦，
+    # 因为内存里"对话后不再活跃"的僵尸任务需要更快被回收，而非等 7 天。
+    mem_interval = int(os.environ.get("AI_AGENT_MEMORY_PRUNE_INTERVAL", str(3600)))
+    if file_interval > 0:
+        file_interval = max(3600, min(24 * 3600, file_interval // 4))
+    else:
+        # 磁盘清理被禁用时，仍保证内存回收有独立的合理间隔
+        file_interval = mem_interval
+    # 内存回收单批上限（避免一次性清上千任务卡住）
+    mem_batch = ChatJobManager.MEMORY_PRUNE_BATCH
     while True:
         try:
-            await asyncio.sleep(interval)
-            await asyncio.to_thread(chat_jobs.prune_job_files)
+            await asyncio.sleep(mem_interval)
+            # 内存回收：释放已终结僵尸 job 的 agent/events，让 GC 回收历史
+            await asyncio.to_thread(chat_jobs.prune_memory_jobs, mem_batch)
+            # 磁盘回收：与内存回收同频即可（file_interval 已 ≥ mem_interval
+            # 的合理值），文件清理不要求精确频率
+            if ChatJobManager.JOB_FILE_TTL > 0:
+                await asyncio.to_thread(chat_jobs.prune_job_files)
         except asyncio.CancelledError:
             return
         except Exception:
@@ -3275,15 +3365,32 @@ async def _lifespan(_app):
         chat_jobs.recover_all()
     except Exception:
         logger.warning("[startup] job 恢复失败", exc_info=True)
+    # 启动时先清一轮内存僵尸任务（recover 会把中断任务置为 stopped，
+    # 超过 JOB_TTL 的即可释放 agent/历史，避免上次进程遗留的大对象堆积）
+    try:
+        chat_jobs.prune_memory_jobs()
+    except Exception:
+        logger.warning("[startup] 内存僵尸任务清理失败", exc_info=True)
     # 长期运行的服务只靠启动清理不够：jobs/ 持续写入，需要周期性回收
     _cleanup_task = asyncio.create_task(_periodic_job_cleanup())
     # 会话目录同样只增不删，周期清理超过 3 天的旧会话
     _session_cleanup_task = asyncio.create_task(_periodic_session_cleanup())
+    # 恢复"手动启动过且未手动停止"的通道（服务重启后自动拉起）
+    _gw_restore_task = None
+    try:
+        from platform_ext.gateway import restore_auto_start_channels
+
+        _gw_restore_task = asyncio.create_task(restore_auto_start_channels())
+    except Exception:
+        _gw_restore_task = None
+        logger.warning("[startup] gateway 自动恢复任务创建失败", exc_info=True)
     try:
         yield
     finally:
         _cleanup_task.cancel()
         _session_cleanup_task.cancel()
+        if _gw_restore_task is not None:
+            _gw_restore_task.cancel()
         # 进程退出时优雅停止仍在运行的任务，避免 agent 数据丢失
         # （原先只在 __main__ 路径注册 atexit，uvicorn 启动时不会生效）
         running = [j for j in chat_jobs._jobs.values() if j.is_running]
@@ -3440,9 +3547,22 @@ async def index(request: Request):
     return response
 
 
+# 从当前配置读取鉴权开关（与 auth_middleware 保持一致）
+def _auth_disabled() -> bool:
+    """未开启鉴权（auth.json enabled=false）时，/api/config 等普通配置接口应放行。"""
+    try:
+        from auth import load_auth
+        return not bool(load_auth(BASE_DIR).get("enabled"))
+    except Exception:
+        return True
+
+
 @app.get("/api/config")
 async def api_config(request: Request):
     from auth import extract_token, is_admin_token
+    # 未开启鉴权 → 完全放行（与 auth_middleware 行为一致）
+    if _auth_disabled():
+        return JSONResponse(agent_main.get_config())
     token = extract_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="未登录")
@@ -3454,6 +3574,11 @@ async def api_config(request: Request):
 @app.post("/api/config")
 async def api_set_config(request: Request):
     from auth import extract_token, is_admin_token
+    # 未开启鉴权 → 完全放行（与 auth_middleware 行为一致）
+    if _auth_disabled():
+        params = await _params(request)
+        config_str = params.get('config', '')
+        return JSONResponse(agent_main.set_config(config_str))
     token = extract_token(request)
     if not token or not is_admin_token(BASE_DIR, token):
         from fastapi import HTTPException
@@ -3490,6 +3615,53 @@ async def api_tools():
     return JSONResponse(await asyncio.to_thread(agent_main.get_tool_list))
 
 
+# ── P3-b: 可观测性（进程内指标）──────────────────────────────────
+@app.get("/api/metrics")
+async def api_metrics(format: str = "json"):
+    """进程内运行指标：工具/LLM 调用计数与耗时。format=prometheus 返回文本格式。"""
+    from chat_client.metrics import default_persist_path, get_metrics
+    m = get_metrics(persist_path=default_persist_path())
+    if (format or "").lower() in ("prometheus", "text"):
+        return PlainTextResponse(m.to_prometheus())
+    return JSONResponse(public.return_data(True, data=m.snapshot()))
+
+
+# ── P3-a: 插件体系 ──────────────────────────────────────────────
+@app.get("/api/plugins")
+async def api_plugins():
+    """列出磁盘上的插件及加载状态。"""
+    from chat_client.plugins import get_plugin_manager
+    return JSONResponse(public.return_data(True, data=get_plugin_manager().status()))
+
+
+@app.post("/api/plugins/load")
+async def api_plugins_load(request: Request):
+    """加载插件（name 留空则加载全部）。"""
+    from chat_client.plugins import get_plugin_manager
+    params = await _params(request)
+    pm = get_plugin_manager()
+    name = str(params.get("name", "")).strip()
+    if name:
+        res = pm.load_plugin(name)
+    else:
+        res = pm.load_all()
+    return JSONResponse(public.return_data(True, data=res) if (isinstance(res, dict) and res.get("status", True))
+                        else public.returnMsg(False, (res or {}).get("msg", "加载失败")))
+
+
+@app.post("/api/plugins/unload")
+async def api_plugins_unload(request: Request):
+    """卸载插件。"""
+    from chat_client.plugins import get_plugin_manager
+    params = await _params(request)
+    name = str(params.get("name", "")).strip()
+    if not name:
+        return JSONResponse(public.returnMsg(False, "缺少 name"))
+    res = get_plugin_manager().unload_plugin(name)
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "卸载失败")))
+
+
 @app.get("/api/skills")
 async def api_skills():
     return JSONResponse(agent_main.get_skill_list())
@@ -3519,6 +3691,93 @@ async def api_skill_status(request: Request):
     params = await _params(request)
     # 前端字段为 skill_name/enabled，与 agent_main.set_skill_status 一致，原样透传
     return JSONResponse(agent_main.set_skill_status(params))
+
+
+@app.get("/api/skills/usage")
+async def api_skills_usage(limit: int = 50):
+    """技能使用统计：按技能名的加载次数排行 + 从未被加载过的技能清单。
+
+    工具级指标只能看到 "Skills" 被调了多少次，无法回答「哪个技能真被用过」。
+    本接口把两者合起来，用于判断技能摘要（system prompt 里那 10.8KB）该保留
+    哪些、哪些可以移出常驻列表改为按需加载。
+    """
+    from chat_client.metrics import default_persist_path, get_metrics
+    from chat_client.skills import skill_manager
+
+    m = get_metrics(persist_path=default_persist_path())
+    lifetime = dict(m.snapshot().get("skills_lifetime") or {})
+
+    try:
+        all_names = [s.name for s in skill_manager.all()]
+    except Exception:
+        all_names = []
+
+    ranked = sorted(
+        (
+            {"name": n, **{k: int(v.get(k, 0)) for k in ("loads", "installs", "uninstalls", "errors")}}
+            for n, v in lifetime.items()
+        ),
+        key=lambda x: (x["loads"], x["installs"]),
+        reverse=True,
+    )
+    used = {r["name"] for r in ranked if r["loads"] or r["installs"]}
+    never_used = sorted(n for n in all_names if n not in used)
+
+    return JSONResponse(public.return_data(True, data={
+        "total_installed": len(all_names),
+        "used_count": len(used),
+        "never_used_count": len(never_used),
+        "ranked": ranked[:max(1, int(limit))],
+        "never_used": never_used,
+    }))
+
+
+# ── P2-a: 技能包（导出/导入）────────────────────────────────────
+@app.get("/api/skills/presentation")
+async def api_skills_presentation():
+    """技能展示元数据（icon/分类/触发词），供前端呈现层使用。"""
+    from chat_client.skills import skill_manager
+    return JSONResponse(public.return_data(True, data={
+        "skills": skill_manager.get_all_presentations(),
+    }))
+
+
+@app.post("/api/skills/export_package")
+async def api_skills_export_package(request: Request):
+    """把一组技能导出为技能包 ZIP（base64 返回）。"""
+    import base64
+    from chat_client.skills import skill_manager
+    params = await _params(request)
+    names = params.get("names") or []
+    if isinstance(names, str):
+        names = [n.strip() for n in names.split(",") if n.strip()]
+    try:
+        data = skill_manager.export_package(names, params.get("package_name", ""))
+    except Exception as e:
+        return JSONResponse(public.returnMsg(False, f"导出失败: {e!s}"))
+    return JSONResponse(public.return_data(True, data={
+        "package_name": params.get("package_name", "") or "skill-package",
+        "size": len(data),
+        "zip_base64": base64.b64encode(data).decode("ascii"),
+    }))
+
+
+@app.post("/api/skills/import_package")
+async def api_skills_import_package(request: Request):
+    """导入技能包 ZIP（接受 base64 或 zip_base64 字段）。"""
+    import base64
+    from chat_client.skills import skill_manager
+    params = await _params(request)
+    raw = params.get("zip_base64") or params.get("content") or params.get("zip") or ""
+    if not raw:
+        return JSONResponse(public.returnMsg(False, "缺少 zip_base64 内容"))
+    try:
+        zip_bytes = base64.b64decode(raw)
+    except Exception as e:
+        return JSONResponse(public.returnMsg(False, f"base64 解码失败: {e!s}"))
+    res = skill_manager.import_package(zip_bytes, overwrite=bool(params.get("overwrite")))
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "导入失败")))
 
 
 @app.post("/api/tools/show_status")
@@ -3626,6 +3885,28 @@ async def api_hotreload(request: Request):
     results = chat_client_hotreload.reload_targets(targets)
     ok = all(not v.startswith("失败") for v in results.values())
     return JSONResponse({"status": ok, "data": results, "msg": "; ".join(f"{k}: {v}" for k, v in results.items())})
+
+
+@app.post("/api/restart")
+async def api_restart(request: Request):
+    """安全重启服务（异步执行，立即返回）。仅管理员可用。"""
+    err = _admin_guard(request)
+    if err:
+        return err
+
+    def _do_restart():
+        import subprocess as _sp
+        import time as _time
+        _sp.Popen(
+            ["bash", os.path.join(BASE_DIR, "restart_bt.sh"), "3"],
+            cwd=BASE_DIR,
+            stdout=_sp.DEVNULL,
+            stderr=_sp.DEVNULL,
+            start_new_session=True,
+        )
+
+    threading.Thread(target=_do_restart, daemon=True).start()
+    return JSONResponse({"status": True, "msg": "重启已触发，约 5 秒后服务恢复"})
 
 
 @app.get("/api/chat")
@@ -3791,6 +4072,279 @@ async def api_chat_messages(request: Request):
     params = dict(request.query_params)
     _assert_session_owner(request, params)
     return JSONResponse(agent_main.get_chat(params))
+
+
+# ── P4: 会话工具（上下文分解 / 导出 / 分支 / 统计）──────────────
+@app.get("/api/session/context")
+async def api_session_context(request: Request):
+    """上下文用量分解：估算会话各段 token 占用。"""
+    params = dict(request.query_params)
+    _assert_session_owner(request, params)
+    from chat_client import session_tools
+    sid = str(params.get("session_id") or "")
+    win = int(params.get("window_tokens") or (agent_main.config.get("context_window_kb", 256) * 1024))
+    return JSONResponse(public.return_data(True, data=session_tools.analyze_context(BASE_DIR, sid, context_window_tokens=win)))
+
+
+@app.get("/api/session/export")
+async def api_session_export(request: Request):
+    """导出会话为 Markdown/JSON。"""
+    params = dict(request.query_params)
+    _assert_session_owner(request, params)
+    from chat_client import session_tools
+    res = session_tools.export_session(BASE_DIR, str(params.get("session_id") or ""),
+                                       fmt=str(params.get("format") or "markdown"))
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "导出失败")))
+
+
+@app.post("/api/session/fork")
+async def api_session_fork(request: Request):
+    """从指定消息分叉出一个新会话（原会话不变）。"""
+    params = await _params(request)
+    _assert_session_owner(request, params)
+    from chat_client import session_tools
+    res = session_tools.fork_session(BASE_DIR, str(params.get("session_id") or ""),
+                                     up_to_message_id=str(params.get("message_id") or ""),
+                                     new_session_id=str(params.get("new_session_id") or ""))
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "分叉失败")))
+
+
+@app.get("/api/sessions/stats")
+async def api_sessions_stats(request: Request):
+    """列出各会话规模统计。"""
+    from chat_client import session_tools
+    return JSONResponse(public.return_data(True, data=session_tools.list_session_stats(BASE_DIR)))
+
+
+# ── P6: 工具结果归档（上下文治理）────────────────────────────
+@app.get("/api/context/archives")
+async def api_context_archives(session_id: str = ""):
+    """工具结果归档统计（上下文治理观测）。"""
+    from chat_client.tool_archive import archive_stats
+    return JSONResponse(public.return_data(True, data=archive_stats(BASE_DIR, session_id)))
+
+
+@app.get("/api/context/breakdown")
+async def api_context_breakdown(session_id: str, context_window_tokens: int = 256 * 1024):
+    """会话上下文分段占用（P7 七段：system/tools/rules/skills/mcp/subagent/conversation）。"""
+    from chat_client.session_tools import analyze_context
+    try:
+        # 传入当前静态注入段实测值（系统提示/工具定义/技能摘要），使分段更准
+        sys_prompt = ""
+        tool_defs = ""
+        skills_txt = ""
+        try:
+            from chat_client.tools import registry as _reg
+            _schemas = getattr(_reg, "_schemas", None) or []
+            tool_defs = json.dumps(_schemas, ensure_ascii=False) if _schemas else ""
+        except Exception:
+            pass
+        try:
+            from chat_client.skills import skill_manager
+            skills_txt = skill_manager.generate_skill_summary() or ""
+        except Exception:
+            pass
+        return JSONResponse(public.return_data(True, data=analyze_context(
+            BASE_DIR, session_id, context_window_tokens=context_window_tokens,
+            system_prompt=sys_prompt, tool_definitions=tool_defs, skills=skills_txt)))
+    except Exception as e:
+        return JSONResponse(public.returnMsg(False, f"分析上下文失败: {e!s}"))
+
+
+# ── P7: 安全/能力增强（护栏规则/审批/斜杠/技能包/知识库任务/主动关怀）──
+@app.get("/api/guard/rules")
+async def api_guard_rules():
+    """查看当前生效的护栏规则（可编辑 YAML 规则库）。"""
+    from chat_client.guard_rules import get_guard_rules
+    gr = get_guard_rules(BASE_DIR)
+    return JSONResponse(public.return_data(True, data={
+        "path": gr.path, "count": len(gr.rules), "rules": gr.rules}))
+
+
+@app.post("/api/guard/reload")
+async def api_guard_reload():
+    """强制重载护栏规则（编辑 rules.yaml 后调用）。"""
+    from chat_client.guard_rules import get_guard_rules
+    gr = get_guard_rules(BASE_DIR)
+    gr._load(force=True)
+    return JSONResponse(public.return_data(True, data={"count": len(gr.rules)}))
+
+
+@app.get("/api/hitl/pending")
+async def api_hitl_pending(session_id: str = ""):
+    """列出待审批的高风险工具请求。"""
+    from chat_client.hitl_store import get_hitl_store
+    return JSONResponse(public.return_data(True, data={
+        "pending": get_hitl_store(BASE_DIR).list_pending(session_id)}))
+
+
+@app.post("/api/hitl/decide")
+async def api_hitl_decide(request: Request):
+    """批准/拒绝一个审批请求。body: {id, approve: bool}"""
+    from chat_client.hitl_store import get_hitl_store
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    rid = str(body.get("id") or "")
+    approve = bool(body.get("approve"))
+    rec = get_hitl_store(BASE_DIR).decide(rid, approve)
+    if rec is None:
+        return JSONResponse(public.returnMsg(False, f"审批请求不存在: {rid}"))
+    return JSONResponse(public.return_data(True, data=rec))
+
+
+@app.get("/api/slash/commands")
+async def api_slash_commands():
+    """列出可用斜杠命令。"""
+    from chat_client.slash import get_slash_catalog
+    return JSONResponse(public.return_data(True, data={
+        "commands": get_slash_catalog().list_commands()}))
+
+
+@app.post("/api/slash/run")
+async def api_slash_run(request: Request):
+    """执行一条斜杠命令。body: {text, session_id?}"""
+    from chat_client.slash import get_slash_catalog
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = str(body.get("text") or "")
+    res = get_slash_catalog().dispatch(text, session_id=str(body.get("session_id") or ""),
+                                       base_dir=BASE_DIR)
+    if res is None:
+        return JSONResponse(public.returnMsg(False, "不是有效的斜杠命令"))
+    return JSONResponse(public.return_data(res.get("status", False), data=res))
+
+
+@app.get("/api/skills/packages")
+async def api_skill_packages():
+    """列出已打包的技能包。"""
+    from chat_client.skill_package import list_packages
+    return JSONResponse(public.return_data(True, data={"packages": list_packages(BASE_DIR)}))
+
+
+@app.post("/api/skills/export_package")
+async def api_skill_export(request: Request):
+    """导出技能包。body: {skills: [...], author?, version?}"""
+    from chat_client.skill_package import export_skill_package
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    res = export_skill_package(BASE_DIR, body.get("skills") or [],
+                               author=str(body.get("author") or ""),
+                               version=str(body.get("version") or "1.0.0"))
+    return JSONResponse(public.return_data(res.get("ok", False), data=res, msg=res.get("error", "")))
+
+
+@app.post("/api/skills/import_package")
+async def api_skill_import(request: Request):
+    """导入技能包。body: {path, overwrite?}"""
+    from chat_client.skill_package import import_skill_package
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    res = import_skill_package(BASE_DIR, str(body.get("path") or ""),
+                               overwrite=bool(body.get("overwrite")))
+    return JSONResponse(public.return_data(res.get("ok", False), data=res, msg=res.get("error", "")))
+
+
+@app.get("/api/kb/jobs")
+async def api_kb_jobs():
+    """知识库索引任务队列状态。"""
+    from chat_client.kb_jobs import get_index_queue
+    q = get_index_queue()
+    return JSONResponse(public.return_data(True, data={"stats": q.stats(), "jobs": q.list_jobs(20)}))
+
+
+@app.get("/api/proactive/status")
+async def api_proactive_status():
+    """主动关怀服务状态。"""
+    from chat_client.proactive import ProactiveService
+    svc = ProactiveService(getattr(app.state, "config", {}) or {})
+    return JSONResponse(public.return_data(True, data=svc.status()))
+
+
+@app.get("/api/conversation/modes")
+async def api_conversation_modes():
+    """列出可用会话模式（Ask/Plan/Craft）。"""
+    from chat_client.conversation_mode import MODES, HOST_READ_TOOLS, PLAN_ALLOW_EXTRA
+    return JSONResponse(public.return_data(True, data={
+        "modes": list(MODES),
+        "read_tools": sorted(HOST_READ_TOOLS),
+        "plan_extra": sorted(PLAN_ALLOW_EXTRA),
+    }))
+
+
+# ── P5: 本地专家库（自动发现）──────────────────────────────────
+@app.get("/api/experts")
+async def api_experts():
+    """列出本地专家库（自动发现 experts/ 目录）。"""
+    from chat_client.experts import get_catalog
+    cat = get_catalog(BASE_DIR)
+    return JSONResponse(public.return_data(True, data={
+        "experts": cat.list_dicts(),
+        "total": len(cat.scan()),
+        "experts_dir": cat.experts_dir,
+    }))
+
+
+@app.get("/api/experts/{expert_id}")
+async def api_expert_detail(expert_id: str):
+    """获取单个专家详情（含人格文件）。"""
+    from chat_client.experts import get_catalog
+    e = get_catalog(BASE_DIR).get(expert_id)
+    if not e:
+        return JSONResponse(public.returnMsg(False, f"专家不存在: {expert_id}"))
+    return JSONResponse(public.return_data(True, data=e.to_dict(with_prompt=True)))
+
+
+# ── P4-d: 备份 ─────────────────────────────────────────────────
+@app.get("/api/backups")
+async def api_backups():
+    from chat_client import backup
+    return JSONResponse(public.return_data(True, data=backup.list_backups(BASE_DIR)))
+
+
+@app.post("/api/backups/create")
+async def api_backups_create(request: Request):
+    from chat_client import backup
+    params = await _params(request)
+    res = backup.create_backup(BASE_DIR, label=str(params.get("label") or ""),
+                               keep=int(params.get("keep") or 10))
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "备份失败")))
+
+
+@app.post("/api/backups/restore")
+async def api_backups_restore(request: Request):
+    from chat_client import backup
+    params = await _params(request)
+    res = backup.restore_backup(BASE_DIR, str(params.get("name") or ""),
+                                dry_run=bool(params.get("dry_run", True)))
+    return JSONResponse(public.return_data(True, data=res) if res.get("status")
+                        else public.returnMsg(False, res.get("msg", "恢复失败")))
+
+
+@app.post("/api/backups/auto")
+async def api_backups_auto(request: Request):
+    """启动/停止自动备份。action=start|stop|status"""
+    from chat_client import backup
+    params = await _params(request)
+    action = str(params.get("action") or "status").lower()
+    if action == "start":
+        res = backup.start_auto_backup(BASE_DIR, interval_sec=int(params.get("interval_sec") or 3600),
+                                       keep=int(params.get("keep") or 10))
+    elif action == "stop":
+        res = backup.stop_auto_backup()
+    else:
+        res = backup.auto_backup_status()
+    return JSONResponse(public.return_data(True, data=res))
 
 
 # ── session 归属校验：防止卡密/小程序用户伪造 session_id 读写他人会话 ──────
@@ -4690,10 +5244,74 @@ async def api_agent_run_post(request: Request):
     )
 
 
+# 装载失败不得影响主服务：包在 try 里，仅记录日志。
+try:
+    from connector_hub.connectors_api import router as _connector_hub_router
+    app.include_router(_connector_hub_router)
+    logger.info("[connector-hub] 连接器路由已挂载: /api/v2/connectors/*")
+
+    @app.get("/connectors")
+    async def _connector_hub_page():
+        """连接器管理可视化面板（免鉴权页面，内部 XHR 走 JWT）。"""
+        p = os.path.join(BASE_DIR, "static", "connectors.html")
+        if os.path.exists(p):
+            return FileResponse(p, media_type="text/html")
+        return JSONResponse(public.returnMsg(False, "连接器面板文件缺失"))
+except Exception:  # noqa: BLE001
+    logger.exception("[connector-hub] 连接器路由挂载失败（主服务继续运行）")
+
+
+# ── 平台扩展层（/api/v2/{teams,channels,storage,usage,gateway,memory}/*，不破坏现有 /api/*）──
+try:
+    from platform_ext.api import router as _platform_ext_router
+    app.include_router(_platform_ext_router)
+    from platform_ext.usage import router as _usage_router
+    app.include_router(_usage_router, prefix="/api/v2")
+    from platform_ext.gateway import router as _gateway_router
+    app.include_router(_gateway_router, prefix="/api/v2")
+    from platform_ext.memory_octop import router as _memory_router
+    app.include_router(_memory_router, prefix="/api/v2")
+    logger.info("[platform-ext] 平台扩展路由已挂载: /api/v2/{teams,channels,storage,usage,gateway,memory}/*")
+except Exception:  # noqa: BLE001
+    logger.exception("[platform-ext] 平台扩展路由挂载失败（主服务继续运行）")
+
+
+# ── 浏览器基础设施（/api/v2/browser/* + WS 画面流，不破坏现有 /api/*）──
+try:
+    from platform_ext.browser import ensure_vendor_on_path
+    ensure_vendor_on_path()
+    from platform_ext.browser.api import subrouters as _browser_subrouters
+    for _r in _browser_subrouters:
+        app.include_router(_r, prefix="/api/v2")
+    logger.info("[platform-ext] 浏览器路由已挂载: /api/v2/browser/* + /browser-stream/ws")
+
+    @app.get("/browser")
+    async def _browser_page():
+        """浏览器控制台（实时画面 + 控制 + 录制回放，免鉴权页面，内部 XHR/WS 走 JWT）。"""
+        p = os.path.join(BASE_DIR, "static", "browser.html")
+        if os.path.exists(p):
+            return FileResponse(p, media_type="text/html")
+        return JSONResponse(public.returnMsg(False, "浏览器面板文件缺失"))
+except Exception:  # noqa: BLE001
+    logger.exception("[platform-ext] 浏览器路由挂载失败（主服务继续运行）")
+
+
 # Static files
 static_dir = os.path.join(BASE_DIR, "static")
 if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# 功能面板等核心页面禁止缓存，避免浏览器继续使用旧版（扫码显示修复等）。
+# 用中间件确保无论路由顺序如何，都注入 no-cache 响应头。
+if os.path.exists(static_dir):
+    @app.middleware("http")
+    async def _no_cache_static_panel(request, call_next):
+        response = await call_next(request)
+        if request.url.path in ("/static/platform_panel.html", "/static/connectors.html", "/static/browser.html"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
 
 
 if __name__ == '__main__':

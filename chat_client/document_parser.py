@@ -4,7 +4,6 @@
 @position: Knowledge layer — 文档解析 + 切块 + OCR，供知识库入库管线使用
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-参考 TencentCloud/Octop 的 knowledge/parse.py + chunk.py 设计，
 按 BT 现有依赖（docx/pptx/openpyxl/bs4 + rapidocr）实现。
 """
 from __future__ import annotations
@@ -376,7 +375,7 @@ def _normalize(text: str) -> str:
 
 
 def chunk_text(text: str, *, size: int = 800, overlap: int = 120) -> list[str]:
-    """固定窗口重叠切块（字符数），与 Octop knowledge/chunk.py 对齐。
+    """固定窗口重叠切块（字符数），与 knowledge/chunk.py 对齐。
 
     Args:
         size: 单块最大字符数

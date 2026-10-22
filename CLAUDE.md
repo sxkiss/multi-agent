@@ -32,9 +32,16 @@
   2. `chat_client/claude_bridge.py:query_claude_sessions` 跳过 `/subagents/` 目录 → 列表只剩主会话
   3. `chat_client/opencode_bridge.py:query_history` 残留 `slug AS directory` → 改为 `directory`
 
+## 最近操作记录（续）
+- **2026-10-21** 完善看图工具 + 修复 SSE 会话续传死锁（`65bc485`）：
+  - 新增 `ViewImage` 工具：读取本地图片返回元信息 + base64 data URL，模型可直接"看到"图片，前端工具结果卡片可渲染
+  - 修复 `ChatJobManager.create_if_idle` 持久化路径与 `job.key` 不一致，导致事件混写、重启恢复 key 错乱、SSE `last_id` 卡死的问题
+  - 新增 `tests/test_view_image.py`（14 个）与 `tests/test_job_persist_key.py`（2 个）
+- **2026-10-21** 仓库文档全面同步（`94293f5` + 待提交改动）：API.md 重写为 110+ 实际路由、ARCHITECTURE.md 版本基准更新为 2026-10-21、README 修正前端构建与 static 目录说明
+
 ## 待办事项
 - （无）
 
 ---
-*最后更新：2026-09-19*
+*最后更新：2026-10-21*
 *代理应定期更新此文件以保持上下文连续性*

@@ -23,7 +23,7 @@ from typing import Any
 
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from chat_client.tools import registry
+from chat_client.tools import registry, sanitize_tool_name
 from mcp import ClientSession
 
 logger = logging.getLogger(__name__)
@@ -83,11 +83,24 @@ def find_mcp_config() -> str | None:
 
 
 def _tool_schema_from_mcp(mcp_tool: Any) -> dict[str, Any]:
-    """将 MCP Tool 转换为 OpenAI function-calling schema"""
+    """将 MCP Tool 转换为 OpenAI function-calling schema。
+
+    兼容两种形态：
+    - MCP SDK 的 Tool 对象（属性 name / description / input_schema）
+    - connector_hub.http_mcp 返回的 dict（name / description / inputSchema）
+    """
+    if isinstance(mcp_tool, dict):
+        tool_name = str(mcp_tool.get("name") or "")
+        tool_desc = str(mcp_tool.get("description") or "")
+        input_schema = mcp_tool.get("inputSchema") or mcp_tool.get("input_schema") or {}
+    else:
+        tool_name = str(getattr(mcp_tool, "name", "") or "")
+        tool_desc = str(getattr(mcp_tool, "description", "") or "")
+        input_schema = getattr(mcp_tool, "input_schema", {}) or {}
+
     props = {}
     required = []
-    input_schema = getattr(mcp_tool, "input_schema", {}) or {}
-    for prop_name, prop_def in input_schema.get("properties", {}).items():
+    for prop_name, prop_def in (input_schema.get("properties") or {}).items():
         p = {"type": prop_def.get("type", "string")}
         if "description" in prop_def:
             p["description"] = prop_def["description"]
@@ -98,8 +111,12 @@ def _tool_schema_from_mcp(mcp_tool: Any) -> dict[str, Any]:
     return {
         "type": "function",
         "function": {
-            "name": mcp_tool.name,
-            "description": mcp_tool.description or f"MCP tool: {mcp_tool.name}",
+            # 协议层工具名清洗：MCP 工具名可能含点号（如 doc.copy_format），
+            # sub2api 转 OpenAI 协议会因非法字符拒绝（Only a-z, A-Z, 0-9, underscores, dashes）
+            # -> 多轮对话 500。对外统一暴露清洗名，执行时由 _register_func 的别名
+            # （registry 内部原始名 -> 清洗名）映射回原始 MCP 工具。
+            "name": sanitize_tool_name(tool_name),
+            "description": tool_desc or f"MCP tool: {tool_name}",
             # MCP 工具的 input_schema 是任意 JSON Schema，未必满足 OpenAI strict 模式
             # （缺 additionalProperties:false、含嵌套/anyOf 等），强制 strict=True 会导致
             # 整批 tools 请求被 API 拒绝并返回空响应。故 MCP 工具统一用 strict=False。
@@ -125,6 +142,7 @@ class MCPClient:
         self._session_by_name: dict[str, ClientSession] = {}  # server_name -> session
         self._tool_schemas: list[dict[str, Any]] = []
         self._tool_servers: dict[str, str] = {}  # tool_name -> server_name
+        self._tool_servers_by_name: dict[str, dict] = {}  # server_name -> http cfg
         self._loaded = False
 
     def set_config_path(self, path: str):
@@ -154,10 +172,59 @@ class MCPClient:
         return fut.result(timeout=timeout)
 
     # ---------- 服务器连接 ----------
+    async def _connect_http_server(self, name: str, cfg: dict):
+        """异步连接一个 HTTP/SSE MCP 服务器并注册工具（remote + gateway 连接器）。"""
+        from connector_hub.http_mcp import amap_call, amap_list_tools
+        url = cfg.get("url") or cfg.get("baseUrl") or ""
+        if not url:
+            logger.warning(f"HTTP MCP 服务器 {name} 缺少 url，跳过")
+            return
+        transport = cfg.get("transport", "streamable_http")
+        token = cfg.get("token")
+        headers = cfg.get("headers")
+        try:
+            tools = await amap_list_tools(url, token, transport, headers=headers)
+        except Exception as exc:
+            logger.warning(f"HTTP MCP 服务器 {name} 连接失败，跳过: {exc}")
+            return
+        logger.info(f"HTTP MCP 服务器 {name} 已连接，发现 {len(tools)} 个工具")
+        self._tool_servers_by_name[name] = {"url": url, "token": token, "transport": transport, "headers": headers}
+
+        def _make_http_call(_name, _url, _token, _transport, _headers):
+            def _call(**kwargs):
+                import asyncio as _aio
+                try:
+                    return _aio.run(
+                        amap_call(_url, _token, _name, kwargs, _transport, headers=_headers)
+                    )
+                except Exception as exc:
+                    return f"调用连接器工具 {_name} 失败: {exc}"
+            _call.__name__ = _name
+            return _call
+
+        for mcp_tool in tools:
+            schema = _tool_schema_from_mcp(mcp_tool)
+            tool_name = (
+                mcp_tool.get("name")
+                if isinstance(mcp_tool, dict)
+                else getattr(mcp_tool, "name", None)
+            )
+            if not tool_name:
+                logger.warning(f"HTTP MCP 服务器 {name} 返回无 name 的工具，跳过")
+                continue
+            self._tool_schemas.append(schema)
+            self._tool_servers[tool_name] = name
+            # 清洗名别名：让 call_tool(清洗名) 也能路由到同一服务器
+            safe_name = sanitize_tool_name(tool_name)
+            if safe_name != tool_name:
+                self._tool_servers[safe_name] = name
+            func = _make_http_call(tool_name, url, token, transport, headers)
+            registry._register_func(func, tool_name, "mcp", f"MCP: {tool_name} ({name})", "medium")
+
     async def _connect_server(self, name: str, cfg: dict):
         """异步连接单个 MCP 服务器并发现工具"""
         if cfg.get("type") == "http" or "url" in cfg or "baseUrl" in cfg:
-            logger.info(f"跳过 HTTP/SSE MCP 服务器: {name}（当前仅支持 stdio）")
+            await self._connect_http_server(name, cfg)
             return
         command = cfg.get("command")
         if not command:
@@ -201,6 +268,10 @@ class MCPClient:
             tool_name = mcp_tool.name
             self._tool_schemas.append(schema)
             self._tool_servers[tool_name] = name
+            # 清洗名别名：让 call_tool(清洗名) 也能路由到同一服务器
+            safe_name = sanitize_tool_name(tool_name)
+            if safe_name != tool_name:
+                self._tool_servers[safe_name] = name
 
             func = _make_sync_call(tool_name, name, tool_name)
             registry._register_func(func, tool_name, "mcp", f"MCP: {tool_name} ({name})", "medium")
@@ -263,9 +334,32 @@ class MCPClient:
         self._loaded = True
 
     def call_tool(self, tool_name: str, arguments: dict[str, Any], server_name: str | None = None) -> str:
-        """同步调用 MCP 工具（线程安全）"""
+        """同步调用 MCP 工具（线程安全）。stdio 走 session，HTTP 走 amap_call。"""
         server = server_name or self._tool_servers.get(tool_name)
-        if not server or server not in self._session_by_name:
+        if not server:
+            return f"[MCP 工具 {tool_name} 未连接]"
+
+        # HTTP / SSE 连接器：没有 SDK session，直接用自研客户端调用
+        http_cfg = self._tool_servers_by_name.get(server)
+        if http_cfg is not None:
+            from connector_hub.http_mcp import amap_call
+
+            async def _do_http_call():
+                return await amap_call(
+                    http_cfg["url"],
+                    http_cfg.get("token"),
+                    tool_name,
+                    arguments or {},
+                    http_cfg.get("transport") or "streamable_http",
+                    headers=http_cfg.get("headers"),
+                )
+
+            try:
+                return self._run_coro(_do_http_call(), timeout=TOOL_CALL_TIMEOUT)
+            except Exception as e:
+                return f"[MCP 工具 {tool_name} 调用异常]: {e}"
+
+        if server not in self._session_by_name:
             return f"[MCP 工具 {tool_name} 未连接]"
 
         session = self._session_by_name[server]

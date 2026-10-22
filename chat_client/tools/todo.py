@@ -54,13 +54,35 @@ class TodoItem:
 class TodoManager:
     # P2-35: session_id 正则白名单，防止路径穿越
     _SID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
+    # 真实会话 id 含冒号/点（如 single:assistant:sxkiss_com:20261015-8），
+    # 直接拒绝会误伤正常会话。改为：先严格校验原始 id 无路径穿越特征，
+    # 再转义为安全目录名（非法字符→下划线），既安全又不再误报。
+    _UNSAFE_RE = re.compile(r'[/\\]|\.\.|\x00')
+
+    @staticmethod
+    def _safe_dirname(session_id: str) -> str:
+        """把任意会话 id 转义为安全的目录名（防路径穿越，不误伤合法 id）。
+
+        - 含路径分隔/上跳/空字节 → 直接拒绝（ValueError）
+        - 其余字符中，非 [A-Za-z0-9_-] 的替换为 _（保持可读、可逆性不要求）
+        - 结果长度钳制到 128（超长时取前 64 + 哈希后缀，避免碰撞）
+        """
+        sid = str(session_id or "")
+        if not sid:
+            raise ValueError("session_id 不能为空")
+        if TodoManager._UNSAFE_RE.search(sid):
+            raise ValueError(f"session_id 含非法路径特征: {session_id!r}")
+        safe = re.sub(r'[^a-zA-Z0-9_-]', '_', sid)
+        if len(safe) > 128:
+            import hashlib
+            h = hashlib.sha1(sid.encode('utf-8')).hexdigest()[:8]
+            safe = safe[:119] + "_" + h
+        return safe
 
     def __init__(self, session_id: str, sessions_dir: str = "sessions"):
-        session_id = str(session_id or "")
-        if not self._SID_RE.match(session_id):
-            raise ValueError(f"session_id 格式不合法: {session_id!r}（仅允许字母数字、下划线、短横线，最长128字符）")
-        self.session_id = session_id
-        self.session_dir = os.path.join(sessions_dir, session_id)
+        safe = self._safe_dirname(session_id)
+        self.session_id = safe
+        self.session_dir = os.path.join(sessions_dir, safe)
         self.file_path = os.path.join(self.session_dir, "todos.json")
         self._ensure_sessions_dir()
     

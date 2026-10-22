@@ -11,7 +11,9 @@
       @load-conversation="loadConversation"
       @delete-conversation="deleteConversation"
       @delete-conversations="deleteConversations"
-      @open-settings="openSettingsDrawer"
+      @export-conversation="exportConversation"
+      @open-platform="openPlatformPanel"
+      @open-connectors="openConnectorsPanel"
       @toggle-fullscreen="toggleFullscreen"
     />
     <div class="chat-main-area">
@@ -71,6 +73,12 @@
         {{ chatMode === 'group' ? 'AGENTS: 全局 + 项目' : chatMode === 'single' ? 'Agent 直连 · 全套工具' : `${chatMode} CLI` }}
       </span>
       <span class="mode-info">Skills: {{ skillsCount }} 个可用</span>
+      <span class="mode-protocol">
+        <label for="api-protocol-select">API 协议</label>
+        <select id="api-protocol-select" :value="globalConfig.api_protocol" @change="changeProtocol">
+          <option v-for="opt in protocolOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+        </select>
+      </span>
     </div>
     <!-- 集团模式：工作目录 -->
     <div class="codex-bar" v-if="chatMode === 'group'">
@@ -124,8 +132,7 @@
         @remove-selected-tool="removeSelectedTool"
         @select-model="selectModel"
         @toggle-tool-selection="toggleToolSelection"
-        @batch-toggle-tools="batchToggleTools"
-        @open-settings="openSettingsDrawer"
+@batch-toggle-tools="batchToggleTools"
       />
       <!-- 集团实时运行状态网（单 Agent 模式隐藏） -->
       <div class="org-live-panel" v-if="orgLoaded && chatMode === 'group'">
@@ -152,13 +159,6 @@
           </div>
         </div>
       </div>
-    <SettingsDrawer
-      :visible="settingsDrawerVisible"
-      :config="globalConfig"
-      :read-only="isCardUser"
-      @close="closeSettingsDrawer"
-      @save="handleSaveConfig"
-    />
     <LoginMask v-if="needLogin" @success="onLoginSuccess" />
   </div>
 </template>
@@ -168,7 +168,6 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import ChatSidebar from './components/ChatSidebar.vue'
 import ChatMain from './components/ChatMain.vue'
 import ChatInput from './components/ChatInput.vue'
-import SettingsDrawer from './components/SettingsDrawer.vue'
 import LoginMask from './components/LoginMask.vue'
 import { authOpts, authStatus, onUnauthorized, onForbidden, isCardToken, getToken } from './auth.js'
 
@@ -316,7 +315,6 @@ const webSearchEnabled = ref(true)
 const containerRef = ref(null)
 const chatMainRef = ref(null)
 const chatInputRef = ref(null)
-const settingsDrawerVisible = ref(false)
 
 // ==================== 消息发送队列 ====================
 // 发送中再输入的消息进入队列，显示在输入框上方；可单条取消/清空；
@@ -436,6 +434,7 @@ const globalConfig = ref({
   system_prompt: '',
   api_base_url: '',
   api_key: '',
+  api_protocol: 'responses',
   // 服务端脱敏后只回 api_key_set 布尔；用它与 api_base_url 共同判断"已配置"
   api_key_set: false,
   models: [],
@@ -467,6 +466,23 @@ const globalConfig = ref({
   default_headers: {},
   questions: []
 })
+
+// API 协议选项（与后端 chat_client/agent.py 识别值一致）
+const protocolOptions = [
+  { value: 'responses', label: 'responses (/v1/responses)' },
+  { value: 'chat', label: 'chat (chat completions)' },
+  { value: 'anthropic', label: 'anthropic (/v1/messages)' },
+]
+
+// 切换 API 协议：更新本地状态、持久化到 localStorage 并保存到服务端配置
+function changeProtocol(e) {
+  const val = e.target.value
+  globalConfig.value.api_protocol = val
+  localStorage.setItem('ai_api_protocol', val)
+  apiPost('/api/config', { config: JSON.stringify({ api_protocol: val }) }, (res) => {
+    if (!res || !res.status) console.warn('保存 API 协议配置失败:', res && res.msg)
+  })
+}
 
 // 思考定时器
 let thinkingTimer = null
@@ -507,6 +523,21 @@ function unescapeSSEString(str) {
 let currentStreamController = null
 let eventSourceInstance = null
 
+// reasoning 退化重试：丢弃当前 attempt 已流出的块，保留此前已完成的工具调用。
+// 服务端随后会用新请求重新输出，任务不中断。
+function applyStreamReset() {
+  const blocks = streamingContentBlocks.value
+  let keep = blocks.length
+  while (keep > 0) {
+    const b = blocks[keep - 1]
+    if (b.type === 'tool_call' && b.status === 'completed') break
+    keep--
+  }
+  blocks.splice(keep)
+  streamingThinkCollapsed.value = false
+  resetThinkingTimer()
+}
+
 // 通用 SSE 行处理器：缓冲跨 chunk 残余行；捕获 id:（断点续传）/ event: / data:
 function createSSEProcessor(handlers) {
   let buffer = ''
@@ -535,6 +566,9 @@ function createSSEProcessor(handlers) {
             break
           case 'message':
             handlers.onChunk?.(unescapeSSEString(eventData))
+            break
+          case 'stream_reset':
+            applyStreamReset()
             break
           case 'tool_call':
             try {
@@ -620,6 +654,9 @@ function createSSEProcessor(handlers) {
       case 'message':
         handlers.onChunk?.(unescapeSSEString(eventData))
         break
+      case 'stream_reset':
+        applyStreamReset()
+        break
       case 'tool_call':
         try {
           const tcData = JSON.parse(eventData)
@@ -696,6 +733,7 @@ function createSSEProcessor(handlers) {
         switch (currentEventType) {
           case 'message_think': handlers.onThink?.(unescapeSSEString(eventData)); break
           case 'message': handlers.onChunk?.(unescapeSSEString(eventData)); break
+          case 'stream_reset': applyStreamReset(); break
           case 'tool_call':
             try {
               const tcData = JSON.parse(eventData)
@@ -767,6 +805,8 @@ async function followChatEvents(sessionId, fromLastId, handlers) {
     } catch (err) {
       if (err.name === 'AbortError') {
         console.log('已断开事件流订阅（后端任务不受影响）')
+        // Abort 意味着当前任务已结束（用户主动停止/发新消息），必须收尾 isSending
+        handlers.onComplete?.()
         return
       }
       resumeCount++
@@ -808,6 +848,10 @@ async function getAIResponseStream(message, sessionId, model, tools, webSearch, 
     // 传递推理深度（集团模式和单 Agent 模式都支持）
     ...(globalConfig.value?.agent?.reasoning_effort
       ? { reasoning_effort: globalConfig.value.agent.reasoning_effort }
+      : {}),
+    // 传递 API 协议（集团模式和单 Agent 模式都支持）
+    ...(globalConfig.value?.api_protocol
+      ? { api_protocol: globalConfig.value.api_protocol }
       : {}),
     // 传递工作目录：优先使用当前模式下的 workspace 输入框，其次回退到全局配置
     ...((groupWorkspace.value.trim() && chatMode.value === 'group')
@@ -1221,6 +1265,29 @@ function deleteConversations(ids) {
       } else if (window.layer) {
         window.layer.msg(result.msg || '批量删除失败', { icon: 2 })
       }
+  })
+}
+
+// 导出会话（P4）：拉取 Markdown 内容并触发浏览器下载
+function exportConversation(id) {
+  if (!id) return
+  apiGet(`/api/session/export?session_id=${encodeURIComponent(id)}&format=markdown`, (result) => {
+    if (result.status && result.data) {
+      const content = result.data.content || ''
+      const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      const safeName = String(id).replace(/[^\w.-]+/g, '_').slice(0, 60)
+      a.href = url
+      a.download = `conversation_${safeName}.md`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(url), 2000)
+      if (window.layer) window.layer.msg('已导出为 Markdown', { icon: 1 })
+    } else if (window.layer) {
+      window.layer.msg((result && result.msg) || '导出失败', { icon: 2 })
+    }
   })
 }
 
@@ -1733,56 +1800,12 @@ function batchToggleTools(enabled) {
   }
 }
 
-function openSettingsDrawer() {
-  settingsDrawerVisible.value = true
-  loadTools()
+function openPlatformPanel() {
+  window.open('/static/platform_panel.html', '_blank')
 }
 
-function closeSettingsDrawer() {
-  settingsDrawerVisible.value = false
-  loadTools()
-}
-
-function handleSaveConfig(newConfig) {
-  // 先关闭面板
-  settingsDrawerVisible.value = false
-  // 保存成功后重新从后端读取最新配置（后端可能合并了默认值）
-  apiGet('/api/config', (result) => {
-    if (result.status && result.data) {
-      const e = result.data
-      globalConfig.value = {
-        system_prompt: e.config?.system_prompt || '',
-        api_base_url: e.config?.api_base_url || '',
-        api_key: e.config?.api_key || '',
-        api_key_set: e.config?.api_key_set === true,
-        models: e.config?.models || [],
-        embedding: {
-          embedding_api_key: e.config?.embedding?.embedding_api_key || '',
-          embedding_api_key_set: e.config?.embedding?.embedding_api_key_set === true,
-          embedding_base_url: e.config?.embedding?.embedding_base_url || '',
-          embedding_model_name: e.config?.embedding?.embedding_model_name || ''
-        },
-        rag: {
-          sliding_window_size: e.config?.rag?.sliding_window_size || 10,
-          rag_trigger_threshold: e.config?.rag?.rag_trigger_threshold || 3,
-          rag_retrieval_count: e.config?.rag?.rag_retrieval_count || 10,
-          rag_final_count: e.config?.rag?.rag_final_count || 5
-        },
-        context_window_kb: e.config?.context_window_kb || 512,
-        workspace: e.config?.workspace || '',
-        agent: {
-          max_tool_iterations: e.config?.agent?.max_tool_iterations || 10,
-          temperature: e.config?.agent?.temperature ?? 1,
-          top_p: e.config?.agent?.top_p ?? 1,
-          max_retries: e.config?.agent?.max_retries ?? 5,
-          reasoning_effort: e.config?.agent?.reasoning_effort || 'max'
-        },
-        default_headers: e.config?.default_headers || {},
-        questions: e.questions || []
-      }
-    }
-  })
-  loadTools()
+function openConnectorsPanel() {
+  window.open('/connectors', '_blank')
 }
 
 function loadTools() {
@@ -1806,6 +1829,7 @@ function updateQuota() {
         api_base_url: e.config?.api_base_url || '',
         api_key: e.config?.api_key || '',
         api_key_set: e.config?.api_key_set === true,
+        api_protocol: e.config?.api_protocol || 'responses',
         models: e.config?.models || [],
         embedding: {
           embedding_api_key: e.config?.embedding?.embedding_api_key || '',
@@ -1905,6 +1929,7 @@ onMounted(async () => {
         api_base_url: e.config?.api_base_url || '',
         api_key: e.config?.api_key || '',
         api_key_set: e.config?.api_key_set === true,
+        api_protocol: e.config?.api_protocol || 'responses',
         models: e.config?.models || [],
         embedding: {
           embedding_api_key: e.config?.embedding?.embedding_api_key || '',
@@ -2056,8 +2081,6 @@ function toggleFullscreen() {
   isFullscreen.value = !isFullscreen.value
 
   const appMain = document.querySelector('.app-w-main')
-  const overlay = document.querySelector('.settings-drawer-overlay')
-  const drawer = document.querySelector('.settings-drawer')
 
   if (isFullscreen.value) {
     container.classList.add('browser-fullscreen')
@@ -2071,8 +2094,6 @@ function toggleFullscreen() {
       appMain.style.zIndex = '999999'
       appMain.style.transition = 'none'
     }
-    if (overlay) overlay.style.zIndex = '999999'
-    if (drawer) drawer.style.zIndex = '999999'
     container.style.transition = 'none'
   } else {
     container.classList.remove('browser-fullscreen')
@@ -2406,8 +2427,7 @@ function toggleFullscreen() {
   .msg-queue { padding: 4px 8px 3px !important; }
   .msg-queue-text { font-size: 11px !important; }
 
-  /* 设置面板 */
-  .settings-drawer { width: 100% !important; max-width: 100% !important; }
+  /* 功能面板 */
   .drawer-content { padding: 12px !important; }
   .form-input, .form-textarea, .form-select { font-size: 14px !important; }
 
@@ -2480,6 +2500,30 @@ function toggleFullscreen() {
   background: var(--bg-tertiary);
   padding: 1px 4px;
   border-radius: 3px;
+}
+
+/* API 协议选择（集团模式 / 单 Agent 模式共用） */
+.mode-protocol {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+.mode-protocol label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.mode-protocol select {
+  padding: 3px 6px;
+  border: 1px solid #d3d8e2;
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--bg-primary, #fff);
+  color: #1f2937;
+  cursor: pointer;
+  max-width: 220px;
 }
 
 .mode-switch button.active {

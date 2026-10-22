@@ -102,11 +102,49 @@ def build_request(
     reasoning_effort: str | None = None,
     max_output_tokens: int | None = None,
     store: bool = False,
+    prompt_cache_key: str | None = None,
 ) -> dict[str, Any]:
     """把 chat 历史 + 工具定义组装成 Responses 请求体。"""
     instructions: list[str] = []
     input_items: list[dict[str, Any]] = []
     fc_seq = 0
+
+    # 原始 tool_call id → 规范化后的 fc_ id。
+    # function_call 与 function_call_output 必须共用同一份映射，否则配对断裂。
+    id_map: dict[str, str] = {}
+    # 收集历史中已有的 fc_ 编号，避免新生成的 id 与之冲突
+    existing_fc = set()
+    for _m in (messages or []):
+        if isinstance(_m, dict) and (_m.get("role") == "assistant"):
+            for _tc in (_m.get("tool_calls") or []):
+                if isinstance(_tc, dict):
+                    _cid = _tc.get("id") or ""
+                    if _cid.startswith("fc_") and _cid[3:].isdigit():
+                        existing_fc.add(int(_cid[3:]))
+
+    def _normalize_id(raw: str) -> str:
+        """把任意 tool_call id 规范化为 agnes 要求的 fc_ 形式（幂等）。"""
+        nonlocal fc_seq
+        if not raw:
+            fc_seq += 1
+            while fc_seq in existing_fc:
+                fc_seq += 1
+            existing_fc.add(fc_seq)
+            out = f"fc_{fc_seq}"
+            id_map[raw] = out
+            return out
+        if raw in id_map:
+            return id_map[raw]
+        if raw.startswith("fc_"):
+            id_map[raw] = raw
+            return raw
+        fc_seq += 1
+        while fc_seq in existing_fc:
+            fc_seq += 1
+        existing_fc.add(fc_seq)
+        out = f"fc_{fc_seq}"
+        id_map[raw] = out
+        return out
 
     for m in messages or []:
         if not isinstance(m, dict):
@@ -144,26 +182,33 @@ def build_request(
                 if not isinstance(tc, dict):
                     continue
                 fn = tc.get("function") or {}
-                cid = tc.get("id") or ""
+                raw_id = tc.get("id") or ""
                 args = fn.get("arguments")
                 if not isinstance(args, str):
                     args = json.dumps(args or {}, ensure_ascii=False)
-                if not cid:
-                    fc_seq += 1
-                    cid = f"fc_auto_{fc_seq}"
-                # ← 带 id 是上游 agnes 的硬性要求
+                # 上游 agnes 的 ResponseInput 强制要求 function_call 的 id / call_id
+                # 都以 "fc_" 开头，否则反序列化失败 → 400 → 被 ccload/sub2api
+                # 包装成 500（表现为多轮工具对话报 500）。
+                #
+                # 为什么 call_id 也要规范化：BT → ccload → sub2api → agnes 链路上
+                # 有两次协议转换，ccload 转 chat 时用 call_id，sub2api 转回
+                # responses 时又把它当 id。只要 call_id 还是 call_xxx，修复就会被
+                # 中间层抵消。两端都用 fc_ 才能穿透整条链路。
+                fc_id = _normalize_id(raw_id)
                 input_items.append({
                     "type": "function_call",
-                    "id": cid,
-                    "call_id": cid,
+                    "id": fc_id,
+                    "call_id": fc_id,
                     "name": fn.get("name") or "",
                     "arguments": args,
                 })
             continue
 
         if role == "tool":
-            cid = m.get("tool_call_id") or ""
+            raw_cid = m.get("tool_call_id") or ""
             output = _text_of(m.get("content"))
+            # 与 function_call 共用映射，保证 call_id 配对一致
+            cid = id_map.get(raw_cid) or _normalize_id(raw_cid)
             item: dict[str, Any] = {"type": "function_call_output", "call_id": cid, "output": output}
             if cid:
                 item["id"] = f"fco_{cid}"
@@ -189,6 +234,11 @@ def build_request(
         payload["reasoning"] = {"effort": reasoning_effort}
     if max_output_tokens:
         payload["max_output_tokens"] = max_output_tokens
+    # OpenAI Responses prompt caching：稳定标识符 + 隐式断点
+    # （gpt-5.6+ 支持；不支持的网关/上游会忽略未知字段）
+    if prompt_cache_key:
+        payload["prompt_cache_key"] = prompt_cache_key
+        payload["prompt_cache_options"] = {"mode": "implicit", "ttl": "30m"}
     return payload
 
 

@@ -1,0 +1,6 @@
+{
+  "name": "hello-plugin",
+  "version": "1.0.0",
+  "description": "示例插件：演示插件体系（注册一个 HelloPlugin 工具）",
+  "author": "bt"
+}

@@ -1,0 +1,130 @@
+"""扫码登录（qr_login + gateway QR 路由）测试。
+
+只测本地逻辑，避免真实调用外部 API（微信/QQ/钉钉/企微）。
+覆盖：supported_kinds、save_channel_config 写入、generate/poll 对不支持平台报错、
+gateway 路由对不支持平台的正确错误响应。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+@pytest.fixture
+def isolated_config(tmp_path, monkeypatch):
+    """把 qr_login 的 config 路径重定向到临时文件。"""
+    from platform_ext import qr_login
+    cfg = tmp_path / "config.json"
+    monkeypatch.setattr(qr_login, "_config_path", lambda: str(cfg))
+    return cfg
+
+
+class TestQrLogin:
+    def test_supported_kinds(self):
+        from platform_ext import qr_login
+        kinds = qr_login.supported_qr_kinds()
+        assert "weixin" in kinds
+        assert "qq" in kinds
+        assert "wecom" in kinds
+        assert "dingtalk" in kinds
+
+    def test_generate_unknown_kind(self):
+        from platform_ext import qr_login
+        with pytest.raises(KeyError):
+            asyncio.run(qr_login.generate("nonexistent"))
+
+    def test_poll_unknown_kind(self):
+        from platform_ext import qr_login
+        with pytest.raises(KeyError):
+            asyncio.run(qr_login.poll("nonexistent", "token"))
+
+    def test_save_channel_config(self, isolated_config):
+        from platform_ext import qr_login
+        qr_login.save_channel_config("weixin", {"token": "abc", "account_id": "a1"})
+        g = qr_login._gateway_cfg()
+        assert g["weixin"]["token"] == "abc"
+        assert g["weixin"]["account_id"] == "a1"
+        assert g["weixin"]["configured"] is True
+
+    def test_save_channel_config_overwrite(self, isolated_config):
+        from platform_ext import qr_login
+        qr_login.save_channel_config("weixin", {"token": "abc"})
+        qr_login.save_channel_config("weixin", {"token": "def", "base_url": "x"})
+        g = qr_login._gateway_cfg()
+        assert g["weixin"]["token"] == "def"
+        assert g["weixin"]["base_url"] == "x"
+
+    def test_save_channel_config_syncs_legacy_instance(self, isolated_config):
+        from platform_ext import qr_login
+        # 先写入老式扁平配置并生成 instances 列表，模拟 gateway 已迁移的场景
+        qr_login._set_gateway_cfg({
+            "weixin": {"configured": False},
+            "instances": [{"instance_id": "weixin", "kind": "weixin", "configured": False}],
+        })
+        qr_login.save_channel_config("weixin", {"token": "abc", "account_id": "a1"})
+        g = qr_login._gateway_cfg()
+        assert g["weixin"]["token"] == "abc"
+        assert g["weixin"]["configured"] is True
+        legacy = next(i for i in g["instances"] if i["instance_id"] == "weixin")
+        assert legacy["token"] == "abc"
+        assert legacy["account_id"] == "a1"
+        assert legacy["configured"] is True
+
+    def test_save_channel_config_to_instance(self, isolated_config):
+        from platform_ext import qr_login
+        qr_login._set_gateway_cfg({
+            "instances": [{"instance_id": "weixin_b", "kind": "weixin", "configured": False}],
+        })
+        qr_login.save_channel_config("weixin", {"token": "abc", "account_id": "a1"}, instance_id="weixin_b")
+        g = qr_login._gateway_cfg()
+        # 指定实例被写入，且不污染 g["weixin"] 扁平键
+        assert "weixin" not in g
+        target = next(i for i in g["instances"] if i["instance_id"] == "weixin_b")
+        assert target["token"] == "abc"
+        assert target["account_id"] == "a1"
+        assert target["configured"] is True
+
+    def test_save_channel_config_to_legacy_instance_syncs_flat(self, isolated_config):
+        from platform_ext import qr_login
+        qr_login._set_gateway_cfg({
+            "weixin": {"configured": False},
+            "instances": [{"instance_id": "weixin", "kind": "weixin", "configured": False}],
+        })
+        qr_login.save_channel_config("weixin", {"token": "abc"}, instance_id="weixin")
+        g = qr_login._gateway_cfg()
+        assert g["weixin"]["token"] == "abc"
+        assert g["weixin"]["configured"] is True
+        legacy = next(i for i in g["instances"] if i["instance_id"] == "weixin")
+        assert legacy["token"] == "abc"
+
+    def test_save_channel_config_to_new_instance_auto_creates(self, isolated_config):
+        from platform_ext import qr_login
+        qr_login._set_gateway_cfg({"instances": []})
+        qr_login.save_channel_config("wecom", {"bot_id": "b1", "secret": "s1"}, instance_id="wecom_b")
+        g = qr_login._gateway_cfg()
+        target = next(i for i in g["instances"] if i["instance_id"] == "wecom_b")
+        assert target["kind"] == "wecom"
+        assert target["bot_id"] == "b1"
+        assert target["configured"] is True
+
+    def test_gateway_generate_unsupported(self):
+        from platform_ext import gateway
+        res = asyncio.run(gateway.gateway_qrcode_generate("feishu", None))  # type: ignore[arg-type]
+        body = json.loads(res.body.decode("utf-8"))
+        assert body["status"] is False
+        assert "不支持扫码登录" in body["msg"]
+
+
+class TestGatewayQrRoutes:
+    def test_qr_routes_registered(self):
+        from platform_ext import gateway
+        paths = [r.path for r in gateway.router.routes]
+        assert "/gateway/channels/{kind}/qrcode/generate" in paths
+        assert "/gateway/channels/{kind}/qrcode/poll" in paths

@@ -4,6 +4,9 @@
 sessions/
 __pycache__/
 *.pyc
+# SQLite 运行时临时文件（共享内存/预写日志）
+*.sqlite-shm
+*.sqlite-wal
 
 # ===== 环境 / 依赖 =====
 .venv/
@@ -44,6 +47,8 @@ index.html.backup
 logs/
 
 # ===== 运行时数据 =====
+config.json.lock
+.config-*.tmp
 uploads/
 fn_unpack/
 test_zips/
@@ -104,6 +109,12 @@ AUDIT_REPORT.md
 # 新环境请复制 mcp/config.example.json 为 mcp/config.json 后填入自己的 key。
 mcp/config.json
 
+# 平台扩展/连接器独立配置（含真实凭据与加密密文，禁止入库）
+gateway.json
+connector_hub.json
+gateway.json.lock
+connector_hub.json.lock
+
 # auth.json 含管理员密码派生值与 JWT 签名密钥，绝不入库。
 # 新环境留空即可：首次登录会自动初始化密码与密钥。
 auth.json
@@ -133,3 +144,28 @@ knowledge/
 card_keys.json
 card_user_configs.json
 *.key
+
+# ===== 专家市场缓存（运行时落盘，对齐 Octop expert_market/）=====
+expert_market/
+
+# ===== 工具结果归档（运行时落盘，P6 上下文治理）=====
+tool_archives/
+
+# ===== P7 运行时产物 =====
+hitl_approvals.json
+workspace/inbound/
+skills/_packages/
+security/tool_guard/
+
+# Connector Hub：连接器凭据加密密钥（绝不入库）
+connector_hub/.fernet_key
+
+# octop-browser 运行时数据目录（浏览器 profile / 录制 / 截图）
+.octop-browser/
+
+# 用量统计 ledger（运行时数据）
+usage_ledger.jsonl
+
+# octop-memory 增强记忆 sqlite（运行时数据）
+memory_octop.sqlite
+metrics/

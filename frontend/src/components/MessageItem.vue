@@ -180,7 +180,9 @@
                   <pre>{{ formatArgs(block.args) }}</pre>
                 </div>
                 <div v-if="block.result" class="tool-result-content">
-                  <pre>{{ formatResult(block.result) }}</pre>
+                  <!-- 含 Markdown 图片（如浏览器截图）→ 用 Markdown 渲染，否则纯文本 -->
+                  <div v-if="isMarkdownImage(block.result)" v-html="parseMarkdown(block.result)"></div>
+                  <pre v-else>{{ formatResult(block.result) }}</pre>
                 </div>
               </div>
             </div>
@@ -405,9 +407,14 @@ export default {
         if (s.startsWith('#')) return s
         // 图片：允许 base64 data URL
         if (isImg && /^data:image\//i.test(s)) return s
-        // 图片：服务器侧文件（相对或绝对路径）→ 经 /api/files/raw 提供，浏览器才能加载
+        // 图片：服务器侧文件（相对或绝对路径）→ 经 /api/files/raw 提供
+        // （该端点受 JWT 保护，但支持 ?token=，这里自动附带以便 <img> 加载）
         if (isImg) {
-          return '/api/files/raw?path=' + encodeURIComponent(s)
+          const token = (() => {
+            try { return window.localStorage.getItem('bt_agent_token') || '' } catch (e) { return '' }
+          })()
+          const base = '/api/files/raw?path=' + encodeURIComponent(s)
+          return token ? base + '&token=' + encodeURIComponent(token) : base
         }
         // 非图片链接：仅允许站内相对/绝对路径
         if (s.startsWith('/') || s.startsWith('./')) return s
@@ -482,6 +489,15 @@ export default {
       }
     }
 
+    // 判断工具结果是否含 Markdown 图片（如浏览器截图、ViewImage 返回的 data URL）
+    // —— 若是则走 Markdown 渲染。data URL 没有 .png 后缀，需单独识别。
+    function isMarkdownImage(result) {
+      if (!result) return false
+      const s = String(result)
+      return /!\[[^\]]*\]\([^)]+\.(?:png|jpe?g|gif|webp|bmp|svg)\)/i.test(s) ||
+             /!\[[^\]]*\]\(data:image\/[^)]+\)/i.test(s)
+    }
+
     function toggleBlockCollapse(block) {
       block.collapsed = !block.collapsed
     }
@@ -536,6 +552,7 @@ export default {
       parseMarkdown,
       formatArgs,
       formatResult,
+      isMarkdownImage,
       toggleBlockCollapse,
       toggleToolBlockCollapse,
       isTodoAllDone,

@@ -494,8 +494,9 @@ def query_claude_history(session_id: str, workspace: str = "") -> list[dict]:
     if not path or not os.path.exists(path):
         return []
 
-    history = []
-    tool_results_cache = {}  # tool_use_id -> output text（跨消息累积）
+    # 两遍扫描：第一遍收集 tool_result（它们出现在 assistant 消息之后的 user 消息里）
+    #         第二遍构建 history，确保 tool 结果已缓存
+    all_lines: list[dict] = []
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fp:
             for line in fp:
@@ -504,48 +505,94 @@ def query_claude_history(session_id: str, workspace: str = "") -> list[dict]:
                 except (json.JSONDecodeError, ValueError):
                     continue
                 dtype = d.get("type", "")
-                ts_raw = d.get("timestamp", "")
-                try:
-                    import datetime as _dt
-                    ts = _dt.datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp() if ts_raw else 0
-                except Exception:
-                    ts = 0
+                if dtype not in ("user", "assistant"):
+                    continue
+                all_lines.append(d)
+    except Exception:
+        logger.warning("claude 历史读取文件失败: %s", path, exc_info=True)
+        return []
 
-                if dtype == "user":
-                    content = d.get("message", {}).get("content", [])
-                    texts = []
-                    if isinstance(content, list):
-                        for c in content:
-                            if isinstance(c, dict) and c.get("type") == "text":
-                                txt = c.get("text") or ""
-                                if txt.strip() and not txt.startswith("<local-command"):
-                                    texts.append(txt)
-                            elif c.get("type") == "tool_result":
-                                # Claude 把工具结果存在 user 消息的 content 数组里
-                                tid = c.get("tool_use_id", "")
-                                txt = c.get("content", "") or ""
-                                if tid:
-                                    tool_results_cache[tid] = txt
-                    elif isinstance(content, str) and content.strip():
-                        texts.append(content)
-                    if texts:
-                        history.append({
-                            "role": "user",
-                            "content": [{"type": "text", "text": t} for t in texts],
-                            "timestamp": ts,
-                        })
+    # 辅助：提取纯文本内容（tool_result content 可能是字符串或列表）
+    def _flatten_content(val):
+        if isinstance(val, str):
+            return val
+        if isinstance(val, list):
+            parts = []
+            for item in val:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        parts.append(item.get("text") or "")
+                    elif item.get("type") == "thinking":
+                        parts.append(item.get("thinking") or "")
+                    else:
+                        parts.append(json.dumps(item, ensure_ascii=False))
+                else:
+                    parts.append(str(item))
+            return "".join(parts)
+        if val is None:
+            return ""
+        return json.dumps(val, ensure_ascii=False)
 
-                elif dtype == "assistant":
-                    content = d.get("message", {}).get("content", [])
-                    text = ""
-                    tool_calls = []
+    # ── Pass 1：收集所有 tool_result ──
+    tool_results_cache: dict[str, str] = {}
+    for d in all_lines:
+        if d.get("type") != "user":
+            continue
+        content = d.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "tool_result":
+                tid = c.get("tool_use_id", "")
+                if tid:
+                    txt = _flatten_content(c.get("content", ""))
+                    if txt:
+                        tool_results_cache[tid] = txt
+
+    # ── Pass 2：构建 history ──
+    history = []
+    try:
+        for d in all_lines:
+            ts_raw = d.get("timestamp", "")
+            try:
+                import datetime as _dt
+                ts = _dt.datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp() if ts_raw else 0
+            except Exception:
+                ts = 0
+
+            if d.get("type") == "user":
+                content = d.get("message", {}).get("content", [])
+                texts = []
+                if isinstance(content, list):
+                    for c in content:
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            txt = c.get("text") or ""
+                            if txt.strip() and not txt.startswith("<local-command"):
+                                texts.append(txt)
+                elif isinstance(content, str) and content.strip():
+                    texts.append(content)
+                if texts:
+                    history.append({
+                        "role": "user",
+                        "content": [{"type": "text", "text": t} for t in texts],
+                        "timestamp": ts,
+                    })
+
+            elif d.get("type") == "assistant":
+                content = d.get("message", {}).get("content", [])
+                text = ""
+                tool_calls = []
+                row_thinking = ""
+                if isinstance(content, list):
                     for c in content:
                         if isinstance(c, dict):
                             ctype = c.get("type", "")
                             if ctype == "text":
                                 text += c.get("text", "")
                             elif ctype == "thinking":
-                                pass  # 思考内容不进历史回放
+                                t = c.get("thinking", "")
+                                if t:
+                                    row_thinking += t
                             elif ctype == "tool_use":
                                 tool_calls.append({
                                     "id": c.get("id", ""),
@@ -554,21 +601,22 @@ def query_claude_history(session_id: str, workspace: str = "") -> list[dict]:
                                         "arguments": json.dumps(c.get("input", {}), ensure_ascii=False),
                                     },
                                 })
-                    if not text.strip() and not tool_calls:
-                        continue
+                if not text.strip() and not tool_calls:
+                    continue
+                history.append({
+                    "role": "assistant",
+                    "content": text,
+                    "tool_calls": tool_calls,
+                    "reasoning_content": row_thinking or None,
+                    "timestamp": ts,
+                })
+                for tc in tool_calls:
                     history.append({
-                        "role": "assistant",
-                        "content": text,
-                        "tool_calls": tool_calls,
-                        "timestamp": ts,
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": tool_results_cache.get(tc["id"], ""),
+                        "timestamp": ts + 0.001,
                     })
-                    for tc in tool_calls:
-                        history.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": tool_results_cache.get(tc["id"], ""),
-                            "timestamp": ts + 0.001,
-                        })
     except Exception:
         logger.warning("claude 历史查询失败: %s", path, exc_info=True)
         return []

@@ -1,0 +1,1881 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>功能面板 · 通道 / 记忆 / 用量 / 浏览器</title>
+<link rel="icon" href="/favicon.png" />
+<style>
+  :root {
+    --bt-primary: #07c160; --bt-primary-dark: #06ad56; --bt-primary-soft: rgba(7,193,96,.10);
+    --bt-accent: #3b82f6; --bt-bg: #f6f7f9; --bt-surface: #fff; --bt-surface-2: #f9fafb;
+    --bt-border: #e8eaed; --bt-text: #1f2937; --bt-text-2: #6b7280; --bt-text-3: #9ca3af;
+    --bt-shadow-sm: 0 1px 2px rgba(16,24,40,.05); --bt-shadow: 0 4px 14px rgba(16,24,40,.08);
+    --bt-shadow-lg: 0 12px 40px rgba(16,24,40,.16); --bt-radius: 12px; --bt-radius-sm: 8px;
+    --bt-danger: #ef4444; --bt-warn: #f59e0b;
+    --bt-transition: .2s cubic-bezier(.4,0,.2,1);
+  }
+  html[data-theme="dark"] {
+    --bt-bg: #0f1115; --bt-surface: #171a21; --bt-surface-2: #1d2129; --bt-border: #2a2f3a;
+    --bt-text: #e5e7eb; --bt-text-2: #9ca3af; --bt-text-3: #6b7280;
+    --bt-primary-soft: rgba(7,193,96,.16);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', Roboto, sans-serif;
+    background: var(--bt-bg); color: var(--bt-text); line-height: 1.6; min-height: 100vh;
+    transition: background var(--bt-transition), color var(--bt-transition);
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
+  header.top { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+  header.top .logo {
+    width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, var(--bt-primary), #10b981);
+    display: flex; align-items: center; justify-content: center; color: #fff; font-size: 20px; flex: none;
+  }
+  header.top h1 { font-size: 22px; font-weight: 700; }
+  header.top .sub { color: var(--bt-text-2); font-size: 13px; }
+  .spacer { flex: 1; }
+  .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--bt-border); margin-bottom: 20px; flex-wrap: wrap; }
+  .tab {
+    padding: 10px 18px; border: none; background: transparent; color: var(--bt-text-2);
+    font-size: 14px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .tab.active { color: var(--bt-primary); border-bottom-color: var(--bt-primary); }
+  .tab:hover { color: var(--bt-text); }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .card {
+    background: var(--bt-surface); border: 1px solid var(--bt-border); border-radius: var(--bt-radius);
+    padding: 16px; margin-bottom: 14px; box-shadow: var(--bt-shadow-sm);
+  }
+  .card h3 { font-size: 15px; margin-bottom: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .ch-card {
+    background: var(--bt-surface); border: 1px solid var(--bt-border); border-radius: var(--bt-radius);
+    padding: 14px; box-shadow: var(--bt-shadow-sm);
+  }
+  .ch-card .hd { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .ch-card .nm { font-weight: 700; font-size: 14px; }
+  .ch-card .note { color: var(--bt-text-3); font-size: 12px; margin-bottom: 8px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge.ok { background: rgba(7,193,96,.15); color: var(--bt-primary); }
+  .badge.no { background: rgba(239,68,68,.12); color: var(--bt-danger); }
+  .badge.run { background: rgba(59,130,246,.15); color: var(--bt-accent); }
+  .badge.stop { background: rgba(148,163,184,.15); color: var(--bt-text-2); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .btn {
+    border: 1px solid var(--bt-border); background: var(--bt-surface); color: var(--bt-text);
+    padding: 6px 12px; border-radius: 8px; font-size: 12.5px; cursor: pointer; transition: all .15s;
+  }
+  .btn:hover { border-color: var(--bt-primary); color: var(--bt-primary); }
+  .btn.pri { background: var(--bt-primary); color: #fff; border-color: var(--bt-primary); }
+  .btn.pri:hover { background: var(--bt-primary-dark); color: #fff; }
+  .btn.danger:hover { border-color: var(--bt-danger); color: var(--bt-danger); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  input, textarea, select {
+    width: 100%; padding: 7px 10px; border: 1px solid var(--bt-border); border-radius: 8px;
+    background: var(--bt-surface-2); color: var(--bt-text); font-size: 13px; margin-bottom: 8px;
+  }
+  textarea { min-height: 60px; resize: vertical; }
+  label { font-size: 12px; color: var(--bt-text-2); display: block; margin-bottom: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--bt-border); }
+  th { color: var(--bt-text-2); font-weight: 600; font-size: 12px; }
+  .stat { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: 10px; margin-bottom: 16px; }
+  .stat .item { background: var(--bt-surface); border: 1px solid var(--bt-border); border-radius: var(--bt-radius); padding: 12px; text-align: center; }
+  .stat .num { font-size: 22px; font-weight: 700; color: var(--bt-primary); }
+  .stat .lbl { font-size: 12px; color: var(--bt-text-2); }
+  .empty { text-align: center; color: var(--bt-text-3); padding: 30px; font-size: 13px; }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #111827; color: #fff;
+    padding: 10px 20px; border-radius: 8px; font-size: 13px; opacity: 0; pointer-events: none;
+    transition: opacity .25s; z-index: 999; max-width: 80vw;
+  }
+  .toast.show { opacity: 1; }
+  .toast.err { background: var(--bt-danger); }
+  a.link { color: var(--bt-accent); text-decoration: none; font-size: 13px; }
+  a.link:hover { text-decoration: underline; }
+
+  /* 通道多实例管理：列表 / 表单视图切换 */
+  .gw-view { display: none; }
+  .gw-view.active { display: block; }
+  .gw-form-card { max-width: 680px; }
+  .gw-form-actions { display: flex; gap: 10px; margin-top: 16px; }
+  .gw-form-actions .btn { padding: 8px 20px; font-size: 13.5px; }
+  .gw-back { margin-bottom: 14px; }
+  .gw-qr-inline {
+    margin-top: 14px; padding: 14px; border: 1px dashed var(--bt-primary);
+    background: var(--bt-primary-soft); border-radius: var(--bt-radius-sm);
+  }
+  .gw-qr-inline .qr-img { width: 200px; height: 200px; border-radius: 8px; border: 1px solid var(--bt-border); }
+  .gw-qr-status { font-size: 12.5px; color: var(--bt-text-2); min-height: 18px; margin-top: 6px; }
+  .gw-qr-auth { margin-top: 8px; }
+
+  /* 扫码绑定弹窗 */
+  .qr-modal {
+    position: fixed; inset: 0; background: rgba(15,17,21,.55); z-index: 1000;
+    display: none; align-items: center; justify-content: center; padding: 20px;
+  }
+  .qr-modal.show { display: flex; }
+  .qr-modal-box {
+    background: var(--bt-surface); border: 1px solid var(--bt-border); border-radius: var(--bt-radius);
+    padding: 20px; width: 100%; max-width: 360px; box-shadow: var(--bt-shadow-lg);
+  }
+  .qr-modal-hd {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
+  }
+  .qr-modal-hd strong { font-size: 15px; }
+/* ── 设置：左侧导航 + 右侧内容 ───────────────── */
+  .settings-layout { display: flex; gap: 16px; align-items: flex-start; }
+  .settings-nav {
+    flex: 0 0 200px; display: flex; flex-direction: column; gap: 4px;
+    background: var(--bt-surface); border: 1px solid var(--bt-border);
+    border-radius: var(--bt-radius); padding: 8px; box-shadow: var(--bt-shadow-sm);
+    position: sticky; top: 16px;
+  }
+  .set-tab {
+    text-align: left; padding: 10px 12px; border: none; background: transparent;
+    color: var(--bt-text-2); font-size: 13.5px; font-weight: 600; cursor: pointer;
+    border-radius: var(--bt-radius-sm); transition: background var(--bt-transition), color var(--bt-transition);
+  }
+  .set-tab:hover { background: var(--bt-primary-soft); color: var(--bt-text); }
+  .set-tab.active { background: var(--bt-primary-soft); color: var(--bt-primary); }
+  .settings-content { flex: 1; min-width: 0; }
+  .set-panel { display: none; }
+  .set-panel.active { display: block; }
+
+  /* 表单样式（对齐 SettingsDrawer） */
+  .form-section { margin-bottom: 12px; }
+  .form-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px; color: var(--bt-text); }
+  .form-hint { font-size: 12px; color: var(--bt-text-3); margin-bottom: 5px; }
+  .form-input {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm);
+    background: var(--bt-surface-2); color: var(--bt-text); font-size: 13.5px; outline: none;
+    transition: border var(--bt-transition);
+  }
+  .form-input:focus { border-color: var(--bt-primary); }
+  .form-textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm);
+    background: var(--bt-surface-2); color: var(--bt-text); font-size: 13.5px; outline: none; resize: vertical;
+    font-family: inherit;
+  }
+  .key-row { display: flex; align-items: center; gap: 8px; }
+  .key-badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--bt-primary-soft); color: var(--bt-primary); font-weight: 600; }
+  .switch-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13.5px; }
+  .switch-input { width: 16px; height: 16px; accent-color: var(--bt-primary); }
+  .switch-text { font-weight: 600; }
+  .mcp-manage-bar { display: flex; gap: 8px; margin-bottom: 8px; }
+  .mcp-list .tool-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--bt-border); font-size: 13px; flex-wrap: wrap; }
+  .tool-item-name { font-weight: 600; }
+  .tool-item-desc { color: var(--bt-text-2); font-size: 12px; flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-add-form { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .overwrite-label { font-size: 12px; color: var(--bt-text-2); display: flex; align-items: center; gap: 5px; }
+  .crew-del { border: none; background: transparent; color: var(--bt-danger); font-size: 12px; cursor: pointer; }
+   .crew-list, .skill-list, .card-list { margin-bottom: 8px; }
+   .crew-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm); margin-bottom: 6px; }
+   .crew-info { flex: 1; min-width: 0; }
+   .crew-name { font-weight: 600; font-size: 13px; }
+   .crew-desc { color: var(--bt-text-2); font-size: 12px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
+   .crew-badge { font-size: 11px; padding: 2px 6px; border-radius: 3px; background: var(--bt-surface); border: 1px solid var(--bt-border); color: var(--bt-text-2); }
+   .crew-badge.builtin { background: #e8f5e9; border-color: #4caf50; color: #2e7d32; }
+   .crew-badge.custom { background: #fff3e0; border-color: #ff9800; color: #e65100; }
+   .crew-dept-select { width: 120px; font-size: 12px; padding: 4px 6px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm); background: var(--bt-bg); color: var(--bt-text); }
+   .crew-form-wrap { margin-top: 10px; }
+   .crew-add-btn { cursor: pointer; color: var(--bt-primary); font-size: 13px; font-weight: 600; user-select: none; }
+   .crew-add-btn::before { content: '▶ '; font-size: 10px; }
+   .crew-form-wrap[open] > .crew-add-btn::before { content: '▼ '; }
+   .crew-form { margin-top: 8px; padding: 12px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm); background: var(--bt-surface); display: flex; flex-direction: column; gap: 8px; }
+   .crew-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+   .crew-tool-chk { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--bt-text-2); cursor: pointer; }
+   .crew-tool-chk input { cursor: pointer; }
+  .empty { color: var(--bt-text-3); font-size: 13px; padding: 12px; text-align: center; }
+  .loading { color: var(--bt-text-2); font-size: 13px; padding: 10px; }
+  .btn-save { margin-top: 16px; }
+  .btn { padding: 8px 14px; border: 1px solid var(--bt-border); background: var(--bt-surface); color: var(--bt-text); border-radius: var(--bt-radius-sm); font-size: 13px; cursor: pointer; transition: all var(--bt-transition); }
+  .btn:hover { border-color: var(--bt-primary); color: var(--bt-primary); }
+  .btn.pri { background: var(--bt-primary); border-color: var(--bt-primary); color: #fff; font-weight: 600; }
+  .btn.pri:hover { background: var(--bt-primary-dark); }
+  .mcp-market-item, .mcp-market-head { font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm); margin-bottom: 6px; }
+  .mcp-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+  .mcp-tag { font-size: 11px; background: var(--bt-surface-2); padding: 1px 6px; border-radius: 99px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="logo">🧩</div>
+    <div>
+      <h1>功能面板</h1>
+      <div class="sub">多平台通道 · 增强记忆 · 用量统计 · 浏览器</div>
+    </div>
+    <div class="spacer"></div>
+    <a class="link" href="/connectors" target="_blank">🔌 连接器管理 →</a>
+    <a class="link" href="/browser" target="_blank">打开浏览器控制台 →</a>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="gateway" onclick="switchTab('gateway')">📡 通道</button>
+    <button class="tab" data-tab="memory" onclick="switchTab('memory')">🧠 记忆</button>
+    <button class="tab" data-tab="usage" onclick="switchTab('usage')">📊 用量</button>
+    <button class="tab" data-tab="settings" onclick="switchTab('settings')">⚙️ 设置</button>
+    <button class="tab hotreload-tab" onclick="doRestart()" title="重启服务，加载最新代码与配置">⟳ 重启服务</button>
+  </div>
+
+  <div id="tab-gateway" class="panel active">
+    <!-- 多实例列表视图：管理全部通道所有实例 -->
+    <div id="gwListView" class="gw-view active"></div>
+    <!-- 添加/编辑实例视图：独立于列表，含扫码/授权绑定入口 -->
+    <div id="gwFormView" class="gw-view">
+      <div class="gw-back"><button class="btn" onclick="gwCloseInstanceForm()">← 返回实例列表</button></div>
+      <div class="card gw-form-card">
+        <h3 id="gwFormTitle" style="margin-bottom:14px">添加实例</h3>
+        <div id="gwInstFields"></div>
+        <div id="gwQrSection"></div>
+        <div class="gw-form-actions">
+          <button class="btn pri" onclick="gwSaveInstance()">保存</button>
+          <button class="btn" onclick="gwCloseInstanceForm()">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="tab-memory" class="panel"></div>
+  <div id="tab-usage" class="panel"></div>
+  <div id="tab-settings" class="panel">
+    <div class="settings-layout">
+      <div class="settings-nav">
+        <button class="set-tab active" data-set="ai" onclick="switchSetTab('ai')">AI / 工作目录 / 上下文 / Agent</button>
+        <button class="set-tab" data-set="mcp" onclick="switchSetTab('mcp')">MCP</button>
+        <button class="set-tab" data-set="searchmem" onclick="switchSetTab('searchmem')">搜索 / 记忆</button>
+        <button class="set-tab" data-set="crewskill" onclick="switchSetTab('crewskill')">Crew / 技能</button>
+        <button class="set-tab" data-set="card" onclick="switchSetTab('card')">卡密</button>
+      </div>
+      <div class="settings-content">
+        <!-- AI 接口 + 工作目录 + 上下文 + Agent -->
+        <div id="set-ai" class="set-panel active">
+          <div class="card">
+            <h3>AI 接口与模型</h3>
+            <div class="form-section">
+              <label class="form-label">API Base URL</label>
+              <input type="text" class="form-input" id="set_api_base_url" placeholder="https://api.openai.com/v1" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">API Key</label>
+              <div class="key-row">
+                <input type="password" class="form-input" id="set_api_key" placeholder="已配置（留空保持原值）" />
+                <span id="set_api_key_badge" class="key-badge" style="display:none">已配置</span>
+              </div>
+            </div>
+            <div class="form-section">
+              <label class="form-label">默认模型</label>
+              <select class="form-input" id="set_default_model"><option value="">（默认）</option></select>
+            </div>
+            <div class="form-section">
+              <label class="form-label">系统提示词</label>
+              <textarea class="form-textarea" id="set_system_prompt" rows="3" placeholder="系统提示词"></textarea>
+            </div>
+            <div class="form-section">
+              <label class="form-label">API 协议</label>
+              <select class="form-input" id="set_api_protocol">
+                <option value="responses">responses</option>
+                <option value="chat">chat (chat completions)</option>
+                <option value="anthropic">anthropic (/v1/messages)</option>
+              </select>
+            </div>
+            <div class="form-section">
+              <label class="form-label">用量上报地址 (API Usage URL)</label>
+              <input type="text" class="form-input" id="set_api_usage_url" placeholder="留空则不启用用量上报" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>默认请求头 (Default Headers)</h3>
+            <div class="form-section">
+              <label class="form-label">UID</label>
+              <input type="text" class="form-input" id="set_header_uid" placeholder="uid" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">Access Key</label>
+              <div class="key-row">
+                <input type="password" class="form-input" id="set_header_access_key" placeholder="留空保持原值" />
+                <span id="set_header_access_key_badge" class="key-badge" style="display:none">已配置</span>
+              </div>
+            </div>
+            <div class="form-section">
+              <label class="form-label">App ID</label>
+              <input type="text" class="form-input" id="set_header_appid" placeholder="app_001" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>模型白名单 (Models)</h3>
+            <div class="form-section">
+              <label class="form-label">模型列表（每行一个模型名，默认模型需在下拉中选中）</label>
+              <textarea class="form-textarea" id="set_models_list" rows="4" placeholder="auto&#10;gpt-4o&#10;claude-3-5-sonnet"></textarea>
+            </div>
+          </div>
+          <div class="card">
+            <h3>工作目录</h3>
+            <div class="form-section">
+              <label class="form-label">工作目录路径</label>
+              <input type="text" class="form-input" id="set_workspace" placeholder="~/workspace 或 /path/to/project" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>上下文窗口</h3>
+            <div class="form-section">
+              <label class="form-label">上下文窗口大小 (KB)</label>
+              <input type="number" class="form-input" id="set_context_window_kb" placeholder="512" min="64" max="4096" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>Agent 参数</h3>
+            <div class="form-section">
+              <label class="form-label">思考程度 (Reasoning Effort)</label>
+              <select class="form-input" id="set_reasoning_effort">
+                <option value="low">low - 轻量推理</option>
+                <option value="medium">medium - 中等推理</option>
+                <option value="high">high - 深度推理</option>
+                <option value="xhigh">xhigh - 超深度推理</option>
+                <option value="max">max - 最大深度推理</option>
+              </select>
+            </div>
+            <div class="form-section">
+              <label class="form-label">思考温度 (Temperature)</label>
+              <input type="number" step="0.1" class="form-input" id="set_temperature" placeholder="1.0" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">Top P</label>
+              <input type="number" step="0.05" class="form-input" id="set_top_p" placeholder="0.8" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">最大工具迭代次数</label>
+              <input type="number" class="form-input" id="set_max_tool_iterations" placeholder="999999" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">工具超时 (秒)</label>
+              <input type="number" class="form-input" id="set_tool_timeout" placeholder="120" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">最大重试次数</label>
+              <input type="number" class="form-input" id="set_max_retries" placeholder="5" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">API 最大重试</label>
+              <input type="number" class="form-input" id="set_api_max_retry" placeholder="3" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">API 重试初始等待 (秒)</label>
+              <input type="number" step="0.1" class="form-input" id="set_api_retry_base_wait" placeholder="1" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">API 重试最大等待 (秒)</label>
+              <input type="number" step="0.1" class="form-input" id="set_api_retry_max_wait" placeholder="10" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>工具执行行为</h3>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_tool_parallel" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用工具并行执行</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="form-label">并行最大 Worker 数</label>
+              <input type="number" class="form-input" id="set_tool_parallel_max_workers" placeholder="8" />
+            </div>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_tool_result_archive" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">归档工具结果（大结果折叠）</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="form-label">工具结果最大字符数</label>
+              <input type="number" class="form-input" id="set_tool_result_max_chars" placeholder="8000" />
+            </div>
+          </div>
+          <div class="form-section" style="padding-top:12px">
+            <button class="btn pri" onclick="saveSettingsConfig()">💾 保存 AI / 工作目录 / 上下文 / Agent 设置</button>
+          </div>
+        </div>
+        <!-- MCP -->
+        <div id="set-mcp" class="set-panel">
+          <div class="card">
+            <h3>MCP 服务</h3>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_enable_mcp" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用 MCP 集成</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="form-label">MCP 配置文件路径</label>
+              <input type="text" class="form-input" id="set_mcp_config_path" placeholder="mcp/config.json" />
+            </div>
+            <div class="mcp-manage">
+              <div class="mcp-manage-bar">
+                <button class="btn" id="mcpRefreshBtn" onclick="fetchMcpServers()">⟳ 刷新</button>
+                <button class="btn" id="mcpMarketBtn" onclick="fetchMcpMarket()">🛒 MCP 市场</button>
+              </div>
+              <div id="mcpList" class="mcp-list"></div>
+              <div class="mcp-add-form">
+                <input class="form-input" id="mcpNameInput" placeholder="server 名称" />
+                <textarea class="form-textarea" id="mcpConfigInput" rows="3" placeholder='配置 JSON，例如：{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/path"]}'></textarea>
+                <label class="overwrite-label"><input type="checkbox" id="mcpOverwrite" /> 同名覆盖</label>
+                <button class="btn pri" onclick="addMcpServer()">＋ 添加</button>
+                <div id="mcpMsg"></div>
+              </div>
+              <div id="mcpMarketBox"></div>
+            </div>
+          </div>
+        </div>
+        <!-- 搜索 + 记忆 -->
+        <div id="set-searchmem" class="set-panel">
+          <div class="card">
+            <h3>联网搜索</h3>
+            <div class="form-section">
+              <label class="form-label">默认搜索引擎</label>
+              <select class="form-input" id="set_search_provider" onchange="renderSearchProviderOpts()"></select>
+            </div>
+            <div class="form-section">
+              <label class="form-label">默认返回条数</label>
+              <input type="number" class="form-input" id="set_search_result_size" />
+            </div>
+            <div id="set_search_provider_opts"></div>
+            <button class="btn pri" onclick="saveSearchConfig()">保存搜索设置</button>
+            <div id="searchMsg"></div>
+          </div>
+          <div class="card">
+            <h3>记忆 / 知识库</h3>
+            <div class="form-section">
+              <label class="form-label">全局记忆 Agent ID</label>
+              <input type="text" class="form-input" id="set_global_kb_agent_id" placeholder="ai-agent" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">mem0 服务地址</label>
+              <input type="text" class="form-input" id="set_mem0_api_url" placeholder="http://localhost:8000" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">RAG 记忆检索模式</label>
+              <select class="form-input" id="set_rag_mode">
+                <option value="disabled">关闭 - 不使用记忆检索</option>
+                <option value="global_only">启用全局记忆检索（仅本机 mem0）</option>
+                <option value="external_only">启用外部知识库检索（ai-assistant.cn）</option>
+              </select>
+            </div>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_use_global_rag" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用全局 RAG 检索</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_use_external_kb" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用外部知识库</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="switch-label">
+                <input type="checkbox" class="switch-input" id="set_use_document_kb" />
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用文档知识库</span>
+              </label>
+            </div>
+            <div class="form-section">
+              <label class="form-label">文档知识库检索条数 (top_k)</label>
+              <input type="number" class="form-input" id="set_document_kb_top_k" placeholder="5" />
+            </div>
+            <h3>Embedding 向量化</h3>
+            <div class="form-section">
+              <label class="form-label">Embedding API Key</label>
+              <div class="key-row">
+                <input type="password" class="form-input" id="set_embedding_api_key" placeholder="留空保持原值" />
+                <span id="set_embedding_api_key_badge" class="key-badge" style="display:none">已配置</span>
+              </div>
+            </div>
+            <div class="form-section">
+              <label class="form-label">Embedding Base URL</label>
+              <input type="text" class="form-input" id="set_embedding_base_url" placeholder="http://127.0.0.1:8000/v1" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">Embedding 模型名</label>
+              <input type="text" class="form-input" id="set_embedding_model_name" placeholder="bge-base-zh-v1.5" />
+            </div>
+            <h3>RAG 详细参数</h3>
+            <div class="form-section">
+              <label class="form-label">滑动窗口大小 (Sliding Window)</label>
+              <input type="number" class="form-input" id="set_rag_sliding_window_size" placeholder="15" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">RAG 触发阈值</label>
+              <input type="number" class="form-input" id="set_rag_trigger_threshold" placeholder="10" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">RAG 检索条数</label>
+              <input type="number" class="form-input" id="set_rag_retrieval_count" placeholder="10" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">RAG 最终条数</label>
+              <input type="number" class="form-input" id="set_rag_final_count" placeholder="5" />
+            </div>
+            <div class="form-section" style="padding-top:12px">
+              <button class="btn pri" onclick="saveSettingsConfig()">💾 保存记忆 / 知识库 / RAG / Embedding 设置</button>
+            </div>
+          </div>
+        </div>
+        <!-- Crew + 技能 -->
+        <div id="set-crewskill" class="set-panel">
+          <div class="card">
+            <h3>子代理团队（Crew）</h3>
+            <p class="form-hint" style="font-size:12px;color:var(--bt-text-2);margin:4px 0 10px">每个成员自带工具；可按部门组织。对话中经理自动分派。</p>
+
+            <!-- 部门管理 -->
+            <details class="crew-form-wrap">
+              <summary class="crew-add-btn">＋ 新建部门</summary>
+              <div class="crew-form">
+                <input class="form-input" id="deptName" placeholder="标识 (小写字母数字_-，如 dev)" />
+                <input class="form-input" id="deptTitle" placeholder="部门名称 (如 研发部)" />
+                <input class="form-input" id="deptDesc" placeholder="职责说明（可选）" />
+                <button class="btn pri" onclick="saveDept()">保存部门</button>
+              </div>
+            </details>
+            <div id="deptList" class="crew-list" style="margin-top:10px"></div>
+
+            <!-- 成员管理 -->
+            <div id="crewList" class="crew-list"></div>
+
+            <!-- 新建成员 -->
+            <details class="crew-form-wrap">
+              <summary class="crew-add-btn">＋ 新建成员代理</summary>
+              <div class="crew-form">
+                <input class="form-input" id="crewName" placeholder="名称 (小写字母数字_-, 如 data-analyst)" />
+                <input class="form-input" id="crewDept" placeholder="所属部门标识 (可选, 如 research)" list="dept-datalist" />
+                <datalist id="dept-datalist"></datalist>
+                <input class="form-input" id="crewDesc" placeholder="职责描述 (Goal)" />
+                <textarea class="form-textarea" id="crewBackstory" rows="3" placeholder="系统提示词 (Backstory)"></textarea>
+                <select class="form-input" id="crewModel"><option value="">模型：继承父会话</option></select>
+                <div class="form-label" style="font-size:12px;color:var(--bt-text-2);margin-top:2px">工具（至少勾选 1 个）</div>
+                <div class="crew-tools" id="crewTools"></div>
+                <button class="btn pri" onclick="saveCrewAgent()">保存成员</button>
+              </div>
+            </details>
+          </div>
+          <div class="card">
+            <h3>技能（Skill）</h3>
+            <div id="skillList" class="skill-list"></div>
+            <div class="form-section">
+              <input class="form-input" id="skillUrlInput" placeholder="https://... .zip 或 GitHub 仓库地址" />
+              <button class="btn pri" onclick="installFromUrl()">URL 安装</button>
+            </div>
+          </div>
+        </div>
+        <!-- 卡密 -->
+        <div id="set-card" class="set-panel">
+          <div class="card">
+            <h3>🔑 卡密管理</h3>
+            <div class="form-section">
+              <label class="form-label">有效期(天, 0=长期)</label>
+              <input type="number" class="form-input" id="cardDays" value="30" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">持有人</label>
+              <input type="text" class="form-input" id="cardOwner" placeholder="用户名/备注" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">数量</label>
+              <input type="number" class="form-input" id="cardCount" value="10" />
+            </div>
+            <button class="btn pri" onclick="createCards()">＋ 生成卡密</button>
+            <div id="cardList" class="card-list" style="margin-top:12px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+<script src="/static/js/panel-auth.js"></script>
+
+<script>
+(function () {
+  'use strict'
+  var API = '/api/v2'
+  var AF = (window.PanelAuth && window.PanelAuth.authFetch) ? window.PanelAuth.authFetch : window.fetch
+  var AOPTS = (window.PanelAuth && window.PanelAuth.authOpts) ? window.PanelAuth.authOpts : function (o) { return o || {} }
+
+  function toast(msg, type) {
+    var t = document.getElementById('toast')
+    t.textContent = msg
+    t.className = 'toast show ' + (type === 'err' ? 'err' : '')
+    clearTimeout(t._tm)
+    t._tm = setTimeout(function () { t.className = 'toast' }, 2600)
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] })
+  }
+  function $(id) { return document.getElementById(id) }
+  async function api(path, opts) {
+    var r = await AF(API + path, AOPTS(opts || {}))
+    return r.json()
+  }
+
+  // ── Tab 切换 ─────────────────────────────
+  window.switchTab = function (name) {
+    document.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t.dataset.tab === name) })
+    document.querySelectorAll('.panel').forEach(function (p) { p.classList.toggle('active', p.id === 'tab-' + name) })
+  }
+
+  // ── Gateway 多实例管理 ─────────────────────
+  var gwInstances = []
+  var gwEditing = null          // 编辑中的实例对象
+  var gwMeta = {}               // kind -> 平台元数据（含 config_fields / supported_qr）
+  var gwDraftInstanceId = null  // 添加页扫码时先创建的实例 id
+  var gwQrTimer = null           // 表单页扫码轮询定时器
+  var gwListQrTimer = null       // 列表页扫码轮询定时器
+  var gwQrSession = null         // {kind, instance_id, token}
+
+  async function loadGateway() {
+    var el = $('gwListView')
+    if (!el) return
+    try {
+      var [instRes, metaRes] = await Promise.all([
+        api('/gateway/instances'),
+        api('/gateway/channels')
+      ])
+      if (!instRes.status) throw new Error(instRes.msg || '加载实例失败')
+      if (!metaRes.status) throw new Error(metaRes.msg || '加载平台失败')
+      gwInstances = instRes.data.instances || []
+      gwMeta = {}
+      ;(metaRes.data.channels || []).forEach(function (c) { gwMeta[c.kind] = c })
+      renderGateway()
+    } catch (e) {
+      el.innerHTML = '<div class="card"><div class="empty">⚠️ ' + esc(e.message) + '</div></div>'
+    }
+  }
+
+  function groupByKind(instances) {
+    var groups = {}
+    instances.forEach(function (i) {
+      var k = i.kind || 'other'
+      if (!groups[k]) groups[k] = []
+      groups[k].push(i)
+    })
+    return groups
+  }
+
+  function renderGateway() {
+    var el = $('gwListView')
+    if (!el) return
+    var topBtn = '<div class="row" style="margin-bottom:14px"><button class="btn pri" onclick="gwAddInstance()">+ 添加实例</button></div>'
+    if (!gwInstances.length) {
+      el.innerHTML = topBtn + '<div class="card"><div class="empty">暂无实例</div>' +
+        '<div style="text-align:center;padding-top:8px"><button class="btn pri" onclick="gwAddInstance()">+ 添加实例</button></div></div>'
+      return
+    }
+    var groups = groupByKind(gwInstances)
+    var html = topBtn
+    Object.keys(groups).sort().forEach(function (kind) {
+      var meta = gwMeta[kind] || {}
+      var items = groups[kind]
+      html += '<div class="card"><h3>' + esc(meta.label || kind) + ' <span class="badge ok">' + items.length + ' 个实例</span></h3>' +
+        '<div class="grid">' + items.map(function (i) {
+          var cfgBadge = i.configured ? '<span class="badge ok">已配置</span>' : '<span class="badge no">未配置</span>'
+          var runBadge = i.running ? '<span class="badge run">运行中</span>' : '<span class="badge stop">已停止</span>'
+          var sdkBadge = i.sdk_installed ? '<span class="badge ok">SDK✓</span>' : '<span class="badge no">SDK 未装</span>'
+          var qrBtn = i.supported_qr ? '<button class="btn" onclick="gwQrBindFromList(\'' + esc(i.kind) + '\',\'' + esc(i.instance_id) + '\')">📱 扫码绑定</button>' : ''
+          return '<div class="ch-card" data-instance="' + esc(i.instance_id) + '">' +
+            '<div class="hd"><div class="nm">' + esc(i.name || i.label || i.instance_id) + '</div><div class="spacer"></div>' +
+            cfgBadge + ' ' + sdkBadge + ' ' + runBadge + '</div>' +
+            '<div class="note">' + esc(i.note || '') + '</div>' +
+            '<div class="row">' +
+              '<button class="btn pri" onclick="gwStartInstance(\'' + esc(i.instance_id) + '\')"' + (i.running ? ' disabled' : '') + '>启动</button>' +
+              '<button class="btn" onclick="gwStopInstance(\'' + esc(i.instance_id) + '\')"' + (!i.running ? ' disabled' : '') + '>停止</button>' +
+              '<button class="btn" onclick="gwEditInstance(\'' + esc(i.instance_id) + '\')">编辑</button>' +
+              '<button class="btn danger" onclick="gwDeleteInstance(\'' + esc(i.instance_id) + '\')">删除</button>' +
+              qrBtn +
+            '</div>' +
+          '</div>'
+        }).join('') + '</div></div>'
+    })
+    el.innerHTML = html
+    loadTemplatesIfNeeded()
+  }
+
+  // 拉取可用提示词模板（只拉一次，用于实例编辑表单的模板下拉）
+  var __tplLoaded = false
+  function loadTemplatesIfNeeded() {
+    if (__tplLoaded) return
+    __tplLoaded = true
+    api('/gateway/templates').then(function (res) {
+      if (res && res.status) {
+        window.__gwTemplates = (res.data && res.data.templates) || []
+        var sels = document.querySelectorAll('select[id^="gwf-template"]')
+        sels.forEach(function (sel) {
+          if (window.__gwTemplates.length && sel.options.length <= 1) {
+            var cur = sel.value
+            var opts = ['<option value=""' + (!cur ? ' selected' : '') + '>（默认模板）</option>']
+            window.__gwTemplates.forEach(function (t) {
+              opts.push('<option value="' + esc(t) + '"' + (cur === t ? ' selected' : '') + '>' + esc(t) + '</option>')
+            })
+            sel.innerHTML = opts.join('')
+            if (cur) sel.value = cur
+          }
+        })
+      }
+    }).catch(function () { /* 拉取失败静默 */ })
+  }
+
+  function kindOptions(selected) {
+    return Object.keys(gwMeta).sort().map(function (k) {
+      var m = gwMeta[k]
+      return '<option value="' + esc(k) + '"' + (k === selected ? ' selected' : '') + '>' + esc(m.label || k) + '</option>'
+    }).join('')
+  }
+
+  function gwMetaFor(kind) { return gwMeta[kind] || {} }
+
+  function renderInstanceForm(i) {
+    var kind = i.kind
+    var meta = gwMetaFor(kind)
+    var fields = (i.config_fields && i.config_fields.length) ? i.config_fields : (meta.config_fields || [])
+    var html = '<div><label>实例名称 *</label><input id="gwInstName" value="' + esc(i.name || '') + '" placeholder="实例名称"></div>'
+    html += '<div><label>平台类型</label><select id="gwInstKind" onchange="gwInstKindChanged()">' + kindOptions(kind) + '</select></div>'
+    html += '<div><label>启用</label><select id="gwInstEnabled">' +
+      '<option value="true"' + (i.enabled !== false ? ' selected' : '') + '>启用</option>' +
+      '<option value="false"' + (i.enabled === false ? ' selected' : '') + '>停用</option>' +
+      '</select></div>'
+    fields.forEach(function (f) {
+      var name = f.name
+      var val = f.saved_value || ''
+      var saved = !!f.saved
+      var id = 'gwf-' + name
+      if (name === 'template') {
+        var opts = ['<option value=""' + (!val ? ' selected' : '') + '>（默认模板）</option>']
+        ;(window.__gwTemplates || []).forEach(function (t) {
+          opts.push('<option value="' + esc(t) + '"' + (val === t ? ' selected' : '') + '>' + esc(t) + '</option>')
+        })
+        html += '<div><label>提示词模板</label><select id="' + id + '">' + opts.join('') + '</select></div>'
+        return
+      }
+      if (f.type === 'select') {
+        var sopts = (f.options || []).map(function (o) {
+          return '<option value="' + esc(o.value || '') + '"' + (String(val) === String(o.value) ? ' selected' : '') + '>' + esc(o.label || o.value) + '</option>'
+        })
+        html += '<div><label>' + esc(f.name) + '</label><select id="' + id + '">' + sopts.join('') + '</select></div>'
+        return
+      }
+      var isPwd = f.type === 'password'
+      var ph = saved && isPwd ? '（已设置）' : (f.placeholder || f.name)
+      var inputVal = saved && isPwd ? '' : val
+      html += '<div><label>' + esc(f.name) + (f.required ? ' *' : '') +
+        (saved && isPwd ? ' <span class="badge ok">已设置</span>' : '') + '</label>' +
+        '<input id="' + id + '" type="' + (isPwd ? 'password' : 'text') + '" value="' + esc(inputVal) + '" placeholder="' + esc(ph) + '"></div>'
+    })
+    html += '<input type="hidden" id="gwInstId" value="' + esc(i.instance_id || '') + '">'
+    return html
+  }
+
+  function renderQrSection(i) {
+    var box = $('gwQrSection')
+    if (!box) return
+    var kind = i.kind
+    var meta = gwMetaFor(kind)
+    if (!meta.supported_qr) {
+      box.innerHTML = ''
+      return
+    }
+    var configured = i.configured ? '<span class="badge ok">已绑定凭据</span>' : '<span class="badge no">未绑定凭据</span>'
+    box.innerHTML = '<div class="gw-qr-inline">' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<strong>📱 扫码绑定</strong>' + configured +
+        '<span style="flex:1"></span>' +
+        '<button class="btn pri" id="gwQrStartBtn" onclick="gwStartQrBind()">扫码 / 授权</button>' +
+      '</div>' +
+      '<div id="gwQrBody" style="margin-top:10px"></div>' +
+      '<div id="gwQrStatus" class="gw-qr-status"></div>' +
+    '</div>'
+  }
+
+  function showGatewayList() {
+    $('gwListView').classList.add('active')
+    $('gwFormView').classList.remove('active')
+    try { sessionStorage.setItem('gwView', 'list') } catch (e) {}
+    loadGateway()
+  }
+  function showGatewayForm() {
+    $('gwListView').classList.remove('active')
+    $('gwFormView').classList.add('active')
+    try { sessionStorage.setItem('gwView', 'form') } catch (e) {}
+  }
+
+  function gwResetDraft() {
+    gwDraftInstanceId = null
+    if (gwQrTimer) { clearInterval(gwQrTimer); gwQrTimer = null }
+    gwQrSession = null
+  }
+
+  window.gwInstKindChanged = function () {
+    var kind = $('gwInstKind').value
+    var meta = gwMetaFor(kind)
+    // 新增/编辑共用：编辑模式 gwEditing 有 instance_id，会用它自己的 config_fields；
+    // 新增模式 gwEditing=null，用所选 kind 的 config_fields（空字段，不回填旧数据）
+    var isEdit = !!gwEditing
+    var fake = {
+      kind: kind,
+      name: isEdit && gwEditing ? gwEditing.name : ($('gwInstName').value || ''),
+      instance_id: isEdit && gwEditing ? gwEditing.instance_id : null,
+      config_fields: isEdit && gwEditing ? (gwEditing.config_fields || []) : (meta.config_fields || []),
+      enabled: isEdit && gwEditing ? gwEditing.enabled : true,
+      configured: isEdit && gwEditing ? gwEditing.configured : false
+    }
+    var box = $('gwInstFields')
+    if (box) box.innerHTML = renderInstanceForm(fake)
+    renderQrSection(fake)
+    if (gwQrTimer) { clearInterval(gwQrTimer); gwQrTimer = null }
+    gwQrSession = null
+  }
+
+  window.gwAddInstance = function () {
+    gwEditing = null
+    gwResetDraft()
+    // 新增实例：清空所有字段，显示"新增实例"标识
+    $('gwFormTitle').textContent = '+ 新增实例（instance_id 系统自动生成）'
+    var firstKind = Object.keys(gwMeta).sort()[0] || ''
+    var meta = gwMeta[firstKind] || {}
+    // 关键：用空字段集（不是现有实例的 config_fields），避免回填旧数据
+    var fake = {
+      kind: firstKind,
+      name: '',
+      instance_id: null,  // 新增时无实例ID
+      config_fields: [],  // 空字段集，由 gwInstKindChanged 根据选择的 kind 重新渲染
+      enabled: true,
+      configured: false,
+      supported_qr: false  // 初始为 false，切换 kind 时会更新
+    }
+    $('gwInstFields').innerHTML = renderInstanceForm(fake)
+    renderQrSection(fake)
+    try { sessionStorage.removeItem('gwEditingId') } catch (e) {}
+    showGatewayForm()
+  }
+
+  window.gwEditInstance = function (instance_id) {
+    var i = gwInstances.find(function (x) { return x.instance_id === instance_id })
+    if (!i) return
+    gwEditing = i
+    gwResetDraft()
+    $('gwFormTitle').textContent = '编辑实例'
+    $('gwInstFields').innerHTML = renderInstanceForm(i)
+    renderQrSection(i)
+    try { sessionStorage.setItem('gwEditingId', instance_id) } catch (e) {}
+    showGatewayForm()
+  }
+
+  window.gwCloseInstanceForm = function () {
+    gwEditing = null
+    gwResetDraft()
+    try { sessionStorage.removeItem('gwEditingId') } catch (e) {}
+    showGatewayList()
+  }
+
+  function gwCollectBody() {
+    var kind = $('gwInstKind').value
+    var name = $('gwInstName').value.trim()
+    var meta = gwMetaFor(kind)
+    var body = { kind: kind, name: name, enabled: $('gwInstEnabled').value === 'true' }
+    var isEdit = !!gwEditing
+    var fields = isEdit && gwEditing.config_fields && gwEditing.config_fields.length
+      ? gwEditing.config_fields
+      : (meta.config_fields || [])
+    fields.forEach(function (f) {
+      var v = $('gwf-' + f.name)
+      if (!v) return
+      var val = v.value.trim()
+      if (f.type === 'password' && !val) return // 留空表示不修改
+      body[f.name] = val
+    })
+    return body
+  }
+
+  window.gwSaveInstance = async function () {
+    var isEdit = !!gwEditing
+    var body = gwCollectBody()
+    if (!body.name) { toast('请填写实例名称', 'err'); return }
+    var targetId = isEdit ? gwEditing.instance_id : gwDraftInstanceId
+    var path = targetId ? '/gateway/instances/' + encodeURIComponent(targetId) : '/gateway/instances'
+    var method = targetId ? 'PATCH' : 'POST'
+    try {
+      var res = await api(path, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+      if (!res.status) throw new Error(res.msg || '保存失败')
+      toast('实例已保存')
+      gwEditing = null
+      gwResetDraft()
+      try { sessionStorage.removeItem('gwEditingId') } catch (e) {}
+      showGatewayList()
+    } catch (e) { toast(e.message, 'err') }
+  }
+
+  window.gwStartInstance = async function (instance_id) {
+    try {
+      var res = await api('/gateway/instances/' + encodeURIComponent(instance_id) + '/start', { method: 'POST' })
+      if (!res.status) throw new Error(res.msg || '启动失败')
+      toast('实例已启动')
+      loadGateway()
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.gwStopInstance = async function (instance_id) {
+    try {
+      var res = await api('/gateway/instances/' + encodeURIComponent(instance_id) + '/stop', { method: 'POST' })
+      if (!res.status) throw new Error(res.msg || '停止失败')
+      toast('实例已停止')
+      loadGateway()
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.gwDeleteInstance = async function (instance_id) {
+    if (!window.confirm('确定删除该实例？运行中会先停止。')) return
+    try {
+      var res = await api('/gateway/instances/' + encodeURIComponent(instance_id), { method: 'DELETE' })
+      if (!res.status) throw new Error(res.msg || '删除失败')
+      toast('实例已删除')
+      loadGateway()
+    } catch (e) { toast(e.message, 'err') }
+  }
+
+  // ── 扫码绑定（表单页：添加/编辑实例内嵌）────────────────
+  function qrContentHtml(d) {
+    // 优先用后端生成的二维码 PNG（data URI），保证 <img> 能直接显示
+    if (d.qrcode_image && d.qrcode_image.indexOf('data:image/') === 0) {
+      var qrLink = d.qrcode_url || '#'
+      var clickHint = /^https?:\/\//.test(qrLink)
+        ? '<div style="text-align:center;margin-top:6px"><a href="' + esc(qrLink) + '" target="_blank" class="link">打不开二维码？点击链接授权</a></div>'
+        : ''
+      return '<div style="text-align:center;padding:8px"><img src="' + esc(d.qrcode_image) + '" class="qr-img"></div>' +
+        '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">请用手机扫码绑定</div>' + clickHint
+    }
+    if (d.qrcode_url && (d.qrcode_url.indexOf('data:') === 0 || /^https?:\/\//.test(d.qrcode_url))) {
+      return '<div style="text-align:center;padding:8px"><img src="' + esc(d.qrcode_url) + '" class="qr-img"></div>' +
+        '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">请用手机扫码绑定</div>'
+    }
+    if (d.auth_url) {
+      return '<div style="text-align:center;padding:8px"><a href="' + esc(d.auth_url) + '" target="_blank" class="link">点击打开授权页面扫码</a></div>' +
+        '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">在浏览器打开后扫码，或复制链接到手机</div>'
+    }
+    if (d.verification_uri_complete) {
+      var html = '<div style="text-align:center;padding:8px"><a href="' + esc(d.verification_uri_complete) + '" target="_blank" class="link">打开授权页面</a></div>'
+      if (d.user_code) html += '<div style="text-align:center;font-size:26px;font-weight:700;letter-spacing:4px;margin:10px 0">' + esc(d.user_code) + '</div>'
+      html += '<div style="text-align:center;color:var(--bt-text-2);font-size:12px">输入上方用户码完成授权</div>'
+      return html
+    }
+    return '<div class="empty">二维码数据异常</div>'
+  }
+
+  window.gwStartQrBind = async function () {
+    var kind = $('gwInstKind').value
+    var name = $('gwInstName').value.trim()
+    if (!name) { toast('请先填写实例名称', 'err'); return }
+    var instance_id = gwEditing ? gwEditing.instance_id : gwDraftInstanceId
+    if (!instance_id) {
+      // 添加页：先创建「待配置」实例，拿到 instance_id 后再扫码绑定
+      try {
+        var createRes = await api('/gateway/instances', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: kind, name: name, enabled: false })
+        })
+        if (!createRes.status) throw new Error(createRes.msg || '创建实例失败')
+        instance_id = createRes.data.instance.instance_id
+        gwDraftInstanceId = instance_id
+      } catch (e) { toast(e.message, 'err'); return }
+    }
+    var body = $('gwQrBody')
+    var status = $('gwQrStatus')
+    body.innerHTML = '<div class="empty">正在生成二维码...</div>'
+    status.textContent = ''
+    try {
+      var res = await api('/gateway/channels/' + kind + '/qrcode/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: 'form', instance_id: instance_id })
+      })
+      if (!res.status) throw new Error(res.msg || '生成失败')
+      var d = res.data
+      var token = d.qrcode_token || d.scode || d.device_code || ''
+      gwQrSession = { kind: kind, instance_id: instance_id, token: token }
+      body.innerHTML = qrContentHtml(d)
+      if (gwQrTimer) clearInterval(gwQrTimer)
+      gwQrTimer = setInterval(function () { gwQrPollOnce() }, 3000)
+    } catch (e) {
+      body.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>'
+    }
+  }
+
+  window.gwQrPollOnce = async function () {
+    if (!gwQrSession || gwQrSession.done) return
+    var s = gwQrSession
+    var status = $('gwQrStatus')
+    try {
+      var res = await api('/gateway/channels/' + s.kind + '/qrcode/poll', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: s.token, session_id: 'form', instance_id: s.instance_id })
+      })
+      if (!res.status) throw new Error(res.msg || '轮询失败')
+      var d = res.data
+      if (d.status === 'success') {
+        s.done = true
+        if (gwQrTimer) { clearInterval(gwQrTimer); gwQrTimer = null }
+        status.innerHTML = '<span class="badge ok">✓ 绑定成功，凭据已写入实例 ' + esc(s.instance_id) + '</span>'
+        // 重新拉取实例数据，回显已绑定凭据
+        try {
+          var instRes = await api('/gateway/instances')
+          if (instRes.status) {
+            var updated = (instRes.data.instances || []).find(function (x) { return x.instance_id === s.instance_id })
+            if (updated) {
+              if (gwEditing && gwEditing.instance_id === s.instance_id) {
+                gwEditing = updated
+                $('gwInstFields').innerHTML = renderInstanceForm(updated)
+                renderQrSection(updated)
+              } else {
+                // 添加流程：把草稿实例回填到表单
+                gwDraftInstanceId = updated.instance_id
+                gwEditing = updated
+                $('gwFormTitle').textContent = '编辑实例（扫码已绑定）'
+                $('gwInstFields').innerHTML = renderInstanceForm(updated)
+                renderQrSection(updated)
+              }
+            }
+          }
+        } catch (e) { /* 刷新失败不影响绑定成功提示 */ }
+      } else if (d.status === 'error' || d.status === 'expired') {
+        s.done = true
+        if (gwQrTimer) { clearInterval(gwQrTimer); gwQrTimer = null }
+        status.innerHTML = '<span class="badge no">✗ ' + esc(d.message || '绑定失败') + '</span>'
+      } else {
+        status.textContent = '等待扫码...'
+      }
+    } catch (e) {
+      status.textContent = '轮询出错: ' + e.message
+    }
+  }
+
+  // ── 扫码绑定（列表页：为具体实例补绑定/重绑）────────────────
+  window.gwQrBindFromList = async function (kind, instance_id) {
+    var m = $('qrModal')
+    m.classList.add('show')
+    $('qrModalTitle').textContent = kind + ' 扫码绑定 ' + instance_id
+    $('qrBody').innerHTML = '<div class="empty">正在生成二维码...</div>'
+    $('qrStatus').textContent = ''
+    try {
+      var res = await api('/gateway/channels/' + kind + '/qrcode/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: 'list-' + instance_id, instance_id: instance_id })
+      })
+      if (!res.status) throw new Error(res.msg || '生成失败')
+      var d = res.data
+      var token = d.qrcode_token || d.scode || d.device_code || ''
+      window.__listQr = { kind: kind, instance_id: instance_id, token: token, done: false }
+      $('qrBody').innerHTML = qrContentHtml(d)
+      if (gwListQrTimer) clearInterval(gwListQrTimer)
+      gwListQrTimer = setInterval(function () { gwListQrPollOnce() }, 3000)
+    } catch (e) {
+      $('qrBody').innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>'
+    }
+  }
+
+  window.gwListQrPollOnce = async function () {
+    var s = window.__listQr
+    if (!s || s.done) return
+    try {
+      var res = await api('/gateway/channels/' + s.kind + '/qrcode/poll', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: s.token, session_id: 'list-' + s.instance_id, instance_id: s.instance_id })
+      })
+      if (!res.status) throw new Error(res.msg || '轮询失败')
+      var d = res.data
+      if (d.status === 'success') {
+        s.done = true
+        if (gwListQrTimer) { clearInterval(gwListQrTimer); gwListQrTimer = null }
+        $('qrStatus').innerHTML = '<span class="badge ok">✓ 绑定成功，凭据已写入实例 ' + esc(s.instance_id) + '</span>'
+        setTimeout(function () { $('qrModal').classList.remove('show'); loadGateway() }, 1200)
+      } else if (d.status === 'error' || d.status === 'expired') {
+        s.done = true
+        if (gwListQrTimer) { clearInterval(gwListQrTimer); gwListQrTimer = null }
+        $('qrStatus').innerHTML = '<span class="badge no">✗ ' + esc(d.message || '绑定失败') + '</span>'
+      } else {
+        $('qrStatus').textContent = '等待扫码...'
+      }
+    } catch (e) {
+      $('qrStatus').textContent = '轮询出错: ' + e.message
+    }
+  }
+  window.gwQrClose = function () {
+    if (gwListQrTimer) { clearInterval(gwListQrTimer); gwListQrTimer = null }
+    window.__listQr = null
+    $('qrModal').classList.remove('show')
+  }
+
+  // ── Memory 记忆 ─────────────────────────
+  var memData = { nodes: [], topics: {} }
+  async function loadMemory() {
+    var el = $('tab-memory')
+    try {
+      // status 只含统计（total_nodes/topics），列表需另调 /memory/list
+      var [st, ls] = await Promise.all([
+        api('/memory/status'),
+        api('/memory/list?limit=100')
+      ])
+      if (!st.status) throw new Error(st.msg || '加载失败')
+      if (!ls.status) throw new Error(ls.msg || '列表加载失败')
+      memData = Object.assign({}, st.data, { nodes: ls.data.nodes || [] })
+      el.innerHTML =
+        '<div class="card">' +
+          '<h3>📝 新增记忆</h3>' +
+          '<label>内容</label><textarea id="memContent" placeholder="要记住的内容..."></textarea>' +
+          '<div class="row"><label style="flex:1">主题 <input id="memTopic" placeholder="如 project / address / user"></label>' +
+          '<button class="btn pri" onclick="memStore()">存储</button></div>' +
+        '</div>' +
+        '<div class="card"><h3>🔍 召回记忆</h3>' +
+          '<div class="row"><input id="memQuery" placeholder="输入关键词召回" style="flex:1">' +
+          '<button class="btn" onclick="memRecall()">召回</button></div>' +
+          '<div id="memRecallResult" class="empty">输入关键词查询</div>' +
+        '</div>' +
+        '<div class="card"><h3>🗂 记忆库（' + (memData.total_nodes || 0) + ' 条）</h3>' +
+          '<div class="row"><button class="btn" onclick="memExport()">导出</button>' +
+          '<button class="btn" onclick="memImport()">导入</button>' +
+          '<input type="file" id="memImportFile" style="display:none" accept=".json" onchange="memDoImport(event)"></div>' +
+          '<div id="memList" class="empty">加载中...</div>' +
+        '</div>'
+      renderMemList()
+    } catch (e) {
+      el.innerHTML = '<div class="card"><div class="empty">⚠️ ' + esc(e.message) + '</div></div>'
+    }
+  }
+  function renderMemList() {
+    var box = $('memList')
+    if (!box) return
+    if (!memData.nodes || !memData.nodes.length) { box.innerHTML = '<div class="empty">暂无记忆</div>'; return }
+    box.innerHTML = '<table><tr><th>内容</th><th>主题</th><th>操作</th></tr>' + memData.nodes.slice(0, 50).map(function (n) {
+      return '<tr><td>' + esc(n.content) + '</td><td>' + esc(n.topic || '-') + '</td>' +
+        '<td><button class="btn danger" onclick="memDelete(\'' + esc(n.id) + '\')">删</button></td></tr>'
+    }).join('') + '</table>'
+  }
+  window.memStore = async function () {
+    var content = $('memContent').value.trim()
+    var topic = $('memTopic').value.trim()
+    if (!content) { toast('请输入内容', 'err'); return }
+    try {
+      var res = await api('/memory/store', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: content, topic: topic || undefined }) })
+      if (!res.status) throw new Error(res.msg || '存储失败')
+      toast('已存储')
+      loadMemory()
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.memRecall = async function () {
+    var q = $('memQuery').value.trim()
+    var box = $('memRecallResult')
+    if (!q) { box.className = 'empty'; box.textContent = '输入关键词查询'; return }
+    try {
+      var res = await api('/memory/recall?query=' + encodeURIComponent(q) + '&limit=5')
+      if (!res.status) throw new Error(res.msg || '召回失败')
+      var nodes = res.data.nodes || []
+      box.className = ''
+      box.innerHTML = nodes.length
+        ? '<table><tr><th>内容</th><th>主题</th></tr>' + nodes.map(function (n) {
+            return '<tr><td>' + esc(n.content) + '</td><td>' + esc(n.topic || '-') + '</td></tr>'
+          }).join('') + '</table>'
+        : '<div class="empty">无结果</div>'
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.memDelete = async function (id) {
+    try {
+      var res = await api('/memory/delete/' + encodeURIComponent(id), { method: 'DELETE' })
+      if (!res.status) throw new Error(res.msg || '删除失败')
+      toast('已删除')
+      loadMemory()
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.memExport = async function () {
+    try {
+      var res = await api('/memory/export')
+      if (!res.status) throw new Error(res.msg || '导出失败')
+      var blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+      var a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'memory-export.json'
+      a.click()
+      URL.revokeObjectURL(a.href)
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.memImport = function () { $('memImportFile').click() }
+  window.memDoImport = async function (ev) {
+    var f = ev.target.files && ev.target.files[0]
+    if (!f) return
+    try {
+      var data = JSON.parse(await f.text())
+      var nodes = data.nodes || data
+      if (!Array.isArray(nodes)) throw new Error('格式错误')
+      var res = await api('/memory/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodes: nodes }) })
+      if (!res.status) throw new Error(res.msg || '导入失败')
+      toast('导入 ' + (res.data.imported || 0) + ' 条')
+      ev.target.value = ''
+      loadMemory()
+    } catch (e) { toast(e.message, 'err') }
+  }
+
+  // ── Usage 用量 ─────────────────────────
+  var usageWin = 'last_7d'
+  async function loadUsage() {
+    var el = $('tab-usage')
+    try {
+      var res = await api('/usage/summary?window=' + usageWin + '&granularity=by_day')
+      if (!res.status) throw new Error(res.msg || '加载失败')
+      var d = res.data
+      var s = d.summary || {}
+      var days = d.by_day || {}
+      el.innerHTML =
+        '<div class="card"><div class="row" style="align-items:center">' +
+          '<h3 style="flex:1">📊 用量统计</h3>' +
+          '<select id="usageWin" style="width:auto" onchange="usageWin=this.value;loadUsage()">' +
+            '<option value="today"' + (usageWin==='today'?' selected':'') + '>今天</option>' +
+            '<option value="last_7d"' + (usageWin==='last_7d'?' selected':'') + '>近7天</option>' +
+            '<option value="last_30d"' + (usageWin==='last_30d'?' selected':'') + '>近30天</option>' +
+            '<option value="all"' + (usageWin==='all'?' selected':'') + '>全部</option>' +
+          '</select></div>' +
+          '<div class="stat">' +
+            '<div class="item"><div class="num">' + (s.calls || 0) + '</div><div class="lbl">调用次数</div></div>' +
+            '<div class="item"><div class="num">' + (s.total_tokens || 0) + '</div><div class="lbl">总 Token</div></div>' +
+            '<div class="item"><div class="num">' + (s.input_tokens || 0) + '</div><div class="lbl">输入</div></div>' +
+            '<div class="item"><div class="num">' + (s.output_tokens || 0) + '</div><div class="lbl">输出</div></div>' +
+            '<div class="item"><div class="num">$' + (s.cost_usd || 0).toFixed(4) + '</div><div class="lbl">成本(USD)</div></div>' +
+          '</div></div>' +
+          '<div class="card"><h3>按天明细</h3><table><tr><th>日期</th><th>次数</th><th>Token</th><th>成本</th></tr>' +
+            Object.keys(days).sort().map(function (k) {
+              var v = days[k]
+              return '<tr><td>' + esc(k) + '</td><td>' + (v.calls || 0) + '</td><td>' + (v.total_tokens || 0) + '</td><td>$' + (v.cost_usd || 0).toFixed(4) + '</td></tr>'
+            }).join('') + '</table></div>'
+    } catch (e) {
+      el.innerHTML = '<div class="card"><div class="empty">⚠️ ' + esc(e.message) + '</div></div>'
+    }
+  }
+
+  // ── 初始化 ─────────────────────────
+  document.addEventListener('DOMContentLoaded', function () {
+    loadGateway()
+    loadMemory()
+    loadUsage()
+    // 刷新后停留当前视图：若之前正在编辑实例，恢复编辑表单
+    try {
+      if (sessionStorage.getItem('gwView') === 'form') {
+        var editingId = sessionStorage.getItem('gwEditingId')
+        if (editingId) {
+          var i = gwInstances.find(function (x) { return x.instance_id === editingId })
+          if (i) { gwEditInstance(editingId); return }
+        }
+        // 无编辑目标则回列表
+        sessionStorage.setItem('gwView', 'list')
+      }
+    } catch (e) {}
+  })
+
+
+  // ── 设置功能 ─────────────────────────
+  window.switchSetTab = function (name) {
+    document.querySelectorAll('.set-tab').forEach(function (t) {
+      t.classList.toggle('active', t.dataset.set === name)
+    })
+    document.querySelectorAll('.set-panel').forEach(function (p) {
+      p.classList.toggle('active', p.id === 'set-' + name)
+    })
+  }
+
+  // 设置功能使用不带 /api/v2 前缀的 API（设置接口在 /api/ 下）
+  async function apiRaw(path, opts) {
+    var r = await AF('/api' + path, AOPTS(opts || {}))
+    return r.json()
+  }
+
+  // 全局配置数据
+  var _cfg = {}
+
+  // 加载配置
+  async function loadSettingsConfig() {
+    try {
+      var res = await apiRaw('/config')
+      if (res.status && res.data) {
+        _cfg = res.data.config || {}
+        // AI 接口
+        $('set_api_base_url').value = _cfg.api_base_url || ''
+        $('set_api_key').value = _cfg.api_key || ''
+        $('set_api_key_badge').style.display = _cfg.api_key_set ? '' : 'none'
+        $('set_system_prompt').value = _cfg.system_prompt || ''
+        var dm = $('set_default_model')
+        var _models = arr2(_cfg.models) || []
+        var _opts = '<option value="">（默认）</option>'
+        _models.forEach(function(m) { _opts += '<option value="' + esc(m) + '">' + esc(m) + '</option>' })
+        dm.innerHTML = _opts
+        dm.value = _cfg.default_model || ''
+        // 工作目录 / 上下文 / Agent / MCP / 记忆
+        $('set_workspace').value = _cfg.workspace || ''
+        $('set_context_window_kb').value = _cfg.context_window_kb || ''
+        $('set_api_protocol').value = _cfg.api_protocol || 'responses'
+        $('set_api_usage_url').value = _cfg.api_usage_url || ''
+        var hd = _cfg.default_headers || {}
+        $('set_header_uid').value = hd.uid || ''
+        $('set_header_access_key').value = hd['access-key'] || ''
+        $('set_header_access_key_badge').style.display = hd['access-key'] ? '' : 'none'
+        $('set_header_appid').value = hd.appid || ''
+        $('set_models_list').value = (arr2(_cfg.models) || []).join('\n')
+        var ag = _cfg.agent || {}
+        $('set_reasoning_effort').value = ag.reasoning_effort || 'low'
+        $('set_temperature').value = ag.temperature || ''
+        $('set_top_p').value = ag.top_p || ''
+        $('set_max_tool_iterations').value = ag.max_tool_iterations || ''
+        $('set_tool_timeout').value = ag.tool_timeout || ''
+        $('set_max_retries').value = ag.max_retries || ''
+        $('set_api_max_retry').value = ag.api_max_retry || ''
+        $('set_api_retry_base_wait').value = ag.api_retry_base_wait || ''
+        $('set_api_retry_max_wait').value = ag.api_retry_max_wait || ''
+        $('set_tool_parallel').checked = !!_cfg.tool_parallel_enabled
+        $('set_tool_parallel_max_workers').value = _cfg.tool_parallel_max_workers || ''
+        $('set_tool_result_archive').checked = !!_cfg.tool_result_archive
+        $('set_tool_result_max_chars').value = _cfg.tool_result_max_chars || ''
+        $('set_enable_mcp').checked = !!_cfg.enable_mcp
+        $('set_mcp_config_path').value = _cfg.mcp_config_path || ''
+        $('set_global_kb_agent_id').value = _cfg.global_kb_agent_id || 'ai-agent'
+        $('set_mem0_api_url').value = _cfg.mem0_api_url || 'http://localhost:8000'
+        $('set_rag_mode').value = _cfg.rag_mode || 'disabled'
+        $('set_use_global_rag').checked = !!_cfg.use_global_rag
+        $('set_use_external_kb').checked = !!_cfg.use_external_kb
+        $('set_use_document_kb').checked = _cfg.use_document_kb !== false
+        $('set_document_kb_top_k').value = _cfg.document_kb_top_k || ''
+        var emb = _cfg.embedding || {}
+        $('set_embedding_api_key').value = emb.embedding_api_key || ''
+        $('set_embedding_api_key_badge').style.display = emb.embedding_api_key_set ? '' : 'none'
+        $('set_embedding_base_url').value = emb.embedding_base_url || ''
+        $('set_embedding_model_name').value = emb.embedding_model_name || ''
+        var rag = _cfg.rag || {}
+        $('set_rag_sliding_window_size').value = rag.sliding_window_size || ''
+        $('set_rag_trigger_threshold').value = rag.rag_trigger_threshold || ''
+        $('set_rag_retrieval_count').value = rag.rag_retrieval_count || ''
+        $('set_rag_final_count').value = rag.rag_final_count || ''
+      }
+    } catch(e) { console.warn('loadConfig', e) }
+  }
+  function arr2(v) { return Array.isArray(v) ? v : [] }
+
+  // 保存 AI 接口等核心配置
+  async function saveSettingsConfig() {
+    var payload = {
+      api_base_url: $('set_api_base_url').value.trim(),
+      api_key: $('set_api_key').value.trim(),
+      system_prompt: $('set_system_prompt').value,
+      default_model: $('set_default_model').value,
+      workspace: $('set_workspace').value.trim(),
+      context_window_kb: parseInt($('set_context_window_kb').value) || 512,
+      api_protocol: $('set_api_protocol').value || 'responses',
+      api_usage_url: $('set_api_usage_url').value.trim(),
+      default_headers: {
+        uid: $('set_header_uid').value.trim(),
+        'access-key': $('set_header_access_key').value.trim(),
+        appid: $('set_header_appid').value.trim() || 'app_001'
+      },
+      models: $('set_models_list').value.split('\n').map(function(s){ return s.trim() }).filter(Boolean),
+      agent: {
+        reasoning_effort: $('set_reasoning_effort').value,
+        temperature: parseFloat($('set_temperature').value) || 1,
+        top_p: parseFloat($('set_top_p').value) || 0.8,
+        max_tool_iterations: parseInt($('set_max_tool_iterations').value) || 999999,
+        tool_timeout: parseInt($('set_tool_timeout').value) || 120,
+        max_retries: parseInt($('set_max_retries').value) || 5,
+        api_max_retry: parseInt($('set_api_max_retry').value) || 3,
+        api_retry_base_wait: parseFloat($('set_api_retry_base_wait').value) || 1,
+        api_retry_max_wait: parseFloat($('set_api_retry_max_wait').value) || 10
+      },
+      tool_parallel_enabled: $('set_tool_parallel').checked,
+      tool_parallel_max_workers: parseInt($('set_tool_parallel_max_workers').value) || 8,
+      tool_result_archive: $('set_tool_result_archive').checked,
+      tool_result_max_chars: parseInt($('set_tool_result_max_chars').value) || 8000,
+      enable_mcp: $('set_enable_mcp').checked,
+      mcp_config_path: $('set_mcp_config_path').value.trim(),
+      global_kb_agent_id: $('set_global_kb_agent_id').value.trim() || 'ai-agent',
+      mem0_api_url: $('set_mem0_api_url').value.trim() || 'http://localhost:8000',
+      rag_mode: $('set_rag_mode').value || 'disabled',
+      use_global_rag: $('set_use_global_rag').checked,
+      use_external_kb: $('set_use_external_kb').checked,
+      use_document_kb: $('set_use_document_kb').checked,
+      document_kb_top_k: parseInt($('set_document_kb_top_k').value) || 5,
+      embedding: {
+        embedding_api_key: $('set_embedding_api_key').value.trim(),
+        embedding_base_url: $('set_embedding_base_url').value.trim(),
+        embedding_model_name: $('set_embedding_model_name').value.trim()
+      },
+      rag: {
+        sliding_window_size: parseInt($('set_rag_sliding_window_size').value) || 15,
+        rag_trigger_threshold: parseInt($('set_rag_trigger_threshold').value) || 10,
+        rag_retrieval_count: parseInt($('set_rag_retrieval_count').value) || 10,
+        rag_final_count: parseInt($('set_rag_final_count').value) || 5
+      }
+    }
+    try {
+      var res = await apiRaw('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: JSON.stringify(payload) }) })
+      if (res.status) {
+        toast('设置已保存')
+        _cfg = payload
+      } else {
+        toast(res.msg || '保存失败', 'err')
+      }
+    } catch (e) {
+      console.error('[saveSettingsConfig] 异常:', e)
+      toast('保存出错: ' + (e.message || String(e)), 'err')
+    }
+  }
+
+  // 初始化加载配置
+  loadSettingsConfig()
+
+  // ── MCP ──────────────────────────────
+  var _mcpServers = []
+  var _mcpMarket = null
+
+  async function fetchMcpServers() {
+    var el = $('mcpList')
+    el.innerHTML = '<div class="loading">加载中...</div>'
+    try {
+      var res = await apiRaw('/mcp/servers')
+      if (res.status) {
+        _mcpServers = res.items || res.data?.items || []
+        el.innerHTML = _mcpServers.length ? _mcpServers.map(function(s) {
+          return '<div class="tool-item"><span class="tool-item-name">' + esc(s.name) + '</span><span class="tool-item-desc">' + esc(s.type) + (s.command ? ' · ' + esc(s.command) : '') + '</span><button class="crew-del" onclick="removeMcpServer(\'' + esc(s.name) + '\')">移除</button></div>'
+        }).join('') : '<div class="empty">暂无 MCP server</div>'
+      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
+    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+  async function removeMcpServer(name) {
+    var res = await apiRaw('/mcp/servers/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+    if (res.status) { fetchMcpServers(); toast('已移除 ' + name) }
+    else toast(res.msg || '移除失败', 'err')
+  }
+  async function addMcpServer() {
+    var name = $('mcpNameInput').value.trim()
+    var config = $('mcpConfigInput').value.trim()
+    var overwrite = $('mcpOverwrite').checked
+    if (!name || !config) { toast('请填写名称和配置', 'err'); return }
+    var res = await apiRaw('/mcp/servers/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, config: config, overwrite: overwrite }) })
+    if (res.status) { fetchMcpServers(); toast('已添加 ' + name); $('mcpNameInput').value = ''; $('mcpConfigInput').value = '' }
+    else toast(res.msg || '添加失败', 'err')
+  }
+  async function fetchMcpMarket() {
+    var el = $('mcpMarketBox')
+    el.innerHTML = '<div class="loading">拉取中...</div>'
+    try {
+      var res = await apiRaw('/mcp/market')
+      if (res.status && res.data) {
+        _mcpMarket = res.data
+        el.innerHTML = res.data.msg ? '<div class="mcp-market-head">' + esc(res.data.msg) + '</div>' : ''
+        el.innerHTML += (res.data.items || []).map(function(m) {
+          var tags = (arr2(m.env_vars) || []).map(function(v) { return '<span class="mcp-tag">' + esc(v) + '</span>' }).join('')
+          return '<div class="mcp-market-item"><div><strong>' + esc(m.name) + '</strong><span style="font-size:11px;margin-left:6px;color:var(--bt-text-2)">' + esc((m.transport||'').toString()) + '</span>' + (m._package && m._package.runtime_hint ? '<span class="mcp-tag" style="margin-left:4px">' + esc(m._package.runtime_hint) + '</span>' : '') + '</div><div style="font-size:12px;color:var(--bt-text-2)">' + esc((m.description||'').toString().slice(0,80)) + '</div>' + (tags ? '<div class="mcp-tags">' + tags + '</div>' : '') + '<button class="btn pri" style="margin-top:6px" onclick="installMcp(\'' + esc(m.name) + '\')">⚡ 一键安装</button></div>'
+        }).join('')
+      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
+    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+  async function installMcp(name) {
+    var res = await apiRaw('/mcp/servers/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+    if (res.status) { toast('安装完成'); fetchMcpServers() }
+    else toast(res.msg || '安装失败', 'err')
+  }
+
+  // ── 搜索 / 记忆 ─────────────────────
+  var _searchData = null  // GET /api/search/config 返回的 data
+  var _searchMeta = {
+    'bing':     { label: 'Bing',     need_key: false, fields: { language: { label: '语言 (Accept-Language)', type: 'text', placeholder: 'zh-CN,zh' } } },
+    'searxng':  { label: 'SearXNG',  need_key: false, fields: { url: { label: '实例 URL', type: 'text', placeholder: 'http://127.0.0.1:8081' }, engine: { label: '引擎 (engines)', type: 'text', placeholder: '可选' } } },
+    'zhipu':    { label: '智谱',     need_key: true, fields: {} },
+    'doubao':   { label: '豆包',     need_key: true, fields: { mode: { label: '模式', type: 'select', options: [['custom', 'custom（自定义搜索）'], ['ai-search', 'ai-search（AI 搜索）']] } } },
+    'bocha':    { label: '博查',     need_key: true, fields: {} },
+    'metaso':   { label: '秘塔',     need_key: true, fields: {} },
+    'tavily':   { label: 'Tavily',   need_key: true, fields: { depth: { label: '搜索深度 (depth)', type: 'select', options: [['basic', 'basic'], ['advanced', 'advanced']] } } },
+    'exa':      { label: 'Exa',      need_key: true, fields: {} },
+    'brave':    { label: 'Brave',    need_key: true, fields: {} },
+    'serper':   { label: 'Serper',   need_key: true, fields: {} },
+    'linkup':   { label: 'LinkUp',   need_key: true, fields: { depth: { label: '搜索深度 (depth)', type: 'select', options: [['standard', 'standard'], ['deep', 'deep']] } } },
+    'perplexity': { label: 'Perplexity', need_key: true, fields: {} },
+    'firecrawl':  { label: 'Firecrawl', need_key: true, fields: {} },
+    'jina':     { label: 'Jina',     need_key: true, fields: {} },
+    'ollama':   { label: 'Ollama',   need_key: true, fields: {} },
+    'grok':     { label: 'Grok',     need_key: true, fields: { url: { label: 'API URL', type: 'text', placeholder: 'https://api.x.ai/v1' }, model: { label: '模型', type: 'text', placeholder: 'grok-3' }, enable_search: { label: 'Enable Search', type: 'select', options: [['true', 'true'], ['false', 'false']] } } },
+    'tinyfish': { label: 'Tinyfish', need_key: true, fields: {} },
+    'default':  { label: '默认',     need_key: false, fields: {} }
+  }
+
+window.renderSearchProviderOpts = function renderSearchProviderOpts() {
+    var box = $('set_search_provider_opts')
+    if (!box) return
+    var pname = $('set_search_provider').value || 'default'
+    var meta = _searchMeta[pname] || { label: pname, need_key: false, fields: {} }
+    var opts = (_searchData && _searchData.providers && _searchData.providers[pname] && _searchData.providers[pname].options) || {}
+    var html = '<div style="margin-top:10px;border-top:1px solid var(--bt-border);padding-top:10px">'
+    html += '<div style="font-size:13px;font-weight:600;color:var(--bt-text-2);margin-bottom:8px">' + esc(meta.label) + ' 参数</div>'
+    // API Key 字段（需要 key 的引擎）
+    if (meta.need_key) {
+      var set = opts.api_key_set ? '（已配置）' : '（未配置）'
+      html += '<div class="form-section"><label class="form-label">API Key <span class="key-badge" style="display:inline-block;margin-left:6px;font-size:11px">' + set + '</span></label>'
+      html += '<input type="password" class="form-input" data-search-opt="api_key" value="" placeholder="' + (opts.api_key_set ? '已配置，留空保持不变' : '输入 API Key') + '" /></div>'
+    }
+    // 其他字段
+    var fkeys = Object.keys(meta.fields || {})
+    fkeys.forEach(function(k) {
+      var f = meta.fields[k]
+      html += '<div class="form-section"><label class="form-label">' + esc(f.label) + '</label>'
+      if (f.type === 'select') {
+        html += '<select class="form-input" data-search-opt="' + esc(k) + '">'
+        ;(f.options || []).forEach(function(o) {
+          html += '<option value="' + esc(o[0]) + '"' + (String(opts[k]) === String(o[0]) ? ' selected' : '') + '>' + esc(o[1]) + '</option>'
+        })
+        html += '</select>'
+      } else {
+        html += '<input type="text" class="form-input" data-search-opt="' + esc(k) + '" value="' + esc(opts[k] || '') + '" placeholder="' + esc(f.placeholder || '') + '" />'
+      }
+      html += '</div>'
+    })
+    html += '</div>'
+    box.innerHTML = html
+  }
+
+  // 从当前 DOM 收集指定 provider 的 options
+  function collectSearchProviderOpts() {
+    var pname = $('set_search_provider').value || 'default'
+    var opts = {}
+    document.querySelectorAll('#set_search_provider_opts [data-search-opt]').forEach(function(el) {
+      opts[el.getAttribute('data-search-opt')] = el.value
+    })
+    return { provider: pname, options: opts }
+  }
+
+  window.saveSearchConfig = async function saveSearchConfig() {
+    var provider = $('set_search_provider').value
+    var result_size = parseInt($('set_search_result_size').value) || 10
+    var extra = collectSearchProviderOpts()
+    // 组装 providers 结构：只提交当前 provider，避免影响其他引擎已存值
+    var payload = {
+      provider: provider,
+      result_size: result_size,
+      providers: {}
+    }
+    payload.providers[provider] = { options: extra.options }
+    var res = await apiRaw('/search/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: JSON.stringify(payload) }) })
+    if (res.status) { toast('搜索设置已保存'); loadSearchConfig() }
+    else toast(res.msg || '保存失败', 'err')
+  }
+
+  async function loadSearchConfig() {
+    try {
+      var res = await apiRaw('/search/config')
+      if (res.status && res.data) {
+        _searchData = res.data
+        var d = res.data
+        $('set_search_provider').value = d.provider || 'bing'
+        $('set_search_result_size').value = d.result_size || 10
+        renderSearchProviderOpts()
+      }
+    } catch(e) { console.warn('loadSearchConfig', e) }
+  }
+
+  // ── Crew ─────────────────────────────
+  var _departments = []
+  var _crewTools = []
+  var _crewModels = []
+
+  async function fetchCrewData() {
+    var res = await apiRaw('/crew/agents')
+    if (res.status && res.data) {
+      _departments = res.data.departments || []
+      renderDepartments()
+      renderDeptDatalist()
+      renderCrewMembers(res.data.agents || [])
+    }
+  }
+
+  function renderDepartments() {
+    var el = $('deptList')
+    el.innerHTML = _departments.length ? _departments.map(function(d) {
+      return '<div class="crew-item"><div class="crew-info"><span class="crew-name">' + esc(d.title || d.name) + '</span> <span class="crew-badge custom">' + esc(d.name) + '</span><span class="crew-desc">' + esc(d.description || '') + '</span></div><button class="crew-del" onclick="deleteDept(\'' + esc(d.name) + '\')">删除</button></div>'
+    }).join('') : '<div class="empty">暂无部门</div>'
+  }
+
+  function renderDeptDatalist() {
+    var dl = $('dept-datalist')
+    dl.innerHTML = _departments.map(function(d) {
+      return '<option value="' + esc(d.name) + '">' + esc(d.title || d.name) + '</option>'
+    }).join('')
+  }
+
+  function renderCrewMembers(agents) {
+    var el = $('crewList')
+    el.innerHTML = agents.length ? agents.map(function(a) {
+      var badge = a.builtin
+        ? '<span class="crew-badge builtin">内置</span>'
+        : '<span class="crew-badge custom">自定义</span>'
+      var deptSel = a.builtin ? '' : '<select class="crew-dept-select" onchange="assignDept(\'' + esc(a.name) + '\', this.value)"><option value="">未分配</option>' + _departments.map(function(d) {
+        return '<option value="' + esc(d.name) + '"' + (String(a.department || '') === d.name ? ' selected' : '') + '>' + esc(d.title || d.name) + '</option>'
+      }).join('') + '</select>'
+      var delBtn = a.builtin ? '' : '<button class="crew-del" onclick="deleteCrew(\'' + esc(a.name) + '\')">删除</button>'
+      return '<div class="crew-item"><div class="crew-info"><span class="crew-name">' + esc(a.name) + '</span> ' + badge + '<span class="crew-desc" title="工具: ' + esc((a.tools||[]).join(', ')) + '">' + esc(a.description || '') + '</span></div>' + deptSel + delBtn + '</div>'
+    }).join('') : '<div class="empty">暂无成员</div>'
+  }
+
+  async function loadCrew() {
+    var el = $('crewList')
+    el.innerHTML = '<div class="loading">加载中...</div>'
+    try { await fetchCrewData() }
+    catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+
+  async function loadCrewToolsAndModels() {
+    // 工具列表
+    try {
+      var res = await apiRaw('/tools')
+      if (res && (res.data || Array.isArray(res))) {
+        var tools = Array.isArray(res) ? res : (res.data && res.data.tools ? res.data.tools : (res.data || []))
+        _crewTools = (Array.isArray(tools) ? tools : []).map(function(t) { return { id: t.id || t.name || t, name: t.name || t.id || t } })
+        renderCrewTools()
+      }
+    } catch(e) { console.warn('loadCrewTools', e) }
+    // 模型列表
+    try {
+      var cfgRes = await apiRaw('/config')
+      if (cfgRes.status && cfgRes.data) {
+        _crewModels = (cfgRes.data.config && cfgRes.data.config.models) || cfgRes.data.models || []
+        renderCrewModels()
+      }
+    } catch(e) { console.warn('loadCrewModels', e) }
+  }
+
+  function renderCrewTools() {
+    var el = $('crewTools')
+    el.innerHTML = _crewTools.length ? _crewTools.map(function(t) {
+      return '<label class="crew-tool-chk"><input type="checkbox" value="' + esc(t.id) + '" /> ' + esc(t.name) + '</label>'
+    }).join('') : '<span class="empty">工具加载失败</span>'
+  }
+
+  function renderCrewModels() {
+    var sel = $('crewModel')
+    sel.innerHTML = '<option value="">模型：继承父会话</option>' + _crewModels.map(function(m) {
+      return '<option value="' + esc(m) + '">' + esc(m) + '</option>'
+    }).join('')
+  }
+
+  function selectedCrewTools() {
+    return Array.prototype.map.call(document.querySelectorAll('#crewTools input[type="checkbox"]:checked'), function(cb) { return cb.value })
+  }
+
+  async function saveCrewAgent() {
+    var name = ($('crewName').value || '').trim()
+    var department = ($('crewDept').value || '').trim()
+    var description = ($('crewDesc').value || '').trim()
+    var backstory = ($('crewBackstory').value || '').trim()
+    var model = ($('crewModel').value || '').trim()
+    var tools = selectedCrewTools()
+    if (!name) { toast('请填写名称', 'err'); return }
+    if (!description) { toast('请填写职责描述 (Goal)', 'err'); return }
+    if (!backstory) { toast('请填写系统提示词 (Backstory)', 'err'); return }
+    if (!tools.length) { toast('请至少勾选一个工具', 'err'); return }
+    var res = await apiRaw('/crew/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, department: department, description: description, backstory: backstory, model: model, tools: tools })
+    })
+    if (res.status) {
+      toast('已保存')
+      loadCrew()
+      $('crewName').value = ''; $('crewDept').value = ''; $('crewDesc').value = ''; $('crewBackstory').value = ''; $('crewModel').value = ''
+      document.querySelectorAll('#crewTools input[type="checkbox"]:checked').forEach(function(cb) { cb.checked = false })
+    } else { toast(res.msg || '保存失败', 'err') }
+  }
+
+  async function deleteCrew(name) {
+    var res = await apiRaw('/crew/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+    if (res.status) { toast('已删除'); loadCrew() }
+    else toast(res.msg || '删除失败', 'err')
+  }
+
+  async function saveDept() {
+    var name = ($('deptName').value || '').trim()
+    var title = ($('deptTitle').value || '').trim()
+    var description = ($('deptDesc').value || '').trim()
+    if (!name) { toast('请填写部门标识', 'err'); return }
+    if (!title) { toast('请填写部门名称', 'err'); return }
+    var res = await apiRaw('/crew/dept_save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, title: title, description: description }) })
+    if (res.status) { toast('部门已保存'); loadCrew(); $('deptName').value = ''; $('deptTitle').value = ''; $('deptDesc').value = '' }
+    else toast(res.msg || '保存失败', 'err')
+  }
+
+  async function deleteDept(name) {
+    var res = await apiRaw('/crew/dept_delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+    if (res.status) { toast('已删除'); loadCrew() }
+    else toast(res.msg || '删除失败', 'err')
+  }
+
+  async function assignDept(memberName, department) {
+    var agents = []
+    try {
+      var res = await apiRaw('/crew/agents')
+      if (res.status && res.data) agents = res.data.agents || []
+    } catch(e) { agents = [] }
+    var a = agents.find(function(x) { return x.name === memberName })
+    if (!a) { toast('成员不存在', 'err'); return }
+    var rr = await apiRaw('/crew/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: a.name,
+        description: a.description || '',
+        backstory: a.backstory || '',
+        tools: a.tools || [],
+        model: a.model || '',
+        department: department
+      })
+    })
+    if (rr.status) { toast('已更新部门'); loadCrew() }
+    else toast(rr.msg || '分配失败', 'err')
+  }
+
+  // HTML onclick 引用：暴露到 window
+  window.saveCrewAgent = saveCrewAgent
+  window.deleteCrew = deleteCrew
+  window.saveDept = saveDept
+  window.deleteDept = deleteDept
+  window.assignDept = assignDept
+
+  // ── 技能 ─────────────────────────────
+  async function loadSkills() {
+    var el = $('skillList')
+    el.innerHTML = '<div class="loading">加载中...</div>'
+    try {
+      var res = await apiRaw('/skills')
+      if (res.status && res.data) {
+        var skills = res.data.skills || []
+        el.innerHTML = skills.length ? skills.map(function(sk) {
+          return '<div class="tool-item"><span class="tool-item-name">' + esc(sk.name) + '</span><span class="tool-item-desc">' + esc((sk.description||'').slice(0,60)) + '</span>' + (sk.enabled ? '<button class="crew-del" onclick="uninstallSkill(\'' + esc(sk.name) + '\')">卸载</button>' : '') + '<label class="switch-label"><input type="checkbox" class="switch-input" ' + (sk.enabled ? 'checked' : '') + ' onchange="toggleSkill(\'' + esc(sk.name) + '\', this.checked)"></label></div>'
+        }).join('') : '<div class="empty">暂无技能</div>'
+      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
+    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+  async function toggleSkill(name, enabled) {
+    var res = await apiRaw('/skills/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ skill_name: name, enabled: !!enabled }) })
+    if (res.status) loadSkills()
+    else toast(res.msg || '更新失败', 'err')
+  }
+  async function installFromUrl() {
+    var url = $('skillUrlInput').value.trim()
+    if (!url) { toast('请输入 URL', 'err'); return }
+    var res = await apiRaw('/skills/install_url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url }) })
+    if (res.status) { toast('安装完成'); loadSkills(); $('skillUrlInput').value = '' }
+    else toast(res.msg || '安装失败', 'err')
+  }
+  async function uninstallSkill(name) {
+    var res = await apiRaw('/skills/uninstall', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ skill_name: name }) })
+    if (res.status) { toast('已卸载'); loadSkills() }
+    else toast(res.msg || '卸载失败', 'err')
+  }
+
+  // ── 卡密 ─────────────────────────────
+  async function loadCards() {
+    var el = $('cardList')
+    el.innerHTML = '<div class="loading">加载中...</div>'
+    try {
+      var res = await apiRaw('/card/admin/list')
+      if (res.status && res.data) {
+        var cards = res.data || []
+        el.innerHTML = cards.length ? cards.map(function(c) {
+          var expired = c.expires && Date.now() > Date.parse(c.expires)
+          return '<div class="tool-item"><span class="tool-item-name">' + esc(c.key ? c.key.slice(0,12) + '...' : '') + '</span><span class="tool-item-desc">持有人: ' + esc(c.owner || '') + ' | ' + esc(c.status || 'active') + (expired ? ' ⚠️已过期' : '') + '</span></div>'
+        }).join('') : '<div class="empty">暂无卡密</div>'
+      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
+    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+  }
+  async function createCards() {
+    var days = parseInt($('cardDays').value) || 30
+    var owner = $('cardOwner').value.trim()
+    var count = parseInt($('cardCount').value) || 10
+    var res = await apiRaw('/card/admin/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: days, owner: owner, count: count }) })
+    if (res.status) { toast('已生成 ' + (res.data.count || count) + ' 个卡密'); loadCards() }
+    else toast(res.msg || '生成失败', 'err')
+  }
+
+  // 设置页初始化
+  async function initSettings() {
+    // 先填充搜索引擎下拉，再由 loadSearchConfig 选中当前值并渲染参数
+    var sel = $('set_search_provider')
+    var providerNames = Object.keys(_searchMeta)
+    sel.innerHTML = providerNames.map(function(p) { return '<option value="' + esc(p) + '">' + esc(_searchMeta[p].label) + '</option>' }).join('')
+    loadSettingsConfig()
+    loadSearchConfig()
+    fetchMcpServers()
+    loadCrewToolsAndModels()
+    loadCrew()
+    loadSkills()
+    loadCards()
+  }
+
+  // DOMContentLoaded 中调用
+  initSettings()
+
+  // ── 重启服务 ─────────────────────────────
+  var _restarting = false
+  async function doRestart() {
+    if (_restarting) return
+    _restarting = true
+    var btn = document.querySelector('.hotreload-tab')
+    if (btn) { btn.disabled = true; btn.textContent = '⟳ 重启中...' }
+    try {
+      var res = await apiRaw('/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+      if (res.status) {
+        toast('重启已触发，约 5 秒后恢复')
+        // 轮询等待服务恢复
+        var reconnect = setInterval(function() {
+          fetch('http://' + location.host + '/', { mode: 'no-cors' }).catch(function(){});
+        }, 3000)
+        setTimeout(function() { clearInterval(reconnect); location.reload(); }, 30000)
+      } else {
+        toast(res.msg || '重启失败', 'err')
+      }
+    } catch(e) {
+      toast('重启请求失败: ' + (e.message || e), 'err')
+    } finally {
+      _restarting = false
+      if (btn) { btn.disabled = false; btn.textContent = '⟳ 重启服务' }
+    }
+  }
+  window.doRestart = doRestart
+
+  // 设置面板的保存/加载函数必须挂到 window：
+  // 按钮用 onclick="saveSettingsConfig()" 走全局作用域，
+  // 定义在 IIFE 闭包里不挂 window 会导致点击无任何反应（静默失败）。
+  window.saveSettingsConfig = saveSettingsConfig
+  window.loadSettingsConfig = loadSettingsConfig
+
+})();
+</script>
+
+<!-- 扫码绑定模态框 -->
+<div id="qrModal" class="qr-modal">
+  <div class="qr-modal-box">
+    <div class="qr-modal-hd">
+      <strong id="qrModalTitle">扫码绑定</strong>
+      <button class="btn" onclick="gwQrClose()" style="border:none;background:transparent;font-size:16px">✕</button>
+    </div>
+    <div id="qrBody"></div>
+    <div id="qrStatus" style="text-align:center;font-size:13px;color:var(--bt-text-2);min-height:20px"></div>
+    <div style="text-align:center;padding-top:8px"><button class="btn" onclick="gwQrClose()">关闭</button></div>
+  </div>
+
+</body>
+</html>

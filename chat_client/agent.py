@@ -1,6 +1,6 @@
 """
 @input: openai, httpx2, chat_client.memory, chat_client.retrieval, chat_client.tools.registry
-@output: Agent 主循环（流式/重试/续写）、ChatJob、事件生成
+@output: Agent 主循环（流式/重试）、ChatJob、事件生成
 @position: Core agent runtime — 所有对话模式的执行引擎
 @auto-doc: Update header and folder INDEX.md when this file changes
 """
@@ -10,12 +10,13 @@ import json
 import logging
 import os
 import platform
+import re
 import threading
 import time
 import traceback
 import uuid
 from collections.abc import Generator
-from typing import Any
+from typing import Any, Callable
 
 import openai
 
@@ -30,12 +31,42 @@ from chat_client.memory import MemoryManager
 from chat_client.retrieval import ExternalRAGService, RAGService, Mem0Service
 
 from .tools import registry, set_session_allow_high, get_background_manager
-from .tools.base import _xml_response, inject_tool_name
+from .tools.base import _xml_response, inject_tool_name, tool_result_for_model
+from .tools import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
 # L-1: tiktoken 编码器缓存在模块级，避免每次调用重复导入
 _TIKTOKEN_ENC = None
+
+
+def estimate_tokens(text: str) -> int:
+    """估算 token 数量（CJK-aware：尽量贴近实际，避免高估/低估）。
+    策略：优先尝试 tiktoken；降级到启发式估算。
+    - CJK 字符（\\u4e00-\\u9fff）、全角标点、假名：约 1 字符/token（偏高，防截断过早）
+    - ASCII 字母/数字：约 4 字符/token（更接近真实比）
+    - 其余标点/空白：1 字符/token
+    总体上限与下限均合理，避免英文严重高估、中文严重低估。
+
+    模块级函数：_build_messages 的轮间压缩与主循环的工具内压缩闸门共用。
+    """
+    try:
+        global _TIKTOKEN_ENC
+        if _TIKTOKEN_ENC is None:
+            import tiktoken
+            _TIKTOKEN_ENC = tiktoken.get_encoding("cl100k_base")
+        if _TIKTOKEN_ENC:
+            return max(1, len(_TIKTOKEN_ENC.encode(text)))
+    except Exception:
+        _TIKTOKEN_ENC = False  # 标记不可用，后续不再重试导入
+    # 启发式 fallback：区分 CJK 与 ASCII
+    cjk_count = sum(1 for ch in text
+                    if ('\u4e00' <= ch <= '\u9fff')
+                    or ('\u3000' <= ch <= '\u303f')
+                    or ('\uff00' <= ch <= '\uffef'))
+    ascii_chars = len(text) - cjk_count
+    # CJK ~1.0 token/char，ASCII ~0.25 token/char；偏保守取中间值
+    return max(1, int(cjk_count * 1.0 + ascii_chars * 0.35))
 
 BINARY_EXTENSIONS = {
     '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.class', '.jar', '.war', '.7z',
@@ -59,6 +90,12 @@ def _cancel_event():
     from .tools import get_current_job
     job = get_current_job()
     return getattr(job, "cancel_event", None)
+
+
+def _get_current_job():
+    """取当前执行上下文的 job（工具并行执行时用于上下文隔离恢复）。"""
+    from .tools import get_current_job
+    return get_current_job()
 
 
 def _is_cancelled() -> bool:
@@ -167,6 +204,129 @@ class Agent:
     # 集团协作工具：需要多 Agent 编排，单 Agent / Codex-X 模式不加载
     _GROUP_TOOLS: set[str] = {"RunCrew", "ConsultPeer", "CreateDepartment", "RecruitMember"}
 
+    # ── 工具并行：按「资源冲突」判定（2026-10-15）──────────────────
+    # 对齐 Claude Code / Cursor 的做法：不按工具名一刀切，而是看**资源冲突**。
+    #   · 两个 Edit 改不同文件 → 可并行；改同一文件 → 串行
+    #   · 两个 restart_service 重启不同服务 → 可并行；同一服务 → 串行
+    #   · 只读工具（Read/Grep/查询类）无写资源 → 自由并行
+    #   · 有全局共享状态、无法用资源键区分的（Bash/TodoWrite/MCP/Skills/
+    #     InstallExpert/TaskSummary 等）→ 独占串行
+    #   · 子代理（Task/ConsultPeer）无共享状态 → 并行
+    # 可用 config 覆盖：tool_parallel_force（强制并行）、tool_parallel_deny
+    #                  （强制串行，优先级最高）。
+
+    # 独占工具：无可用资源键区分、共享全局状态，必须串行
+    _PARALLEL_EXCLUSIVE: set[str] = {
+        "Bash",                       # cwd/后台任务/环境共享，且顺序敏感
+        "TodoWrite", "TaskSummary",   # 单文件读改写，全局唯一
+        "MCP", "Skills",              # 插件/技能加载全局状态
+        "InstallExpert", "RecruitMember", "CreateDepartment",  # 写 crew_agents.json
+        "GrantWriteAccess", "ManageWritePaths",  # 全局写白名单
+        "cron_manage", "cleanup_temp",           # 系统级共享
+    }
+    # 写类工具 → 资源键为文件路径（同文件串行，异文件并行）
+    _WRITE_FILE_TOOLS: dict[str, tuple[str, ...]] = {
+        "Write": ("file_path",),
+        "Edit": ("file_path",),
+        "LargeFileEdit": ("file_path",),
+        "compress_files": ("archive_path",),   # 输出包路径
+        "extract_archive": ("dest_dir",),       # 解压目标目录
+    }
+    # 服务/容器类工具 → 资源键为服务名/容器名（同目标串行，异目标并行）
+    _RESOURCE_TOOLS: dict[str, tuple[str, ...]] = {
+        "restart_service": ("service_name",),
+        "manage_service": ("service_name",),
+        "docker_manage": ("container_id",),
+        "kill_process": ("pid",),
+        "ScheduleTask": ("name",),
+        "CancelScheduledTask": ("name_or_id",),
+        "RunScheduledTaskNow": ("name_or_id",),
+    }
+    # 只读工具：无写资源，自由并行
+    _PARALLEL_ALLOW: set[str] = {
+        "Read", "Glob", "Grep", "ReadToolArchive",
+        "TaskStatus", "CheckCommandStatus", "TaskStop", "StopCommand",
+        "WebFetch", "WebSearch", "curl_url", "http_check", "ping_target",
+        "check_domain", "check_ssl_cert", "get_server_ip",
+        "get_current_time", "get_service_status", "get_system_resources",
+        "get_top_processes", "get_docker_info", "get_docker_containers",
+        "get_docker_inspect", "get_docker_logs", "get_firewall_status",
+        "get_mysql_list", "get_sites", "get_sites_conf", "get_sites_logs",
+        "get_site_analysis", "list_port_bindings", "dir_usage", "find_large_files",
+        "tail_log",
+        "mem0_search", "mem0_search_all", "mem0_list",
+        "KnowledgeSearch", "KnowledgeList",
+        "ExpertMarket", "GetExpertPrompt", "ExpertScenes",
+        "SkillMarket", "SkillCategories",
+        "ListScheduledTasks", "TodoRead",
+        # 子代理：本身无共享状态，可并行（本次修复的主要目标）
+        "Task", "ConsultPeer",
+    }
+
+    def _tool_resource_key(self, func_name: str, args: dict) -> str | None:
+        """计算工具调用的「资源键」。返回 None 表示：
+        - 只读/无冲突 → 自由并行（返回特殊值 "·free"）
+        - 独占 → 返回 "·exclusive"（与任何其它调用冲突）
+        """
+        force = set(self.config.get("tool_parallel_force") or [])
+        deny = set(self.config.get("tool_parallel_deny") or [])
+        if func_name in deny:
+            return "·exclusive"
+        if func_name in force:
+            return "·free"
+        if func_name in self._PARALLEL_EXCLUSIVE:
+            return "·exclusive"
+        # 写文件类：资源键 = 规范化后的文件路径
+        keys = self._WRITE_FILE_TOOLS.get(func_name)
+        if keys:
+            for k in keys:
+                v = args.get(k)
+                if v:
+                    try:
+                        return "file:" + os.path.realpath(str(v))
+                    except Exception:
+                        return "file:" + str(v)
+            return "·exclusive"  # 拿不到路径，保守独占
+        # 服务/容器类：资源键 = 目标标识
+        rkeys = self._RESOURCE_TOOLS.get(func_name)
+        if rkeys:
+            for k in rkeys:
+                v = args.get(k)
+                if v not in (None, ""):
+                    return f"res:{func_name}:{v}"
+            return "·exclusive"
+        if func_name in self._PARALLEL_ALLOW:
+            return "·free"
+        # 未知工具：保守独占（宁可慢，不可错）
+        return "·exclusive"
+
+    def _plan_parallel_groups(self, plans: list[dict]) -> list[list[dict]]:
+        """把待执行计划按资源冲突分组：同组内无冲突可并行，组间串行。
+
+        算法：贪心装箱——依次把每个计划放进「第一个无资源冲突的组」，
+        放不进则新开一组。这样只读/异文件工具会尽量并入同组并行，
+        冲突的自动落到后续组串行。保持原有相对顺序。
+        """
+        groups: list[list[dict]] = []
+        group_keys: list[set[str]] = []
+        for p in plans:
+            key = p.get("_res_key")
+            if key == "·exclusive":
+                groups.append([p]); group_keys.append({"·exclusive"})
+                continue
+            placed = False
+            for gi, gk in enumerate(group_keys):
+                if "·exclusive" in gk:
+                    continue  # 独占组不再并入
+                if key == "·free" or key not in gk:
+                    groups[gi].append(p)
+                    gk.add(key)
+                    placed = True
+                    break
+            if not placed:
+                groups.append([p]); group_keys.append({key})
+        return groups
+
     # 工具参数连续非法的熔断阈值：达到即结束本轮，避免"截断→非法→空跑→再截断"死循环
     BAD_ARGS_MAX_STREAK = 3
 
@@ -200,7 +360,10 @@ class Agent:
         self.base_url = self.config.get("base_url")
         self.model_name = self.config.get("model_name") or self.config.get("default_model")
         self.rag_trigger_threshold = self.config.get("rag_trigger_threshold", 10)
-        self.max_tool_iterations = self.config.get("max_tool_iterations", 9999)
+        try:
+            self.max_tool_iterations = max(1, int(self.config.get("max_tool_iterations", 9999)))
+        except (TypeError, ValueError):
+            self.max_tool_iterations = 9999
         # 工具参数非法（多为输出被截断）的连续计数，用于熔断，防止无限重试烧 token
         self._bad_args_streak = 0
         self.context_window_kb = self.config.get("context_window_kb", 512)
@@ -226,7 +389,62 @@ class Agent:
         ).strip().lower()
         self.thinking = self.config.get("thinking", _agent_cfg.get("thinking", False))
         self.web_search = self.config.get("web_search", _agent_cfg.get("web_search", False))
-        
+        # Responses prompt caching：以 model_name 为稳定 key，命中同一模型的历史缓存
+        self._responses_prompt_cache_key = (
+            self.config.get("prompt_cache_key")
+            or (_agent_cfg.get("prompt_cache_key") if isinstance(_agent_cfg.get("prompt_cache_key"), str) else None)
+            or (self.model_name or "bt-responses")
+        )
+
+        # ── 失控防护：单次输出有硬上限、拒绝死循环 ──
+        # 单次响应最大输出 token（含思考 token）。0 = 不限制（不推荐）。
+        # 此前完全不传 max_tokens，模型一旦退化会一直流式输出/思考到上游上限。
+        try:
+            self.max_output_tokens = int(
+                self.config.get("max_output_tokens")
+                or _agent_cfg.get("max_output_tokens", 32768)
+            )
+        except (TypeError, ValueError):
+            self.max_output_tokens = 32768
+        # 单次模型响应墙钟上限（秒）。防止"边想边流"永远不结束。0 = 不限制。
+        try:
+            self.response_timeout_seconds = float(
+                self.config.get("response_timeout_seconds")
+                or _agent_cfg.get("response_timeout_seconds", 600)
+            )
+        except (TypeError, ValueError):
+            self.response_timeout_seconds = 600
+        # 重复熔断：连续 N 轮输出完全相同的内容 / 完全相同的工具调用 → 判定为幻觉死循环
+        try:
+            self.repeat_limit = max(2, int(
+                self.config.get("repeat_limit") or _agent_cfg.get("repeat_limit", 3)
+            ))
+        except (TypeError, ValueError):
+            self.repeat_limit = 3
+        self._repeat_content = None
+        self._repeat_content_streak = 0
+        self._repeat_tool_sig = None
+        self._repeat_tool_streak = 0
+        # reasoning 重复检测：同一轮思考里同一句话重复过多视为退化，
+        # 命中后丢弃本次响应并重新发起请求（不中断任务）。
+        # 默认：句子归一化后重复 >= 8 次触发；最多额外重试 1 次（共 2 次尝试）。
+        try:
+            self.reasoning_repeat_limit = max(3, int(
+                self.config.get("reasoning_repeat_limit")
+                or _agent_cfg.get("reasoning_repeat_limit", 8)
+            ))
+        except (TypeError, ValueError):
+            self.reasoning_repeat_limit = 8
+        try:
+            self.reasoning_repeat_retries = max(0, int(
+                self.config.get("reasoning_repeat_retries")
+                or _agent_cfg.get("reasoning_repeat_retries", 3)
+            ))
+        except (TypeError, ValueError):
+            self.reasoning_repeat_retries = 3
+        # 轮询类工具允许同参数连续调用，不参与重复熔断
+        self._repeat_exempt_tools = {"TaskStatus", "TaskList", "CheckCommandStatus"}
+
         # 官网知识库
         self.use_external_kb = self.config.get("use_external_kb", False)
         self.external_kb_appid = self.config.get("external_kb_appid", "app_002")
@@ -286,6 +504,16 @@ class Agent:
                     logger.info(f"技能摘要已注入系统提示（{len(skill_manager.all_enabled())} 个技能）")
             except Exception as e:
                 logger.debug(f"技能摘要注入失败: {e}")
+            try:
+                from .experts import get_catalog
+                _base = self.config.get("base_dir") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                expert_summary = get_catalog(_base).generate_expert_summary()
+                if expert_summary:
+                    self.system_prompt += f"\n\n{expert_summary}"
+                    logger.info("专家库摘要已注入系统提示（自动发现 %d 位）",
+                                len(get_catalog(_base).scan()))
+            except Exception as e:
+                logger.debug(f"专家摘要注入失败: {e}")
             # 技能使用硬规则：强制先评估技能再动手（2026-10-13 boss 反馈"有技能不用"）
             self.system_prompt += (
                 "\n\n## 技能使用铁律（必须遵守）\n"
@@ -305,12 +533,36 @@ class Agent:
                 "- 专家市场：429 个领域专家（含完整人设提示词），覆盖营销/技术/设计/运营等。"
                 "当用户需要专业角色/人设/专家时（如\"帮我找营销专家\"\"用产品经理视角分析\"），"
                 "主动调用 `ExpertMarket(keyword=...)` 搜索，再用 `GetExpertPrompt(name=...)` 取提示词作为角色设定。\n"
+                "- **本地没有的专家会自动缓存**：`GetExpertPrompt`/`InstallExpert` 取用市场专家后，"
+                "会落盘到 expert_market/ 并被自动发现，之后即算本地已有（无需重复联网）。"
+                "所以遇到任务先看上方【本地专家库】，没有再查市场。\n"
                 "- 技能市场：SkillHub 社区公开技能库。当本地技能不够、用户要找新技能/插件时，"
                 "调用 `SkillMarket(keyword=...)` 或 `SkillCategories()` 探索。\n"
                 "- 精选场景：`ExpertScenes()` 查看专家市场精选场景。\n"
                 "- 用法示例：用户说\"我需要一个内容营销专家\"→ 调 `ExpertMarket(keyword=\"内容创作\")`"
                 "→ 命中后调 `GetExpertPrompt(name=\"content-creator\")` 加载人设。\n"
                 "- **自查**：回复用户前，若涉及专家角色/外部技能需求而你没调过市场工具，就是漏用。"
+            )
+            # 专家派发铁律（2026-10-21 boss 要求，对齐 Octop）：
+            # 专家必须是**独立 agent 实例**执行，主会话只调度与转述，禁止自己扮演专家。
+            self.system_prompt += (
+                "\n\n## 专家派发铁律（必须遵守，优先级高于一般对话习惯）\n"
+                "**核心原则：专家 = 独立 Agent 实例，不是主会话的一个人格。**\n"
+                "- 当用户需求命中上方【本地专家库】中某位专家的领域或触发词（triggers），"
+                "**必须把任务派发给独立 agent 执行，禁止主会话自己扮演/直接加载该专家人格**。\n"
+                "- 派发方式（按优先级）：\n"
+                "  1. 该专家**已是团队成员**（crew_agents.json 中已有该成员）→ "
+                "直接 `Task(subagent_type=\"成员名\", description=..., prompt=..., expected_output=...)`；\n"
+                "  2. 该专家**在本地专家库但尚未成为成员** → 先 `InstallExpert(name=\"专家id\")` "
+                "落地为成员，再 `Task(subagent_type=\"成员名\", ...)` 派发；\n"
+                "  3. 本地没有 → `ExpertMarket` 搜 → `InstallExpert` 落地 → `Task` 派发。\n"
+                "- **主会话职责边界**：只做「意图识别 → 派发 → 等待结果 → 向你转述」。"
+                "主会话不得自己执行专家的专业流程、不得自己扮演专家口吻、不得跳过 Task 直接把专家提示词"
+                "塞进自己的上下文当成自己的人格。\n"
+                "- **例外（仅限）**：用户明确要求「你本人直接回答/别派子 agent」时，才可主会话直接处理。\n"
+                "- **自查**：回复前确认——这次涉及专家领域吗？如果涉及，我是否真的调用了 "
+                "`Task(subagent_type=...)` 派给独立 agent？没有就是违规。\n"
+                "- 用户只做闲聊或通用问题时，不触发本规则。\n"
             )
             # 注入 mem0 记忆使用提示
             self.system_prompt += "\n\n## 记忆系统\n- `mem0_search` 查询历史记忆（用户偏好、踩坑记录、已完成任务）\n- `mem0_add` 写入重要信息（用户明确说'记住'、协作规则、技术决策）\n- `mem0_list` 列出所有记忆（按 agent_id 过滤，默认50条）\n- `mem0_delete` 删除指定 ID 的记忆（不可撤销）\n- `mem0_import` 批量导入（多行文本，每行一条）\n- 涉及跨会话上下文、用户偏好、历史决策时主动调用，不要凭空回答"
@@ -319,8 +571,45 @@ class Agent:
             # 单 Agent 模式：默认全量工具，排除集团协作工具
             # 集团工具（Task/RunCrew/ConsultPeer/CreateDepartment/RecruitMember）需要多 Agent 编排
             _all_ids = {m["id"] for m in registry._metadata.values()}
-            self.enabled_tools.extend(t for t in _all_ids - self._GROUP_TOOLS
-                                      if t not in self.enabled_tools)
+            _add = _all_ids - self._GROUP_TOOLS
+            # 工具下发裁剪（P1，2026-10-15）：AI_AGENT_TOOL_DISCLOSURE=trim 时，
+            # 门控组（媒体/数据库/知识库/记忆/市场/定时/网站）默认不下发，
+            # 默认 full = 全量，保持向后兼容。显式指定在 config["tools"] 里的工具
+            # 或 config["tool_gate_enabled"] 组始终保留。
+            try:
+                from .tools import disclosure_mode, get_gated_tools
+                if disclosure_mode() == "trim":
+                    _enabled_groups = set(self.config.get("tool_gate_enabled", []) or [])
+                    _extra_gate = {
+                        t.strip() for t in
+                        (self.config.get("tool_extra_gate") or "").split(",") if t.strip()
+                    }
+                    _gated = get_gated_tools(_enabled_groups, _extra_gate)
+                    # 用户显式指定的工具（original_tools）优先保留，不受门控
+                    _explicit = {registry.get_tool_id(t) or t for t in self.original_tools}
+                    _gated -= _explicit
+                    _add = _add - _gated
+                    logger.info(
+                        "[ToolDisclosure] trim 模式：门控 %d 个工具（启用组=%s），实际下发 %d 个",
+                        len(_gated), sorted(_enabled_groups) or "无", len(_add | set(self.enabled_tools)),
+                    )
+            except Exception:
+                logger.warning("[ToolDisclosure] 裁剪失败，回退全量下发", exc_info=True)
+            self.enabled_tools.extend(t for t in _add if t not in self.enabled_tools)
+
+            # ask=只读问答 / plan=先规划 / craft=全能力。按模式裁剪工具白名单。
+            try:
+                from .conversation_mode import resolve_mode, filter_tools_for_mode, mode_instructions
+                _mode = resolve_mode(self.config, self.config.get("session_mode"))
+                if _mode != "craft":
+                    self.enabled_tools = filter_tools_for_mode(self.enabled_tools, _mode)
+                    _instr = mode_instructions(_mode)
+                    if _instr:
+                        self.system_prompt += _instr
+                    logger.info("[ConversationMode] %s 模式：工具裁剪至 %d 个",
+                                _mode, len(self.enabled_tools))
+            except Exception:
+                logger.debug("[ConversationMode] 应用失败，回退全量", exc_info=True)
             
         self.memory = MemoryManager(
             session_id=session_id, 
@@ -384,12 +673,12 @@ class Agent:
                     logger.debug("MCP 尚未加载完成（预加载线程处理中），跳过")
                 else:
                     self._mcp_loaded = True
-                    if not self.strict_tools:
-                        for schema in mcp_client.get_tool_schemas():
-                            tid = schema["function"]["name"]
-                            if tid not in self.enabled_tools:
-                                self.enabled_tools.append(tid)
-                    logger.info(f"MCP 客户端已加载，{len(mcp_client.get_tool_schemas())} 个工具可用")
+                    # 【MCP 按需加载】不再把 275 个 MCP 工具 id 塞进 enabled_tools。
+                    # 旧行为会让 _build_tools(enabled_ids=...) 走过滤分支、绕过延迟加载，
+                    # 导致 MCP schema 仍然全量下发（实测 236KB/轮）。
+                    # 现在 enabled_tools 只保留内置工具，MCP 工具由 _build_tools
+                    # 按「已解锁集合」单独追加。
+                    logger.info(f"MCP 客户端已加载，{len(mcp_client.get_tool_schemas())} 个工具可用（按需加载）")
             except Exception as e:
                 logger.warning(f"MCP 客户端初始化失败（不影响核心功能）: {e}")
         
@@ -629,22 +918,36 @@ Here is some useful information about the environment you are running in:
         return out
 
     def _create_completion_stream(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None):
-        # 前缀缓存：对 system 消息打 cache_control，使稳定的 system+tools 前缀命中缓存，
-        # 避免每轮全量工具定义重复计费（兼容 litellm/OpenAI 前缀缓存；不支持的代理会忽略该字段）
-        if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
-            messages = [dict(messages[0], cache_control={"type": "ephemeral"})] + messages[1:]
+        # 协议分流：responses / anthropic 各自在 build_request 内部打 cache_control
+        # （Anthropic 协议合法字段，命中前缀缓存）。本函数只负责 chat（OpenAI）分支。
+        # 注意：OpenAI chat 协议不支持 message/tool 上的 cache_control 字段，
+        # 严格网关（如 ccload）会直接报 400/500。chat 协议用 prompt_cache_key
+        # 做 prompt caching（gpt-5.6+ 支持），与 responses 共用同一 key。
+
+        # 发送前最后一道保险：tool 消息 content 必须是纯字符串（见 _coerce_tool_contents）。
+        safe_messages = self._coerce_tool_contents(messages)
 
         params = {
             "model": self.model_name,
-            "messages": messages,
-            "tools": tools if tools else None,
+            "messages": safe_messages,
+            "tools": list(tools) if tools else None,
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": self.temperature,
             "top_p": self.top_p,
-            "reasoning_effort": self.reasoning_effort,
             "extra_body": {}
         }
+        # 只在显式配置时才传 reasoning_effort，避免对所有模型强制最大思考深度
+        if self.reasoning_effort:
+            params["reasoning_effort"] = self.reasoning_effort
+        # 单次输出硬上限：防止模型退化后无限输出/无限思考
+        if self.max_output_tokens and self.max_output_tokens > 0:
+            params["max_tokens"] = self.max_output_tokens
+        # Chat completions prompt caching：gpt-5.6+ 支持 prompt_cache_key + prompt_cache_options
+        cache_key = getattr(self, "_responses_prompt_cache_key", None)
+        if cache_key:
+            params["prompt_cache_key"] = cache_key
+            params["prompt_cache_options"] = {"mode": "implicit", "ttl": "30m"}
 
         thinking = self.thinking
 
@@ -652,6 +955,22 @@ Here is some useful information about the environment you are running in:
         # 仅对 qwen 系模型注入 DashScope 专属扩展参数（原条件 "qwen" or ... 恒真，会污染所有模型）
         if "qwen" in model_l or "default" in model_l:
             params["extra_body"]["enable_thinking"] = thinking
+
+        # 不同 provider 对「思考强度」的字段名/取值不同，按模型家族覆盖请求参数。
+        # config: reasoning_overrides = {"<provider关键字>": {...要覆盖的 params 片段...}}
+        # 例：{"o1": {"reasoning_effort": "high"}, "deepseek": {"extra_body": {"thinking": {"type": "enabled"}}}}
+        try:
+            overrides = self.config.get("reasoning_overrides") or {}
+            for key, patch in overrides.items():
+                if key and key.lower() in model_l and isinstance(patch, dict):
+                    for pk, pv in patch.items():
+                        if pk == "extra_body" and isinstance(pv, dict):
+                            params.setdefault("extra_body", {}).update(pv)
+                        else:
+                            params[pk] = pv
+                    break
+        except Exception as _ro_err:
+            logger.debug(f"reasoning_overrides 应用失败: {_ro_err!s}")
 
         # 原实现把 enable_search 绑死在 qwen 系上，导致其它模型（doubao/gpt 等）
         # 即使前端开关打开也静默失效。联网搜索已改为独立的 WebSearch 工具
@@ -663,7 +982,8 @@ Here is some useful information about the environment you are running in:
                 "type": enable_type
             }
             
-        # 协议分流：responses 走 /v1/responses（小巧适配层把事件翻成 chat.delta 形状）
+        # 协议分流：responses 走 /v1/responses；anthropic 走 /v1/messages。
+        # 两个适配层都把事件翻成 chat.delta 形状，主循环零改动。
         if getattr(self, "api_protocol", "chat") == "responses":
             from chat_client.responses_client import build_request, iter_chat_chunks
 
@@ -673,9 +993,35 @@ Here is some useful information about the environment you are running in:
                 self.model_name,
                 temperature=self.temperature,
                 top_p=self.top_p,
-                reasoning_effort=self.reasoning_effort,
+                reasoning_effort=self.reasoning_effort or None,
+                max_output_tokens=self.max_output_tokens or None,
+                prompt_cache_key=self._responses_prompt_cache_key,
             )
             return iter_chat_chunks(self.client, payload)
+
+        if getattr(self, "api_protocol", "chat") == "anthropic":
+            from chat_client.anthropic_client import (
+                build_request as anthropic_build_request,
+                iter_anthropic_chunks,
+                stream_messages,
+            )
+
+            payload = anthropic_build_request(
+                messages,
+                tools,
+                self.model_name,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                reasoning_effort=self.reasoning_effort or None,
+                max_output_tokens=self.max_output_tokens or None,
+            )
+            return iter_anthropic_chunks(stream_messages(
+                self.base_url,
+                self.api_key,
+                payload,
+                default_headers=self.default_headers,
+                timeout=max(30, self.response_timeout_seconds or 120),
+            ))
 
         return self.client.chat.completions.create(**params)
 
@@ -771,12 +1117,44 @@ Here is some useful information about the environment you are running in:
             # 工具配置：首次迭代只用用户指定工具（避免 GLM 因工具过多混淆）
             def _build_tools(enabled_ids):
                 t = registry.get_openai_tools(enabled_ids=enabled_ids)
-                # 仅当全量模式（enabled_ids=None）时才注入 MCP 工具
-                if self._mcp_loaded and enabled_ids is None:
+
+                # MCP 工具单独处理（内置工具已由 registry 返回）。
+                # 无论走 enabled_ids 过滤还是全量分支，MCP 都按「已解锁集合」追加，
+                # 保证延迟加载在两种分支下都生效。
+                if self._mcp_loaded:
                     from chat_client.mcp_client import get_mcp_client
                     mcp_client = get_mcp_client()
-                    t = [x for x in t if registry._metadata.get(x["function"]["name"], {}).get("category") != "mcp"]
+                    # 先剔除 registry 里可能混入的 MCP 工具（按 category 判断），
+                    # 避免与下面追加的 mcp_client schema 重复。
+                    t = [
+                        x for x in t
+                        if registry._metadata.get(x["function"]["name"], {}).get("category") != "mcp"
+                    ]
                     mcp_tools = mcp_client.get_tool_schemas()
+
+                    if mcp_tools and self._mcp_defer_enabled():
+                        from .tools import get_unlocked_mcp_tools
+                        _unlocked = get_unlocked_mcp_tools(self.session_id)
+                        _always = set(self.config.get("mcp_defer_always_include") or [])
+                        _keep = _unlocked | _always
+                        _before = len(mcp_tools)
+
+                        # schema 的 function.name 是清洗名，metadata 的 id 可能是
+                        # 原始名（含点号）。两者都要匹配，否则解锁了也过滤不出来。
+                        def _allowed(schema):
+                            _fn = schema["function"]["name"]
+                            if _fn in _keep:
+                                return True
+                            _tid = (registry._metadata.get(_fn) or {}).get("id")
+                            return bool(_tid and _tid in _keep)
+
+                        mcp_tools = [x for x in mcp_tools if _allowed(x)]
+                        logger.info(
+                            "[MCP-Defer] 按需加载：已解锁 %d 个，注入 %d/%d 个 MCP 工具"
+                            "（其余可经 ToolSearch 解锁）",
+                            len(_unlocked), len(mcp_tools), _before,
+                        )
+
                     if mcp_tools:
                         t.extend(mcp_tools)
                     # 过滤+合并后仍需去重：内置与 MCP 同名工具可能在过滤后再次共存，
@@ -791,6 +1169,17 @@ Here is some useful information about the environment you are running in:
                 all_tools = _build_tools(self.original_tools) if self.original_tools else _build_tools(None)
             else:
                 all_tools = _build_tools(self.enabled_tools) if self.enabled_tools else _build_tools(None)
+
+            # ToolSearch 是 MCP 按需加载的唯一入口，必须始终可用；
+            # 否则 strict 模式（经理）按 original_tools 过滤时会把它一起过滤掉，
+            # 模型就永远无法解锁 MCP 工具。
+            if self._mcp_loaded and self._mcp_defer_enabled():
+                if not any(x["function"]["name"] == "ToolSearch" for x in all_tools):
+                    _ts = [x for x in registry.get_openai_tools()
+                           if x["function"]["name"] == "ToolSearch"]
+                    if _ts:
+                        all_tools = all_tools + _ts
+
             tools = all_tools
             first_tools = all_tools
             
@@ -806,10 +1195,6 @@ Here is some useful information about the environment you are running in:
                 "output_tokens": 0
             }
             last_message_id = ""
-            # 后台任务收尾等待：整轮只允许一次。否则"等120s → 未完成 → continue"
-            # 会随 max_tool_iterations(9999) 放大成 13 天的空转。
-            _bg_wait_used = False
-
             while iteration_count < self.max_tool_iterations:
                 iteration_count += 1
 
@@ -852,7 +1237,7 @@ Here is some useful information about the environment you are running in:
                         iter_msg += "WARNING: You are approaching the tool execution limit. If the task is not finished, STOP NOW and ask the user to continue in the next turn to reset the counter. Do NOT try to rush."
                     else:
                         iter_msg += "Proceed efficiently."
-                    iter_msg += "<system-reminder>"
+                    iter_msg += "</system-reminder>"
                     
                     # Append as a temporary system message for this request only
                     request_messages.append({"role": "system", "content": iter_msg})
@@ -862,22 +1247,31 @@ Here is some useful information about the environment you are running in:
 
                 # ---- 带自动重试的流式请求：断流 / 429 / 5xx 后重新请求 ----
                 # OpenAI SDK 的 max_retries 只覆盖建连阶段，不覆盖流式中途断开；
-                # 这里在应用层重试：无可见输出时完全重来；已有输出时切换"续写模式"避免重复内容。
+                # 这里在应用层重试：每次尝试独立，无可见输出时完全重新请求（不携带任何已输出正文）；
+                # 已有输出时断流直接结束本轮，不续写。
                 api_max_retry = max(0, int(self.config.get("api_max_retry", 3)))
                 api_retry_base_wait = float(self.config.get("api_retry_base_wait", 1))
                 api_retry_max_wait = float(self.config.get("api_retry_max_wait", 10))
 
                 attempt = 0
                 yielded_content = ""  # 本轮所有尝试中已实时推送给前端、不可撤回的正文
+                # reasoning 退化重试独立计数：只统计因重复退化触发的重试，
+                # 不被网络异常/空回复的 attempt 消耗。
+                reasoning_repeat_retry_count = 0
                 while True:
                     attempt += 1
                     tool_call_chunks = {}
                     current_response_content = ""
                     current_reasoning_content = ""
+                    # 已补发给前端的 reasoning 长度；reasoning 先缓冲，
+                    # 在正文/工具调用开始前或流结束时校验通过后一次性补发。
+                    reasoning_yielded_len = 0
+                    reasoning_checked_len = 0
                     reported_tool_indices = set()
                     try:
                         # 防御：清理可能含非法 JSON 的 tool_calls
                         request_messages = self._sanitize_messages_for_api(request_messages)
+                        _resp_started = time.monotonic()
                         response_stream = self._create_completion_stream(request_messages, iter_tools)
 
                         for chunk in response_stream:
@@ -885,6 +1279,30 @@ Here is some useful information about the environment you are running in:
                             # 停止检查：chat_stop 置位后立即断开，不再消费流
                             if _is_cancelled():
                                 _close_stream(response_stream)
+                                return
+
+                            # 单次响应墙钟上限：防止模型"边想边流"永远不结束
+                            if (self.response_timeout_seconds > 0
+                                    and (time.monotonic() - _resp_started) > self.response_timeout_seconds):
+                                _close_stream(response_stream)
+                                logger.error(
+                                    "[AI-Timeout] 单次响应超过 %.0fs，强制结束本轮（已输出 %d 字符）",
+                                    self.response_timeout_seconds, len(current_response_content),
+                                )
+                                if current_response_content:
+                                    try:
+                                        self.memory.add_message(
+                                            "assistant", current_response_content, id=ai_msg_id
+                                        )
+                                    except Exception:
+                                        logger.warning("[AI-Timeout] 保存部分输出失败", exc_info=True)
+                                yield {
+                                    "type": "warning",
+                                    "data": (
+                                        f"模型单次响应超过 {int(self.response_timeout_seconds)} 秒，"
+                                        f"已强制结束本轮以避免无限思考/输出。"
+                                    ),
+                                }
                                 return
 
                             # 结束判断
@@ -898,16 +1316,33 @@ Here is some useful information about the environment you are running in:
 
                             delta = chunk.choices[0].delta
 
-                            # 处理推理内容
+                            # 处理推理内容：先缓冲，不实时推送。每增长约 2000 字符
+                            # 做一次退化检测，命中后立即断流并重新请求，避免等整段
+                            # 退化思考生成完；校验通过的内容在正文之前补发，保证
+                            # 思维链顺序，也避免把大段重复思考刷给前端。
                             if getattr(delta, "reasoning_content", None):
                                 current_reasoning_content += delta.reasoning_content
-                                yield {
-                                    "type": "reasoning",
-                                    "response": delta.reasoning_content
-                                }
+                                if (len(current_reasoning_content) - reasoning_checked_len
+                                        >= 2000):
+                                    reasoning_checked_len = len(current_reasoning_content)
+                                    if self._reasoning_has_repeat(
+                                            current_reasoning_content, self.reasoning_repeat_limit):
+                                        _close_stream(response_stream)
+                                        break
 
                             # 处理正文内容
                             if delta.content:
+                                # 正文开始前补发已校验的思考内容（思考在前、正文在后）
+                                if len(current_reasoning_content) > reasoning_yielded_len:
+                                    if self._reasoning_has_repeat(
+                                            current_reasoning_content, self.reasoning_repeat_limit):
+                                        _close_stream(response_stream)
+                                        break
+                                    yield {
+                                        "type": "reasoning",
+                                        "response": current_reasoning_content[reasoning_yielded_len:]
+                                    }
+                                    reasoning_yielded_len = len(current_reasoning_content)
                                 current_response_content += delta.content
                                 yielded_content += delta.content
                                 yield {
@@ -917,6 +1352,17 @@ Here is some useful information about the environment you are running in:
 
                             # 处理工具调用
                             if delta.tool_calls:
+                                # 工具调用占位事件之前同样先补发思考内容
+                                if len(current_reasoning_content) > reasoning_yielded_len:
+                                    if self._reasoning_has_repeat(
+                                            current_reasoning_content, self.reasoning_repeat_limit):
+                                        _close_stream(response_stream)
+                                        break
+                                    yield {
+                                        "type": "reasoning",
+                                        "response": current_reasoning_content[reasoning_yielded_len:]
+                                    }
+                                    reasoning_yielded_len = len(current_reasoning_content)
                                 for tc in delta.tool_calls:
                                     index = tc.index
                                     if index not in tool_call_chunks:
@@ -946,10 +1392,41 @@ Here is some useful information about the environment you are running in:
                                         "id": tool_call_chunks[idx0]["id"],
                                     }
 
-                        # 本轮成功结束：若发生过重试（续写模式），此前中断尝试的正文已在
-                        # yielded_content 中实时推送给前端，最终完整文本即为全部已推送内容
-                        if attempt > 1:
-                            current_response_content = yielded_content
+                        # 本轮成功结束：每次尝试结果独立，不再拼接/续写已推送内容
+                        # （断流有输出 → 直接结束本轮；无输出 → 完全重新请求，不携带任何正文）
+
+                        # reasoning 退化重复检测：同一句重复过多 → 丢弃本次响应并重新请求。
+                        # 命中时不结束任务，直接发起下一次尝试（不携带本次思考/正文）。
+                        if self._reasoning_has_repeat(current_reasoning_content, self.reasoning_repeat_limit):
+                            if reasoning_repeat_retry_count < self.reasoning_repeat_retries:
+                                reasoning_repeat_retry_count += 1
+                                logger.warning(
+                                    "[AI-Retry] reasoning 重复退化（第 %d/%d 次重试，句子重复超过 %d 次），"
+                                    "丢弃本次响应并重新请求: %d chars",
+                                    reasoning_repeat_retry_count, self.reasoning_repeat_retries,
+                                    self.reasoning_repeat_limit, len(current_reasoning_content),
+                                )
+                                # 清空本次已累积的工具调用，避免残留导致下一轮误判
+                                tool_call_chunks = {}
+                                reported_tool_indices = set()
+                                yield {
+                                    "type": "stream_reset",
+                                    "data": "reasoning_repeat",
+                                }
+                                if _sleep_interruptible(api_retry_base_wait):
+                                    return
+                                continue
+                            logger.warning(
+                                "[AI-Retry] reasoning 重复退化超过重试上限（已重试 %d 次），"
+                                "丢弃退化思考并结束本轮，避免污染历史: %d chars",
+                                reasoning_repeat_retry_count, len(current_reasoning_content),
+                            )
+                            # 退化思考不写入历史，也不继续执行，直接结束本轮并提示用户
+                            yield {
+                                "type": "warning",
+                                "data": "检测到模型思维链持续重复退化，已停止本轮以避免无限循环。请重试或换一个更简单的指令。",
+                            }
+                            return
 
                         # 空回复检测：API 返回 200 但无内容且无工具调用 → 重试
                         if not current_response_content and not tool_call_chunks:
@@ -963,6 +1440,14 @@ Here is some useful information about the environment you are running in:
                             else:
                                 logger.warning("[AI-Retry] 多次空回复，放弃重试")
                                 break
+
+                        # 尾部残余思考（纯思考无正文/工具的轮次已在上面按空回复处理）
+                        if (len(current_reasoning_content) > reasoning_yielded_len):
+                            yield {
+                                "type": "reasoning",
+                                "response": current_reasoning_content[reasoning_yielded_len:]
+                            }
+                            reasoning_yielded_len = len(current_reasoning_content)
 
                         break
 
@@ -994,30 +1479,8 @@ Here is some useful information about the environment you are running in:
                         if _sleep_interruptible(wait_s):
                             logger.info("[AI-Retry] 等待重试期间任务被停止")
                             return
-                        if yielded_content:
-                            # 续写模式：把已输出内容作为上下文附上，要求模型从中断处继续（前端按序拼接，不会重复）
-                            # 移除上一轮重试附加的续写上下文，避免重复堆叠
-                            # content 可能是多模态 list（[{"type":"text",...}]），直接
-                            # .startswith 会抛 AttributeError，导致重试逻辑自身崩溃、
-                            # 重试从未发生（异常在 except 块内，直接冒泡到最外层）。
-                            _last = request_messages[-1] if request_messages else None
-                            _last_c = _last.get("content", "") if isinstance(_last, dict) else ""
-                            if isinstance(_last_c, list):
-                                _last_c = " ".join(
-                                    p.get("text", "") for p in _last_c
-                                    if isinstance(p, dict) and p.get("type") == "text"
-                                )
-                            if request_messages and str(_last_c).startswith("[system-note]"):
-                                del request_messages[-2:]
-                            request_messages.append({"role": "assistant", "content": yielded_content})
-                            request_messages.append({"role": "system", "content":
-                                "[system-note] 上一次响应因网络异常被截断。请从上次中断处无缝继续输出剩余内容，"
-                                "不要重复任何已输出的文字，保持语气与格式连贯。"})
-                        else:
-                            # 尚无任何可见输出（或只有未执行的半截工具调用）→ 完全重新请求即可
-                            pass
-                        # 关键修复：sleep 后必须 continue 回到 while True 重新请求，
-                        # 否则会掉出 except 走"空响应->stop"分支，重试从未真正发生
+                        # 断流/异常一律重新请求：不续写、不结束本轮，直到成功或达重试上限。
+                        # 重新请求不携带任何已输出正文，因此不会重复，也不丢结果。
                         continue
                 # 如果这一轮有内容，累加到最终响应
                 if current_response_content:
@@ -1025,28 +1488,81 @@ Here is some useful information about the environment you are running in:
                 if current_reasoning_content:
                     full_reasoning_content = current_reasoning_content
 
+                # 重复内容熔断：有工具调用的轮次里连续输出完全相同的内容 → 幻觉死循环
+                _content_sig = (current_response_content or "").strip()
+                if tool_call_chunks and _content_sig and len(_content_sig) >= 80:
+                    if _content_sig == self._repeat_content:
+                        self._repeat_content_streak += 1
+                    else:
+                        self._repeat_content = _content_sig
+                        self._repeat_content_streak = 1
+                    if self._repeat_content_streak >= self.repeat_limit:
+                        logger.error(
+                            "[AI-Loop] 连续 %d 轮输出完全相同内容，熔断结束本轮",
+                            self._repeat_content_streak,
+                        )
+                        yield {
+                            "type": "warning",
+                            "data": "检测到模型连续多轮重复相同内容，已停止以避免无限循环。",
+                        }
+                        return
+                else:
+                    self._repeat_content = None
+                    self._repeat_content_streak = 0
+
+                # 兜底解析（2026-10-18 恢复）：模型未走标准 function_call，而是把工具
+                # 调用写成 <invoke>/<skill name> 文本（Claude Code 风格）时，解析为真实
+                # 工具调用执行，避免"只回文本不调工具"导致任务卡死。同时剥离正文中的
+                # 伪调用块，防止历史污染。
+                if not tool_call_chunks and current_response_content:
+                    try:
+                        _invoke_tcs = self._parse_invoke_tool_calls(current_response_content)
+                    except Exception:
+                        _invoke_tcs = []
+                    if _invoke_tcs:
+                        logger.warning(
+                            "[ToolInvoke] 检测到 %d 个 <invoke>/<skill> 文本工具调用，已转标准工具执行: %s",
+                            len(_invoke_tcs), [t[0] for t in _invoke_tcs],
+                        )
+                        current_response_content = self._strip_invoke_blocks(current_response_content)
+                        full_response_content = current_response_content
+                        tool_call_chunks = {}
+                        for _i, (_nm, _args) in enumerate(_invoke_tcs):
+                            tool_call_chunks[_i] = {
+                                "id": f"invoke_{_i}",
+                                "function": {
+                                    "name": _nm,
+                                    "arguments": json.dumps(_args, ensure_ascii=False),
+                                },
+                            }
+
                 # 如果没有工具调用，结束循环
                 if not tool_call_chunks:
-                    # 结束前先等后台任务：工具转后台后模型往往"无话可说"直接结束，
-                    # 若此时任务还在跑就 break，结果通知只推 SSE、进不了上下文，
-                    # 模型永远拿不到——后台任务就成了黑盒，只能靠用户追问触发轮询。
-                    # 这里做有限等待（默认 120s），把结果注入后再让模型收尾。
+                    # 结束前等后台任务：工具转后台后结果靠主循环 drain_finished 注入
+                    # 上下文。旧逻辑用 _bg_wait_used + background_wait_seconds=0 做轮询，
+                    # 后台任务未跑完时主循环就 yield stop 终止会话，导致结果只推 SSE、
+                    # 永远进不了对话正文（子代理/普通工具超时转后台后尤为明显）。
+                    # 新逻辑：pending>0 时不终止，挂起等后台完成回调 notify_done 唤醒
+                    # （set wake event），唤醒后下一轮 drain_finished 自然注入结果，
+                    # 模型据此收尾。chat_stop 会置 _is_cancelled，唤醒后直接退出，
+                    # 此时结果已落盘可查、不丢。
                     try:
                         _bg = get_background_manager()
-                        if _bg_wait_used:
-                            # 已等过一轮仍未完成：不再等待，避免放大成死循环
-                            pass
-                        elif _bg.pending_count(self.session_id) > 0:
-                            _bg_wait_used = True
-                            _wait_budget = float(self.config.get("background_wait_seconds", 120))
-                            _poll_interval = 2.0
+                        if _bg.pending_count(self.session_id) > 0:
+                            # 等待上限：0/负 = 不设硬上限，仅由 cancel 中断（前端解耦、
+                            # 挂起不占资源、等不影响）。可配置 background_wait_seconds 兜底。
+                            _wait_budget = float(self.config.get("background_wait_seconds", 0))
+                            _wake = _bg.get_wake_event(self.session_id)
                             _waited = 0.0
-                            while (_waited < _wait_budget
-                                   and _bg.pending_count(self.session_id) > 0
+                            _poll_step = 30.0
+                            while (_bg.pending_count(self.session_id) > 0
                                    and not _is_cancelled()):
-                                time.sleep(min(_poll_interval, _wait_budget - _waited))
-                                _waited += _poll_interval
-                                # 等到就立刻注入，无需等满预算
+                                if _wait_budget > 0 and _waited >= _wait_budget:
+                                    break
+                                # 挂起等唤醒；超时兜底轮询，避免 wake event 丢失导致死等
+                                _wake.wait(timeout=_poll_step)
+                                _waited += _poll_step
+                                # 唤醒即可能已有完成结果，立刻注入让模型下一轮读到
                                 for _t in _bg.drain_finished(self.session_id):
                                     _text = (
                                         f"<background_task_done>\n"
@@ -1060,24 +1576,63 @@ Here is some useful information about the environment you are running in:
                                         f"请据此继续推进任务，不要重复调用该工具。"
                                     )
                                     messages.append({"role": "system", "content": _text})
-                                    logger.info("[Background] 等待后注入结果 task=%s", _t['task_id'])
-                            # 还有未完成的：明确告知，让模型如实汇报而非假装完成
+                                    logger.info("[Background] 挂起唤醒后注入结果 task=%s", _t['task_id'])
+                            # 唤醒后 drain 一次（防 wake 先于 drain 竞态）
+                            for _t in _bg.drain_finished(self.session_id):
+                                _text = (
+                                    f"<background_task_done>\n"
+                                    f"<task_id>{_t['task_id']}</task_id>\n"
+                                    f"<tool>{_t['tool']}</tool>\n"
+                                    f"<status>{_t['status']}</status>\n"
+                                    f"<duration_s>{_t.get('duration_s', '')}</duration_s>\n"
+                                    f"<result>\n{_t['result']}\n</result>\n"
+                                    f"</background_task_done>\n"
+                                    f"以上是你之前转入后台的工具任务的执行结果，现已完成，"
+                                    f"请据此继续推进任务，不要重复调用该工具。"
+                                )
+                                messages.append({"role": "system", "content": _text})
+                                logger.info("[Background] 收尾前注入结果 task=%s", _t['task_id'])
+                            # 还有未完成的（被 cancel 或超出等待上限）：如实告知，
+                            # 让模型带"未完成"信息再走一轮，而非假装完成直接结束
                             if _bg.pending_count(self.session_id) > 0:
+                                _n_pending = _bg.pending_count(self.session_id)
+                                if _wait_budget > 0 and _waited >= _wait_budget:
+                                    _pending_detail = (
+                                        f"仍有 {_n_pending} 个后台任务在运行且已超过等待上限"
+                                        f"（{_wait_budget:g} 秒）。"
+                                    )
+                                else:
+                                    _pending_detail = (
+                                        f"仍有 {_n_pending} 个后台任务在后台运行。"
+                                        f"完成后结果会自动回灌到对话上下文。"
+                                    )
                                 messages.append({
                                     "role": "system",
                                     "content": (
                                         f"<background_task_pending>\n"
-                                        f"仍有 {_bg.pending_count(self.session_id)} 个后台任务在运行且已超过等待上限"
-                                        f"（{self.config.get('background_wait_seconds', 120)} 秒）。\n"
-                                        f"请如实告知用户任务仍在进行、稍后可用 TaskStatus 查询结果，"
+                                        f"{_pending_detail}\n"
+                                        f"请如实告知用户任务仍在进行、稍后会自动返回结果，"
                                         f"不要声称任务已完成，也不要重复发起同一工具调用。\n"
                                         f"</background_task_pending>"
                                     ),
                                 })
-                                # 让模型带着"未完成"信息再走一轮，而不是直接结束
                                 continue
                     except Exception:
                         logger.warning("[Background] 等待后台任务失败", exc_info=True)
+
+                    # 用量统计：把本轮 token 用量追加到 usage ledger（失败静默）
+                    try:
+                        from platform_ext.usage import record_usage  # noqa: PLC0415
+                        record_usage(
+                            session_id=self.session_id or "",
+                            model=getattr(self, "model", "") or "",
+                            input_tokens=int(total_usage.get("input_tokens") or 0),
+                            output_tokens=int(total_usage.get("output_tokens") or 0),
+                            total_tokens=int(total_usage.get("total_tokens") or 0),
+                            source="chat",
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
 
                     yield {
                         "type": "stop",
@@ -1096,11 +1651,39 @@ Here is some useful information about the environment you are running in:
                         "function": tc["function"]
                     })
                 
+                # 重复工具调用熔断：连续多轮发起完全相同的调用 → 幻觉死循环
+                _tool_sig = tuple(sorted(
+                    (tc["function"].get("name", ""), tc["function"].get("arguments", ""))
+                    for tc in assistant_msg_kwargs["tool_calls"]
+                ))
+                _tool_names = {tc["function"].get("name", "") for tc in assistant_msg_kwargs["tool_calls"]}
+                if _tool_names & self._repeat_exempt_tools:
+                    _tool_sig = ()
+                if _tool_sig and _tool_sig == self._repeat_tool_sig:
+                    self._repeat_tool_streak += 1
+                else:
+                    self._repeat_tool_sig = _tool_sig or None
+                    self._repeat_tool_streak = 1 if _tool_sig else 0
+                if _tool_sig and self._repeat_tool_streak >= self.repeat_limit:
+                    logger.error(
+                        "[AI-Loop] 连续 %d 轮完全相同的工具调用，熔断结束本轮: %s",
+                        self._repeat_tool_streak,
+                        ", ".join(tc["function"].get("name", "") for tc in assistant_msg_kwargs["tool_calls"]),
+                    )
+                    yield {
+                        "type": "warning",
+                        "data": "检测到模型连续多轮发起完全相同的工具调用，已停止以避免无限循环。",
+                    }
+                    return
+
                 # 保存助手工具调用消息
                 if current_reasoning_content:
                     assistant_msg_kwargs["reasoning_content"] = current_reasoning_content
 
-                self.memory.add_message("assistant", current_response_content,id=ai_msg_id, **assistant_msg_kwargs)
+                # 源头防污染（2026-10-18 恢复）：保存历史前剥离 <invoke>/<skill> 伪工具
+                # 调用文本。否则历史里残留伪调用块，后续请求会持续诱导模型模仿。
+                _saved_content = Agent._strip_invoke_blocks(current_response_content)
+                self.memory.add_message("assistant", _saved_content, id=ai_msg_id, **assistant_msg_kwargs)
 
                 messages.append({
                     "role": "assistant",
@@ -1112,53 +1695,68 @@ Here is some useful information about the environment you are running in:
                     messages[-1]["reasoning_content"] = assistant_msg_kwargs["reasoning_content"]
 
                 # 执行工具
-                for tc in assistant_msg_kwargs["tool_calls"]:
+                # ── 工具执行：预处理(顺序) → 执行(并行) → 回填(顺序) ──
+                # 2026-10-15 修复（boss 反馈）：此前是串行 for 循环，同一条消息里的多个
+                # 工具调用（尤其多个 Task 子代理）被逐个执行，前一个卡满前台等待上限
+                # 才轮到下一个，与 Task 工具 docstring 承诺的「并发启动多个 agent」不符。
+                # 现改为并行执行同一轮的所有工具调用（config: tool_parallel_enabled，
+                # 默认 True），yield 事件顺序与落库顺序保持不变。
+                _tool_calls = assistant_msg_kwargs["tool_calls"]
+                _plans: list[dict[str, Any]] = []
+                _abort = False
+
+                for tc in _tool_calls:
                     # 停止检查：已请求停止则不再执行后续工具（含 Bash 等高危工具）
                     if _is_cancelled():
-                        self._mark_unexecuted_tools(assistant_msg_kwargs["tool_calls"], messages, ai_msg_id)
+                        self._mark_unexecuted_tools(_tool_calls, messages, ai_msg_id)
                         return
                     func_name = tc["function"]["name"]
                     args_str = tc["function"]["arguments"]
                     call_id = tc["id"]
-                    
+
                     tool_exists = registry.tool_exists(func_name)
                     tool_enabled = registry.is_tool_enabled(func_name, self.enabled_tools) if tool_exists else False
-                    
-                    #处理不存在的工具
+                    # ToolSearch 是 MCP 按需加载的唯一入口，必须在执行期放行：
+                    # 严格模式（经理）的 enabled_tools 来自 original_tools，
+                    # 不含 ToolSearch，若不特判会被权限校验拦掉，
+                    # 模型就永远无法解锁 MCP 工具。
+                    if (not tool_enabled and tool_exists
+                            and func_name == "ToolSearch"
+                            and self._mcp_loaded and self._mcp_defer_enabled()):
+                        tool_enabled = True
+
+                    # 处理不存在的工具
                     if not tool_exists:
-                        result_str = inject_tool_name(
-                            _xml_response("error", f"Error: Tool '{func_name}' does not exist."),
-                            func_name)
-                        content_structure = [{"type": "text", "text": result_str}]
-                        self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": content_structure
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name,
+                            "yield_call": False, "yield_result": False, "write_memory": True,
+                            "immediate": inject_tool_name(
+                                _xml_response("error", f"Error: Tool '{func_name}' does not exist."),
+                                func_name),
                         })
                         continue
-                    
-                    #处理未启用的工具
+
+                    # 处理未启用的工具
                     if not tool_enabled:
                         tool_id = registry.get_tool_id(func_name)
-                        result_str = inject_tool_name(
-                            _xml_response("error", f"Error: Tool '{func_name}' (ID: {tool_id}) is not enabled. You do not have permission to use this tool."),
-                            func_name)
-                        content_structure = [{"type": "text", "text": result_str}]
-                        self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": content_structure
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name,
+                            "yield_call": False, "yield_result": False, "write_memory": True,
+                            "immediate": inject_tool_name(
+                                _xml_response("error", f"Error: Tool '{func_name}' (ID: {tool_id}) is not enabled. You do not have permission to use this tool."),
+                                func_name),
                         })
                         continue
-                    
+
+                    # 通过存在/启用校验后，先 yield tool_call（与原行为一致：在参数解析前）
                     yield {
                         "type": "tool_call",
                         "tool": func_name,
                         "args": args_str,
                         "id": call_id
                     }
+
+                    # 参数解析
                     try:
                         if args_str and args_str.strip():
                             args = json.loads(args_str)
@@ -1167,76 +1765,57 @@ Here is some useful information about the environment you are running in:
                             args = {}
                             self._bad_args_streak = 0
                     except json.JSONDecodeError:
-                        # 关键修复：此前非法 JSON 被静默降级为 {} 继续执行，模型看不到
-                        # 任何错误，于是不断重试同一个超大 Write（参数被输出上限截断），
-                        # 形成"截断 → 非法 → 空跑 → 再截断"的死循环刷 token。
-                        # 改为：把明确错误回灌给模型 + 连续多次即熔断，逼它改用分段写入。
+                        # 非法 JSON 回灌明确错误 + 连续多次熔断（逼模型改分段写入）
                         self._bad_args_streak = self.next_bad_args_streak(self._bad_args_streak)
                         logger.warning(
                             "[Tool-Args] 工具 %s 的参数不是合法 JSON（连续第 %d 次）: %r",
                             func_name, self._bad_args_streak, (args_str or "")[:200]
                         )
-                        _err_structure = [{"type": "text", "text": bad_args_hint(func_name)}]
-                        self.memory.add_message("tool", _err_structure, tool_call_id=call_id, id=ai_msg_id)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": _err_structure
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                            "yield_call": True, "yield_result": False, "write_memory": True,
+                            "immediate": bad_args_hint(func_name),
                         })
                         if self._bad_args_streak >= self.BAD_ARGS_MAX_STREAK:
-                            # 熔断：连续多次同类失败，直接结束本轮，避免无限烧 token
                             logger.error("[Tool-Args] 连续 %d 次非法参数，熔断结束本轮", self._bad_args_streak)
-                            yield {
-                                "type": "warning",
-                                "data": f"工具 {func_name} 参数连续多次非法（内容可能过长被截断），已停止重试。"
-                                        "请换用更小的实现或分段写入。"
-                            }
-                            # return 是本文件既有的中止模式（同 _is_cancelled 分支），
-                            # 且需标记未执行的工具，保持消息序列合法
-                            self._mark_unexecuted_tools(assistant_msg_kwargs["tool_calls"], messages, ai_msg_id)
-                            return
+                            _abort = True
+                            break
                         continue
 
                     # 类型矫正：按 schema 把字符串化的数字/布尔参数转回真实类型
-                    # （模型常把 timeout 等数值传成字符串，导致 _validate_args 报 type error）
                     args = self._coerce_tool_args(func_name, args)
 
-                    # Special handling for Task/RunCrew/ConsultPeer to inherit config
+                    # 参数注入（config/session/cwd）与卡密安全校验
                     try:
                         if func_name in ("Task", "RunCrew", "ConsultPeer"):
-                            # Create a copy of config to avoid modification
                             agent_config = self.config.copy()
-                            # Remove specific keys that shouldn't be inherited or will be overridden
                             agent_config.pop("system_prompt", None)
                             agent_config.pop("tools", None)
-
-                            # Inject into args
                             args["parent_config"] = agent_config
                             args["parent_session_id"] = self.session_id
 
-                        # Inject session_id for Todo and Summary tools
                         if func_name in ["TodoWrite", "TodoRead", "TaskSummary"]:
                             args["session_id"] = self.session_id
                             args["sessions_dir"] = self.config.get("sessions_dir", "sessions")
 
-                        # Inject cwd for Bash/Terminal tools
-                        # 注意：CheckCommandStatus/StopCommand 不接收 cwd 参数（它们的
-                        # execute 签名只有 command_id/output_priority），传了会报
-                        # "unexpected keyword argument 'cwd'"。仅 Bash 需要 cwd。
+                        # 注意：CheckCommandStatus/StopCommand 不接收 cwd 参数，仅 Bash 需要
                         if func_name == "Bash":
                             cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else None
                             if cwd and "cwd" not in args:
                                 args["cwd"] = cwd
-                        
+
                         # 【安全】卡密用户：限制 Bash 命令，禁止危险操作
                         if self._is_card_user and func_name == "Bash":
                             cmd = args.get("command", "")
                             dangerous_patterns = ["cat /etc/", "passwd", "/proc/", "chmod 777", "rm -rf /", "sudo", "su "]
                             if any(p in cmd for p in dangerous_patterns) or cmd.startswith("cat /"):
-                                result_str = inject_tool_name(
-                                    _xml_response("error", f"安全限制：卡密用户禁止执行此命令（包含敏感路径或高危操作）。"),
-                                    func_name)
-                                yield {"type": "tool_result", "tool": func_name, "result": result_str, "id": call_id}
+                                _plans.append({
+                                    "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                                    "yield_call": True, "yield_result": True, "write_memory": False,
+                                    "immediate": inject_tool_name(
+                                        _xml_response("error", f"安全限制：卡密用户禁止执行此命令（包含敏感路径或高危操作）。"),
+                                        func_name),
+                                })
                                 continue
 
                         # 【安全】卡密用户：限制 Write 工具路径
@@ -1244,52 +1823,136 @@ Here is some useful information about the environment you are running in:
                             fp = args.get("file_path", "")
                             logger.info(f"[安全] Card user Write: fp={fp}, workspace={self._user_workspace}, starts={fp.startswith(self._user_workspace) if fp else False}")
                             if fp and not fp.startswith(self._user_workspace):
-                                result_str = inject_tool_name(
-                                    _xml_response("error", f"安全限制：卡密用户只能在隔离工作目录内操作文件（{_user_workspace}）"),
-                                    func_name)
-                                yield {"type": "tool_result", "tool": func_name, "result": result_str, "id": call_id}
+                                _plans.append({
+                                    "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                                    "yield_call": True, "yield_result": True, "write_memory": False,
+                                    "immediate": inject_tool_name(
+                                        _xml_response("error", f"安全限制：卡密用户只能在隔离工作目录内操作文件（{_user_workspace}）"),
+                                        func_name),
+                                })
                                 continue
-                        
-                        func = registry.get_tool_func(func_name)
-                        if func:
-                            result_str = func(**args)
-                        else:
-                            result_str = inject_tool_name(
-                                _xml_response("error", f"Error: Tool {func_name} not found."),
-                                func_name)
                     except Exception as e:
-                        result_str = inject_tool_name(
-                            _xml_response("error", f"Error executing tool: {e!s}"),
-                            func_name)
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                            "yield_call": True, "yield_result": True, "write_memory": True,
+                            "immediate": inject_tool_name(
+                                _xml_response("error", f"Error preparing tool: {e!s}"), func_name),
+                        })
+                        continue
 
-                    yield {
-                        "type": "tool_result",
-                        "tool": func_name,
-                        "result": result_str,
-                        "id": call_id
-                    }
+                    func = registry.get_tool_func(func_name)
+                    if func:
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                            "yield_call": True, "yield_result": True, "write_memory": True,
+                            "func": func, "args": args,
+                            "_res_key": self._tool_resource_key(func_name, args),
+                        })
+                    else:
+                        _plans.append({
+                            "call_id": call_id, "func_name": func_name, "args_str": args_str,
+                            "yield_call": True, "yield_result": True, "write_memory": True,
+                            "immediate": inject_tool_name(
+                                _xml_response("error", f"Error: Tool {func_name} not found."), func_name),
+                        })
 
-                    # 截断过长的工具结果，防止上下文爆炸 (413 错误)
-                    MAX_TOOL_RESULT_LEN = 50000
-                    if isinstance(result_str, str) and len(result_str) > MAX_TOOL_RESULT_LEN:
-                        result_str = result_str[:MAX_TOOL_RESULT_LEN] + f"\n\n[...工具结果过长，已截断，共 {len(result_str)} 字符...]"
+                # 阶段2：执行待执行工具（按资源冲突分组并行，2026-10-15）
+                # 对齐 Claude Code / Cursor：不按工具名一刀切，而是看资源冲突——
+                # 改不同文件的 Edit 可并行，改同一文件的串行；只读/子代理自由并行；
+                # Bash/TodoWrite/MCP 等共享全局状态的独占串行。
+                _exec_plans = [p for p in _plans if p.get("func") is not None]
+                if _exec_plans:
+                    _parallel_on = bool(self.config.get("tool_parallel_enabled", True))
+                    _ctx_job = _get_current_job()
 
-                    # Construct content with XML structure
-                    content_structure = [
-                        {
-                            "type": "text",
-                            "text": result_str
+                    def _run_plan(p):
+                        p["result"] = self._run_one_tool(
+                            p["func"], p["args"], p["func_name"], _ctx_job)
+
+                    if _parallel_on:
+                        # 贪心分组：同组无资源冲突 → 组内并行，组间串行
+                        _groups = self._plan_parallel_groups(_exec_plans)
+                    else:
+                        _groups = [[p] for p in _exec_plans]  # 关闭并行：逐个成组（等价串行）
+
+                    from concurrent.futures import ThreadPoolExecutor as _TPE
+                    _mw = int(self.config.get("tool_parallel_max_workers", 8) or 8)
+                    _mw = max(1, min(_mw, 16))
+                    for _grp in _groups:
+                        if len(_grp) == 1:
+                            _run_plan(_grp[0])
+                        else:
+                            with _TPE(max_workers=min(len(_grp), _mw),
+                                      thread_name_prefix="tool-par") as _pool:
+                                _futs = [(_pool.submit(_run_plan, p), p) for p in _grp]
+                                for _f, _p in _futs:
+                                    _f.result()
+
+                # 阶段3：按原顺序回填（yield tool_result + P6 归档 + 落库）
+                for p in _plans:
+                    call_id = p["call_id"]
+                    func_name = p["func_name"]
+                    result_str = p.get("result")
+                    if result_str is None:
+                        result_str = p.get("immediate", "") or ""
+                    if p["yield_result"]:
+                        yield {
+                            "type": "tool_result",
+                            "tool": func_name,
+                            "result": result_str,
+                            "id": call_id
                         }
-                    ]
+                    if not p["write_memory"]:
+                        continue
 
-                    # Add to memory with new structure
-                    self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
+                    # P6（2026-10-15）：工具结果精简+归档——大结果保留头尾+折叠标记，
+                    # 完整内容落盘 tool_archives/，模型可用 ReadToolArchive 按需召回。
+                    # 取代旧的 50K 硬截断（截断即丢信息）。阈值可配、可禁用。
+                    try:
+                        from .tool_archive import archive_result
+                        _base = self.config.get("base_dir") or PROJECT_ROOT
+                        result_str, _arch_meta = archive_result(
+                            result_str,
+                            base_dir=_base,
+                            session_id=self.session_id,
+                            tool_name=func_name,
+                            config=self.config,
+                        )
+                    except Exception as _arch_err:
+                        logger.debug(f"工具结果归档失败（按原样返回）: {_arch_err!s}")
+
+                    # 注意：btag 走 OpenAI chat 协议（messages[].role=tool.content
+                    # 必须是纯字符串），不能用 Anthropic 的 [{type:text}] 数组——
+                    # 否则 sub2api 转 Responses API 时 agnes 上游拒绝
+                    # （did not match any variant of untagged enum ResponseInput → 500）。
+                    tool_text = self._tool_content_for_model(result_str)
+                    self.memory.add_message("tool", tool_text, tool_call_id=call_id, id=ai_msg_id)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call_id,
-                        "content": content_structure
+                        "content": tool_text
                     })
 
+                # 【单轮内上下文闸门】工具结果回填后检查一次 messages 体积。
+                # 轮间压缩只在 _build_messages 触发，而一次请求可能连跑上百个工具调用，
+                # 中途 messages 会一路膨胀撞上模型上下文上限。这里对最旧的工具结果
+                # 做「归档式精简」（头+尾+折叠标记，完整内容落盘可召回），
+                # 最近若干条保持原样，避免模型正在用的结果被削。
+                try:
+                    _inflight_budget = int(self.context_window_kb * 1024)
+                    if _inflight_budget > 0 and self.config.get("inflight_compress", True):
+                        self._shrink_inflight_context(messages, _inflight_budget)
+                except Exception:
+                    logger.warning("[Inflight] 单轮内压缩异常（不影响主流程）", exc_info=True)
+
+                if _abort:
+                    yield {
+                        "type": "warning",
+                        "data": "工具参数连续多次非法（内容可能过长被截断），已停止重试。"
+                                "请换用更小的实现或分段写入。"
+                    }
+                    self._mark_unexecuted_tools(_tool_calls, messages, ai_msg_id)
+                    return
             # 6. 最终记忆更新 (助手响应)
             if not tool_call_chunks and full_response_content:
                  kwargs = {}
@@ -1297,7 +1960,13 @@ Here is some useful information about the environment you are running in:
                      kwargs["reasoning_content"] = full_reasoning_content
                  
                  # 使用预生成的 ai_msg_id
-                 ai_msg = self.memory.add_message("assistant", full_response_content, id=ai_msg_id, **kwargs)
+                 # 源头防污染：保存历史前剥离 <invoke>/<skill> 文本（同上）
+                 ai_msg = self.memory.add_message(
+                     "assistant",
+                     Agent._strip_invoke_blocks(full_response_content),
+                     id=ai_msg_id,
+                     **kwargs,
+                 )
                  
                  # 发送 meta_info 包含 ID
                  yield {
@@ -1331,6 +2000,234 @@ Here is some useful information about the environment you are running in:
         finally:
             set_session_allow_high(self.session_id, False)
     
+    @staticmethod
+    def _run_one_tool(func: Callable, args: dict, func_name: str, ctx_job) -> str:
+        """在（可能并行的）worker 线程中执行单个工具。
+
+        关键：必须恢复 job 上下文（_restore_job_ctx），否则多会话并发时
+        全局 job 引用会串台（工具内部 emit_progress / is_allow_high /
+        _current_session_id 读错会话）。func 本身已含黑名单/风险/超时/
+        审计守卫（registry 包装的 _guarded_execute），这里只兜底异常。
+        """
+        from .tools import _restore_job_ctx
+        if ctx_job is not None:
+            _restore_job_ctx(ctx_job)
+        try:
+            return func(**args)
+        except Exception as e:
+            return inject_tool_name(
+                _xml_response("error", f"Error executing tool: {e!s}"),
+                func_name)
+
+    # ── <invoke>/<skill name> 文本工具调用兜底解析（2026-10-18 恢复）─────────
+    # 模型（尤其 GLM/自研系）在长会话中会输出 Claude Code 风格的 <invoke> 文本
+    # 工具调用，还会退化成 <skill name="X"> / <parameter name="..."> 形式。若不
+    # 解析，模型以为自己在调工具、实际只发了文本 → 任务卡死/中断；同时这类
+    # 文本会残留在历史里持续诱导模型模仿，形成污染循环。因此：
+    #   1. _strip_invoke_blocks：从发送/保存的历史中剥离伪工具调用块
+    #   2. _parse_invoke_tool_calls：把正文中的伪工具调用转成标准 tool_calls 执行
+    # 兼容闭合/不闭合/畸形标签前缀（标签名前可穿插特殊 token，如 <｜U2｜parameter>）。
+    _TAG_PREFIX = r"(?:\｜[^\s\>]*?)?"
+    # 开标签兼容两种实测形态：<invoke name="X"> 与退化形式 <skill name="X">
+    # （模型把 <invoke> 误写成 <skill>，后跟同样的 <parameter> 参数块）。
+    _INVOKE_OPEN_TAG = r"<(?:invoke|skill)\b[^>]*\bname\s*=\s*\"([^\"]+)\"[^>]*>"
+    _INVOKE_RE = re.compile(
+        r"<(?:invoke|skill)\b[^>]*>.*?</(?:invoke|skill)" + _TAG_PREFIX + r">",
+        re.DOTALL,
+    )
+    _INVOKE_OPEN_RE = re.compile(
+        r'<(?:invoke|skill)\b[^>]*>(?:(?!<(?:invoke|skill)\b).)*',
+        re.DOTALL,
+    )
+    _INVOKE_NAME_RE = re.compile(_INVOKE_OPEN_TAG, re.DOTALL)
+    _PARAM_RE = re.compile(
+        r'<parameter' + _TAG_PREFIX + r'\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</parameter' + _TAG_PREFIX + r'>',
+        re.DOTALL,
+    )
+    _PARAM_OPEN_RE = re.compile(
+        r'<parameter' + _TAG_PREFIX + r'\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(?:(?!</parameter|<parameter\b|<(?:invoke|skill)\b).)*',
+        re.DOTALL,
+    )
+
+    @staticmethod
+    def _strip_invoke_blocks(content: Any) -> Any:
+        """从文本/消息 content 中剥离 <invoke>/<skill name> 伪工具调用块。
+
+        只处理字符串 content 与 list[text 块]；其余原样返回。剥离后保留正文，
+        避免模型在历史里继续看到/模仿伪工具调用格式。
+
+        兼容不闭合的 <invoke> 块（模型模仿退化漏掉 </invoke>）：闭合块优先，
+        未闭合的用 _INVOKE_OPEN_RE 匹配到「下一个 <invoke / 文本结尾」。
+        """
+        def _strip(text: str) -> str:
+            out = Agent._INVOKE_RE.sub("", text)
+            out = Agent._INVOKE_OPEN_RE.sub("", out)
+            return out
+
+        if isinstance(content, str):
+            return _strip(content)
+        if isinstance(content, list):
+            out = []
+            for p in content:
+                if isinstance(p, dict):
+                    p = dict(p)
+                    if p.get("type") in ("text", "output_text", "input_text") and isinstance(p.get("text"), str):
+                        p["text"] = _strip(p["text"])
+                out.append(p)
+            return out
+        return content
+
+    @staticmethod
+    def _tool_content_for_model(content: Any) -> str:
+        """把 role=tool 的 content 归一化为**纯文本字符串**。
+
+        工具结果内部用 <tool> XML 封装；回灌给模型时去掉外壳，避免模型把
+        工具结果格式误当成工具调用格式。归档/展示不受影响。
+
+        重要（2026-10-21）：返回值必须是 str，不能是 [{type:text}] 数组。
+        OpenAI chat 协议规定 role=tool 的 content 只能是字符串；数组是
+        Anthropic Messages 的格式。上游 sub2api 会把 chat 转成 Responses API
+        转发给 agnes，agnes 的 ResponseInput 枚举不认 {"type":"text"}，直接
+        400（did not match any variant of untagged enum ResponseInput）→ 500。
+        历史会话里可能已存了数组，这里统一压平，保证发出去的永远是字符串。
+        """
+        if isinstance(content, str):
+            return tool_result_for_model(content)
+        if isinstance(content, list):
+            parts: list[str] = []
+            for p in content:
+                if isinstance(p, str):
+                    parts.append(p)
+                elif isinstance(p, dict):
+                    # 只取文本块；image_url 等非文本块在 tool 结果里无意义
+                    if p.get("type") in (None, "text", "input_text", "output_text"):
+                        t = p.get("text")
+                        if isinstance(t, str):
+                            parts.append(t)
+            return tool_result_for_model("".join(parts))
+        if content is None:
+            return ""
+        return tool_result_for_model(str(content))
+
+    @classmethod
+    def _coerce_tool_contents(cls, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """发送前兜底：把 role=tool 的数组 content 全部压平成字符串。
+
+        历史会话里可能残留 [{type:text,text:...}]（Anthropic Messages 格式）。
+        OpenAI chat 协议要求 role=tool 的 content 只能是字符串，数组会被
+        sub2api 转 Responses API 后由上游 agnes 拒绝
+        （did not match any variant of untagged enum ResponseInput → 500）。
+
+        返回新列表，不修改调用方的原始消息。
+        """
+        if not any(
+            isinstance(m, dict) and m.get("role") == "tool" and isinstance(m.get("content"), list)
+            for m in messages
+        ):
+            return messages
+        return [
+            ({**m, "content": cls._tool_content_for_model(m.get("content"))}
+             if isinstance(m, dict) and m.get("role") == "tool"
+             and isinstance(m.get("content"), list) else m)
+            for m in messages
+        ]
+
+    @staticmethod
+    def _normalize_reasoning_sentence(sentence: str) -> str:
+        """归一化句子：去首尾空白/标点、折叠空白、转小写，用于重复检测。"""
+        import re as _re
+        s = sentence.strip().lower()
+        s = _re.sub(r"[。．.!！?？;；,，:：\s]+", " ", s)
+        s = _re.sub(r"[\s]+", " ", s)
+        return s.strip()
+
+    @classmethod
+    def _reasoning_has_repeat(cls, reasoning: str, limit: int) -> bool:
+        """检测 reasoning 里是否存在同一句重复过多（退化死循环）。
+
+        按常见句子分隔符切句，归一化后计数；出现同一句 >= limit 次即判定退化。
+        为避免长任务中"短退化"（总长不足 2000 但同一句连续复读）漏检，
+        额外检测：任意一句归一化后连续出现 >= 4 次也判定退化。
+        门槛设在 600 字符，兼顾短退化与误伤平衡。
+        """
+        if not reasoning or len(reasoning) < 600:
+            return False
+        import re as _re
+        # 同时按中英文句末标点和换行切句；英文句号只在后面跟空白时切，
+        # 避免把 chat_client/hotreload.py 这类点号标识符切碎造成误判。
+        parts = _re.split(r"(?<=[。！？!?；;])\s*|\n+|(?<=\.)\s+", reasoning)
+        counts: dict[str, int] = {}
+        # 连续相同计数：专门抓"同一句连续复读"的短退化
+        streak = 0
+        prev_norm = None
+        for part in parts:
+            norm = cls._normalize_reasoning_sentence(part)
+            if len(norm) < 6:
+                continue
+            counts[norm] = counts.get(norm, 0) + 1
+            if counts[norm] >= limit:
+                return True
+            # 连续复读检测：相邻两句归一化完全相同
+            if prev_norm is not None and norm == prev_norm:
+                streak += 1
+                if streak >= 3:  # 连续 4 句相同
+                    return True
+            else:
+                streak = 0
+            prev_norm = norm
+        return False
+
+    @staticmethod
+    def _parse_invoke_tool_calls(content: str) -> list[tuple[str, dict[str, Any]]]:
+        """解析正文中混入的 <invoke name="X"> / <skill name="X"> 文本工具调用。
+
+        返回 [(工具名, 参数字典), ...]；无伪调用时返回空列表。
+        参数值会做 HTML 实体反转义（模型可能输出 &quot; &amp; 等）。
+
+        兼容「不闭合」的 <invoke> 块（模型模仿历史时漏掉 </invoke>）：
+        - <parameter name="x">v</parameter> 标准闭合形式
+        - <parameter name="x">v 后直接结束/遇到下一个标签（不闭合退化形式）
+        """
+        import html as _html
+        parsed: list[tuple[str, dict[str, Any]]] = []
+        seen_ranges: list[tuple[int, int]] = []
+
+        def _parse_block(blk: str) -> None:
+            name_m = Agent._INVOKE_NAME_RE.search(blk)
+            if not name_m:
+                return
+            name = _html.unescape(name_m.group(1).strip())
+            if not name:
+                return
+            args: dict[str, Any] = {}
+            for pm in Agent._PARAM_RE.finditer(blk):
+                pname = _html.unescape(pm.group(1).strip())
+                pval = _html.unescape(pm.group(2).strip())
+                if pname:
+                    args[pname] = pval
+            if not args:
+                for pm in Agent._PARAM_OPEN_RE.finditer(blk):
+                    pname = _html.unescape(pm.group(1).strip())
+                    pval = _html.unescape(pm.group(2).strip())
+                    if pname:
+                        args[pname] = pval
+            parsed.append((name, args))
+
+        for m in Agent._INVOKE_RE.finditer(content or ""):
+            _parse_block(m.group(0))
+            seen_ranges.append(m.span())
+
+        for m in Agent._INVOKE_OPEN_RE.finditer(content or ""):
+            start, end = m.span()
+            if any(s <= start and end <= e for s, e in seen_ranges):
+                continue
+            if any(start < e and s < end for s, e in seen_ranges):
+                continue
+            _parse_block(m.group(0))
+            seen_ranges.append((start, end))
+
+        return parsed
+
     def _mark_unexecuted_tools(self, tool_calls: list[dict], messages: list[dict], ai_msg_id: str):
         """任务被停止时，为未执行/未回填结果的 tool_call 补齐"未执行"结果。
 
@@ -1343,16 +2240,15 @@ Here is some useful information about the environment you are running in:
             call_id = tc.get("id")
             if not call_id or call_id in replied:
                 continue
-            content_structure = [{
-                "type": "text",
-                "text": _xml_response("error", "任务被用户停止，该工具未执行。"),
-            }]
-            self.memory.add_message("tool", content_structure, tool_call_id=call_id, id=ai_msg_id)
+            tool_text = self._tool_content_for_model(
+                _xml_response("error", "任务被用户停止，该工具未执行。"))
+            self.memory.add_message("tool", tool_text, tool_call_id=call_id, id=ai_msg_id)
             messages.append({
                 "role": "tool",
                 "tool_call_id": call_id,
-                "content": content_structure,
+                "content": tool_text,
             })
+
 
     @staticmethod
     def _sanitize_messages_for_api(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1379,6 +2275,11 @@ Here is some useful information about the environment you are running in:
 
         for msg in messages:
             msg = dict(msg)
+
+            # 发送前剥离历史中混入的 <invoke>/<skill> 伪工具调用块（2026-10-18 恢复），
+            # 阻断模型在历史中持续自模仿的污染循环。
+            if msg.get("content") is not None:
+                msg["content"] = Agent._strip_invoke_blocks(msg["content"])
 
             if "tool_calls" in msg:
                 clean_tcs = []
@@ -1419,6 +2320,7 @@ Here is some useful information about the environment you are running in:
 
             # tool 消息：如果对应的 tool_call 已被清理掉，也跳过
             if msg.get("role") == "tool":
+                msg["content"] = Agent._tool_content_for_model(msg.get("content"))
                 tcid = msg.get("tool_call_id", "")
                 if tcid and tcid not in valid_tool_call_ids:
                     if tcid not in all_tc_ids:
@@ -1453,13 +2355,11 @@ Here is some useful information about the environment you are running in:
             return {
                 "role": "tool",
                 "tool_call_id": tid,
-                "content": [{
-                    "type": "text",
-                    "text": _xml_response(
-                        "error",
-                        "工具未执行：该调用在上一次执行中断（进程退出或服务重启），无可用结果。",
-                    ),
-                }],
+                # content 用纯字符串（OpenAI chat 协议），不要 [{type:text}] 数组
+                "content": Agent._tool_content_for_model(_xml_response(
+                    "error",
+                    "工具未执行：该调用在上一次执行中断（进程退出或服务重启），无可用结果。",
+                )),
             }
 
         # 声明有结果 vs 无结果，必须在重建（会 pop）之前统计，否则计数不准
@@ -1517,6 +2417,187 @@ Here is some useful information about the environment you are running in:
             out.append(item)
         return out
 
+    def _shrink_inflight_context(self, messages: list[dict[str, Any]],
+                                 budget_tokens: int) -> int:
+        """工具循环内的压缩闸门（单轮内自保）。
+
+        背景：轮间压缩只在 _build_messages 里触发。但一次用户请求若连续跑几十上百个
+        工具调用（max_tool_iterations 默认 300），messages 会在这条 while 循环里一路膨胀，
+        直到本轮结束、下一轮才压缩 —— 中途极易撞上模型上下文上限（400/413/500）。
+
+        策略（分两级，保守、可逆、不丢信息）：
+        第一级——归档式精简（保留消息骨架）：
+        - 只处理 role == "tool" 的消息（它们是体积大头，且可重新归档）；
+        - 从最旧的开始，超过阈值的正文走 archive_result 精简（头+尾+折叠标记），
+          完整内容落盘 tool_archives/，模型仍可用 ReadToolArchive 按需召回；
+        - 最近 keep_recent 条 tool 结果不动（模型当前正在用）。
+
+        第二级——整轮丢弃（第一级不够时）：
+        单轮工具循环可能跑到上百次调用，仅精简正文仍有下限（每条 tool 消息
+        至少有 XML 外壳与折叠标记）。若精简后仍超预算，按「user 消息」为边界
+        整轮丢弃最旧的历史，保留最近 keep_recent_rounds 轮。
+        以整轮为单位可保证 tool_use / tool_result 不会拆散，避免协议不匹配。
+
+        返回被精简的消息条数（0 表示未触发或无需处理）。
+        """
+        if budget_tokens <= 0 or not messages:
+            return 0
+        try:
+            current = sum(
+                estimate_tokens(json.dumps(m, ensure_ascii=False))
+                for m in messages
+            )
+        except Exception:
+            return 0
+
+        # 触发点必须早于 100%：等撞到上限再压，请求本身已被上游拒绝，
+        # 而且压完还要留给后续工具调用继续增长的空间。
+        trigger_ratio = float(self.config.get("inflight_trigger_ratio", 0.85) or 0.85)
+        trigger = int(budget_tokens * max(0.5, min(trigger_ratio, 1.0)))
+        if current <= trigger:
+            return 0
+
+        # 记录压缩前体积（current 会在循环里递减，必须提前留存用于日志）
+        original = current
+        # 目标：降到预算的 60%，给后续若干轮留出余量
+        target_ratio = float(self.config.get("inflight_target_ratio", 0.6) or 0.6)
+        target = int(budget_tokens * max(0.3, min(target_ratio, 0.9)))
+        keep_recent = max(0, int(self.config.get("inflight_keep_recent_tools", 6)))
+
+        # 收集可精简的 tool 消息下标（最旧优先），排除最近 N 条
+        tool_idx = [i for i, m in enumerate(messages)
+                    if isinstance(m, dict) and m.get("role") == "tool"]
+        if keep_recent:
+            tool_idx = tool_idx[:-keep_recent] if len(tool_idx) > keep_recent else []
+        # 注意：tool_idx 为空不能直接 return —— 第一级够不着时还要走第二级整轮丢弃
+
+        from .tool_archive import archive_result
+        _base = self.config.get("base_dir") or PROJECT_ROOT
+        # 循环内闸门用更激进的阈值：超过 4000 字符就折叠
+        _cfg = dict(self.config)
+        _cfg.setdefault("tool_result_max_chars", 4000)
+        _cfg["tool_result_max_chars"] = min(
+            int(_cfg.get("tool_result_max_chars") or 4000), 4000
+        )
+
+        shrunk = 0
+        for i in tool_idx:
+            if current <= target:
+                break
+            m = messages[i]
+            content = m.get("content")
+            # content 可能是 str 或 [{type:text,text:...}]（历史残留的 Anthropic 格式）。
+            # 无论哪种，压平后一律写回**纯字符串**——OpenAI chat 协议要求
+            # role=tool 的 content 是字符串，数组会被上游 agnes 判为非法（500）。
+            if isinstance(content, list):
+                text = "".join(
+                    str(p.get("text") or "") for p in content if isinstance(p, dict)
+                )
+            elif isinstance(content, str):
+                text = content
+            else:
+                continue
+            if not text:
+                continue
+            try:
+                slim, _meta = archive_result(
+                    text,
+                    base_dir=_base,
+                    session_id=self.session_id,
+                    tool_name=m.get("name") or "tool",
+                    config=_cfg,
+                )
+            except Exception:
+                logger.debug("[Inflight] 压缩工具结果失败，跳过", exc_info=True)
+                continue
+            if not slim or slim == text:
+                continue
+
+            before = estimate_tokens(text)
+            after = estimate_tokens(slim)
+            if after >= before:
+                continue
+
+            messages[i] = {**m, "content": slim}
+
+            current -= (before - after)
+            shrunk += 1
+
+        # ---- 第二级：整轮丢弃（第一级不够时兜底）----
+        # 单轮工具循环可能有几百次调用，每条 tool 消息即便精简也有下限
+        # （XML 外壳 + 折叠标记）。若不整轮丢弃，总量仍可能超模型上限 → 上游 500。
+        # 以 user 消息为轮边界，保留最近 keep_recent_rounds 轮，其余整段删除，
+        # 保证 tool_use / tool_result 不被拆散。
+        dropped = 0
+        if current > target:
+            keep_rounds = max(1, int(self.config.get("inflight_keep_recent_rounds", 8)))
+            # 以 user 消息为轮边界。但单轮工具循环里 user 极少、assistant/tool 极多
+            # （实测 1244 条历史里只有 20 条 user），此时「保留 N 轮」等于几乎不丢，
+            # 必须同时按条数兜底：至少保留最近 keep_recent_msgs 条。
+            keep_recent_msgs = max(20, int(self.config.get("inflight_keep_recent_msgs", 80)))
+            user_idx = [i for i, m in enumerate(messages)
+                        if isinstance(m, dict) and m.get("role") == "user"]
+            while current > target:
+                cut = None
+                if len(user_idx) > keep_rounds:
+                    cut = user_idx[1]                 # 丢最旧一轮（user 边界，天然安全）
+                else:
+                    # user 轮次不足：仍必须从 user 处切，否则会切断 tool_use 链
+                    # （实测从 assistant 切导致 tool_use/tool_result 失配 → 上游 400/500）。
+                    # 若剩余 user 已不够 keep_rounds，退化为「保留最近 keep_recent_msgs 条
+                    # 且起点对齐到最近的 user」。
+                    limit = len(messages) - keep_recent_msgs
+                    if limit <= 0:
+                        break
+                    for j in range(limit, 0, -1):
+                        if messages[j].get("role") == "user":
+                            cut = j
+                            break
+                    if cut is None:
+                        break
+                if not cut or cut <= 0:
+                    break
+                removable = messages[:cut]
+                if not removable:
+                    break
+                messages[:] = messages[cut:]
+                dropped += len(removable)
+                current = sum(
+                    estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in messages
+                )
+                user_idx = [i for i, m in enumerate(messages)
+                            if isinstance(m, dict) and m.get("role") == "user"]
+            if dropped:
+                logger.warning(
+                    "[Inflight] 单轮内上下文仍超预算，丢弃最旧历史："
+                    "丢弃 %d 条，剩余 %d 条（%d 轮）；估算 %d → %d tokens（预算 %d）",
+                    dropped, len(messages), len(user_idx), original, current, budget_tokens,
+                )
+
+        if shrunk or dropped:
+            logger.info(
+                "[Inflight] 单轮内上下文压缩：精简 %d 条工具结果%s，估算 %d → %d tokens（预算 %d）",
+                shrunk, f"、整轮丢弃 {dropped} 条" if dropped else "",
+                original, current, budget_tokens,
+            )
+        return shrunk + dropped
+
+    def _mcp_defer_enabled(self) -> bool:
+        """是否启用 MCP 工具按需加载（默认启用）。
+
+        优先级：config["mcp_tool_defer"] > 环境变量 AI_AGENT_MCP_DEFER > True。
+        设为 False 可回退到「全量注入 MCP 工具 schema」的旧行为。
+        """
+        v = self.config.get("mcp_tool_defer")
+        if v is None:
+            env = os.environ.get("AI_AGENT_MCP_DEFER", "").strip().lower()
+            if env in ("0", "false", "off", "no"):
+                return False
+            return True
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() not in ("0", "false", "off", "no")
+
     def _build_messages(self, context_str: str) -> list[dict[str, Any]]:
         """构建包含系统指令、上下文和滑动窗口的 Prompt。"""
 
@@ -1526,7 +2607,6 @@ Here is some useful information about the environment you are running in:
         # 限制单条消息的最大长度，防止上下文爆炸(413 错误)
         MAX_CONTENT_LEN = 50000  # 单条消息最大字符数
         TOOL_OUTPUT_MAX_LEN = 2000  # 工具输出最大字符数（参考 opencode）
-        KEEP_RECENT_TURNS = 4  # 保留最近的消息数量
 
         def _truncate_content(content):
             """截断过长的消息内容，避免 413 Payload Too Large"""
@@ -1547,28 +2627,8 @@ Here is some useful information about the environment you are running in:
             return content
 
         def _estimate_tokens(text: str) -> int:
-            """估算 token 数量（CJK-aware：尽量贴近实际，避免高估/低估）。
-            策略：优先尝试 tiktoken；降级到启发式估算。
-            - CJK 字符（\u4e00-\u9fff）、全角标点、假名：约 1 字符/token（偏高，防截断过早）
-            - ASCII 字母/数字：约 4 字符/token（更接近真实比）
-            - 其余标点/空白：1 字符/token
-            总体上限与下限均合理，避免英文严重高估、中文严重低估。"""
-            try:
-                global _TIKTOKEN_ENC
-                if _TIKTOKEN_ENC is None:
-                    import tiktoken
-                    _TIKTOKEN_ENC = tiktoken.get_encoding("cl100k_base")
-                return max(1, len(_TIKTOKEN_ENC.encode(text)))
-            except Exception:
-                _TIKTOKEN_ENC = False  # 标记不可用，后续不再重试导入
-            # 启发式 fallback：区分 CJK 与 ASCII
-            cjk_count = sum(1 for ch in text
-                            if ('\u4e00' <= ch <= '\u9fff')
-                            or ('\u3000' <= ch <= '\u303f')
-                            or ('\uff00' <= ch <= '\uffef'))
-            ascii_chars = len(text) - cjk_count
-            # CJK ~1.0 token/char，ASCII ~0.25 token/char；偏保守取中间值
-            return max(1, int(cjk_count * 1.0 + ascii_chars * 0.35))
+            """委托到模块级 estimate_tokens（工具循环内的压缩闸门共用同一实现）。"""
+            return estimate_tokens(text)
 
         if context_str:
             system_prompt += f"\n\n[History Context (Time-Ordered)]:\n{context_str}"
@@ -1576,6 +2636,11 @@ Here is some useful information about the environment you are running in:
         window = self.memory.get_sliding_window()
         # 获取完整历史用于压缩（参考 opencode：压缩完整历史而非滑动窗口）
         full_history = self.memory.get_full_history()
+
+        # 剥离历史中的 <invoke>/<skill> 伪工具调用块（2026-10-18 恢复）：
+        # 窗口/全文统一清洗，避免模型在上下文中继续看到伪调用格式而自模仿。
+        window = [dict(m, content=Agent._strip_invoke_blocks(m.get("content"))) for m in window]
+        full_history = [dict(m, content=Agent._strip_invoke_blocks(m.get("content"))) for m in full_history]
 
         messages = [{"role": "system", "content": system_prompt}]
         
@@ -1608,14 +2673,14 @@ Here is some useful information about the environment you are running in:
                         f"(window {window_tokens} / budget {budget_tokens} tokens，"
                         f"完整历史 {full_history_tokens}，第 {self._compress_round + 1} 轮)，执行自动压缩..."
                     )
-                    # 安全切割：cut 点对齐到 user 轮次边界，保证工具调用序列完整
-                    if len(full_history) > KEEP_RECENT_TURNS:
-                        safe_cut = len(full_history) - KEEP_RECENT_TURNS
-                        cut_idx = 0
-                        for i in range(safe_cut, -1, -1):
-                            if full_history[i].get("role") == "user":
-                                cut_idx = i
-                                break
+                    # 切割点 = 当前 user 消息之前。
+                    # 当前 user 消息是本轮问题，必须保留给模型；其余历史全部进摘要。
+                    cut_idx = 0
+                    for i in range(len(full_history) - 1, -1, -1):
+                        if full_history[i].get("role") == "user":
+                            cut_idx = i
+                            break
+                    if cut_idx > 0:
                         # 核心修正：压缩起点 = 最后一个摘要之后，而不是历史开头！
                         # 旧代码 full_history[:cut_idx] 会把已压缩过的旧部分
                         # （连同旧摘要本身）反复塞进新一轮摘要输入，
@@ -1640,7 +2705,7 @@ Here is some useful information about the environment you are running in:
                             # 排查时无法区分"压缩了但没记"和"压根没压"。
                             logger.info(
                                 f"跳过压缩：无可压缩增量（start_idx={start_idx} == cut_idx={cut_idx}），"
-                                f"最近 {KEEP_RECENT_TURNS} 条内无新 user 轮次"
+                                f"当前 user 消息之前没有新内容"
                             )
                         else:
                             # 构建摘要输入（工具输出截断，总量限制）
@@ -1660,50 +2725,77 @@ Here is some useful information about the environment you are running in:
                             if prev_summary_text:
                                 prev_summary_text = prev_summary_text.replace("[自动压缩的历史摘要]", "").strip()
 
+                            # 摘要只保留"对话主线"：user 输入 + assistant 最终答复/结论。
+                            # 思考链（reasoning_content）与工具原始输出（tool 结果）都不进摘要：
+                            # - 思考是达到结果的手段，压缩后无需保留，且 content 常为空、全在思考里，
+                            #   塞进去只会让摘要输入膨胀、摘要质量下降；
+                            # - 工具结果已由 _truncate_tool_output 截断仍可能很长（实测最长 39K），
+                            #   其价值已体现在后续轮次，原始输出仍保留在 sessions.json 可查。
                             early_text = []
                             for m in early_msgs:
                                 role = m.get("role", "unknown")
+                                if role == "tool":
+                                    continue  # 工具原始结果不进摘要
                                 content = m.get("content", "")
                                 if isinstance(content, list):
                                     text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
                                     content = " ".join(text_parts)
                                 content = _truncate_tool_output(content)
+                                # thinking 模型的 assistant 消息 content 常为空，推理全在
+                                # reasoning_content。若该轮有工具调用，用"调用工具名"补上主线；
+                                # 真正答案出现在后续有 content 的轮次。
+                                if role == "assistant" and not (content or "").strip():
+                                    tc_names = [
+                                        ((tc or {}).get("function") or {}).get("name", "")
+                                        for tc in (m.get("tool_calls") or [])
+                                        if isinstance(tc, dict)
+                                    ]
+                                    tc_names = [n for n in tc_names if n]
+                                    if tc_names:
+                                        content = f"[调用工具: {', '.join(tc_names)}]"
+                                    else:
+                                        continue  # 无内容无工具的空轮次，直接跳过
                                 early_text.append(f"{role}: {content}")
 
                             joined_text = chr(10).join(early_text)
-                            SUMMARY_SRC_LEN = 8000
-                            if len(joined_text) > SUMMARY_SRC_LEN:
-                                # 最新对话优先：超过上限时保尾（最新），头部保留一点点背景
-                                joined_keep = (
-                                    joined_text[:1200]
-                                    + f"\n\n……[中间 {len(joined_text)-SUMMARY_SRC_LEN} 字符已省略，优先保留最新对话]……\n\n"
-                                    + joined_text[-(SUMMARY_SRC_LEN - 1200):]
-                                )
-                            else:
-                                joined_keep = joined_text
 
-                            summary_prompt = (
-                                "请基于【上一轮摘要】与【本轮新增对话】，生成一份合并后的最新摘要（承接旧摘要，融合新进展），帮助继续后续对话。\n"
-                                "重点关注以下信息：\n"
-                                "- 已完成的工作（含上轮摘要中尚未完成、现已完成的）\n"
-                                "- 当前正在进行的工作（**必须包含最新对话中正在做的事**）\n"
-                                "- 涉及的文件和代码\n"
-                                "- 下一步计划\n"
-                                "- 已确认的事实和决策\n"
-                                "- 未完成的任务\n\n"
-                                "注意：只需返回合并后的最新摘要内容，不要任何寒暄或前缀；若没有上轮摘要就只概括本轮对话。\n\n"
-                                f"{('【上轮摘要】\n' + prev_summary_text + '\n\n') if prev_summary_text else ''}"
-                                f"【本轮新增对话】\n{joined_keep}"
-                            )
-                            
-                            try:
-                                summary_resp = self.client.chat.completions.create(
+                            def _build_summary_prompt(src_text: str) -> str:
+                                return (
+                                    "请基于【上一轮摘要】与【本轮新增对话】，生成一份合并后的最新摘要（承接旧摘要，融合新进展），帮助继续后续对话。\n"
+                                    "重点关注以下信息：\n"
+                                    "- 已完成的工作（含上轮摘要中尚未完成、现已完成的）\n"
+                                    "- 当前正在进行的工作（**必须包含最新对话中正在做的事**）\n"
+                                    "- 涉及的文件和代码\n"
+                                    "- 下一步计划\n"
+                                    "- 已确认的事实和决策\n"
+                                    "- 未完成的任务\n\n"
+                                    "注意：只需返回合并后的最新摘要内容，不要任何寒暄或前缀；若没有上轮摘要就只概括本轮对话。\n\n"
+                                    f"{('【上轮摘要】\n' + prev_summary_text + '\n\n') if prev_summary_text else ''}"
+                                    f"【本轮新增对话】\n{src_text}"
+                                )
+
+                            def _request_summary(src_text: str):
+                                return self.client.chat.completions.create(
                                     model=self.model_name,
-                                    messages=[{"role": "user", "content": summary_prompt}],
+                                    messages=[{"role": "user", "content": _build_summary_prompt(src_text)}],
                                     temperature=0.3,
                                     max_tokens=1000,
-                                    timeout=30  # 压缩是旁路调用：最多等 30s，失败即跳过，不让主请求陪等
+                                    # 全量输入可能较大，给足时间；可用 compress_timeout 覆盖
+                                    timeout=float(self.config.get("compress_timeout", 60))
                                 )
+
+                            def _is_context_overflow(err: Exception) -> bool:
+                                text = str(err).lower()
+                                return any(k in text for k in (
+                                    "context_length_exceeded", "maximum context length",
+                                    "prompt is too long", "input tokens exceed",
+                                    "too many tokens", "error code: 413",
+                                ))
+
+                            try:
+                                # 全量喂入：增量是上一轮滑动窗口的子集，上一轮主请求已成功，
+                                # 说明它必然在模型上下文内。仅当上游仍报超限时才降级截断重试。
+                                summary_resp = _request_summary(joined_text)
                                 _msg = summary_resp.choices[0].message
                                 summary_content = (_msg.content or "").strip()
                                 # thinking 模型常把全部输出放进 reasoning_content，content 为 None。
@@ -1714,8 +2806,32 @@ Here is some useful information about the environment you are running in:
                                         getattr(_msg, "reasoning_content", None) or ""
                                     ).strip()
                             except Exception as e:
-                                logger.warning(f"AI 摘要请求异常: {e}")
-                                summary_content = ""
+                                if _is_context_overflow(e) and len(joined_text) > 8000:
+                                    # 异常降级：上游仍报上下文超限时，保尾截断后重试一次。
+                                    # 正常路径不截断，避免丢信息。
+                                    logger.warning(
+                                        f"AI 摘要输入超上下文（{len(joined_text)} 字符），"
+                                        f"降级截断后重试一次"
+                                    )
+                                    joined_keep = (
+                                        joined_text[:1200]
+                                        + f"\n\n……[中间 {len(joined_text) - 8000} 字符已省略，优先保留最新对话]……\n\n"
+                                        + joined_text[-(8000 - 1200):]
+                                    )
+                                    try:
+                                        summary_resp = _request_summary(joined_keep)
+                                        _msg = summary_resp.choices[0].message
+                                        summary_content = (_msg.content or "").strip()
+                                        if not summary_content:
+                                            summary_content = (
+                                                getattr(_msg, "reasoning_content", None) or ""
+                                            ).strip()
+                                    except Exception as e2:
+                                        logger.warning(f"AI 摘要降级请求仍失败: {e2}")
+                                        summary_content = ""
+                                else:
+                                    logger.warning(f"AI 摘要请求异常: {e}")
+                                    summary_content = ""
                             
                             # 失败时直接跳过，不插入任何摘要标签
                             if not summary_content.strip():
@@ -1807,6 +2923,9 @@ Here is some useful information about the environment you are running in:
             if _i_idx != _last_user_idx:
                 content = _drop_image_blocks(content)
             content = _truncate_content(content)
+            if reconstructed["role"] == "tool":
+                # 兼容旧会话：历史里可能已存有 <tool> XML 结果，发送前统一归一化。
+                content = self._tool_content_for_model(content)
 
             m = {"role": reconstructed["role"], "content": content}
             if "tool_calls" in reconstructed:

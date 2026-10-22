@@ -4,7 +4,6 @@
 @position: Knowledge layer — 文档知识库（解析→切块→向量化→检索→引用）
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-设计参考 TencentCloud/Octop 的 knowledge/service.py + index.py +
 retrieve.py + citations.py，按 BT 现有 SimpleVectorDB 的轻量 JSON 存储风格落地。
 
 存储布局（storage_dir 下）：
@@ -188,8 +187,14 @@ class KnowledgeBase:
                doc_ids: list[str] | None = None) -> dict:
         """语义检索，返回带引用的命中列表。
 
+        P2-c 增强（2026-10-15）：
+        - gate：命中数不足或最高分低于门槛时，返回 hint 提示（而非静默空结果）
+        - hint：无命中时给出可操作建议（换关键词/先入库/放宽门槛）
+        - citation：引用带文档名+块号+相似度，便于溯源
+
         Returns:
-            {"status": bool, "results": [{text, doc_id, name, idx, score, citation}]}
+            {"status": bool, "results": [{text, doc_id, name, idx, score, citation}],
+             "gate": {...}, "hint": str}
         """
         if not query or not query.strip():
             return {"status": False, "msg": "查询为空", "results": []}
@@ -199,7 +204,9 @@ class KnowledgeBase:
             allowed = set(doc_ids)
             candidates = [c for c in candidates if c["doc_id"] in allowed]
         if not candidates:
-            return {"status": True, "results": [], "msg": "知识库为空"}
+            return {"status": True, "results": [], "msg": "知识库为空",
+                    "gate": {"passed": False, "reason": "empty"},
+                    "hint": "知识库为空：请先用 KnowledgeAdd 入库文档或文本，再检索。"}
 
         qvecs = self.embed_fn([query])
         if not qvecs:
@@ -221,7 +228,7 @@ class KnowledgeBase:
         for sim, c in scored:
             doc = self.manifest.get(c["doc_id"], {})
             dname = doc.get("name", c["doc_id"])
-            citation = f"[来源: {dname}#块{c['idx']}]"
+            citation = f"[来源: {dname}#块{c['idx']} 相似度{round(sim, 3)}]"
             results.append({
                 "text": c["text"],
                 "doc_id": c["doc_id"],
@@ -230,7 +237,57 @@ class KnowledgeBase:
                 "score": round(sim, 4),
                 "citation": citation,
             })
-        return {"status": True, "results": results}
+
+        # gate + hint：命中为空时给出可操作建议
+        gate = {"passed": bool(results), "threshold": score, "hits": len(results)}
+        hint = ""
+        if not results:
+            hint = (
+                f"未检索到相关内容（门槛 {score}）：可尝试①换更具体的关键词重试；"
+                f"②确认相关文档已用 KnowledgeAdd 入库（当前库内 {len(self.manifest)} 篇）；"
+                f"③适当降低 score 门槛。"
+            )
+        # 内嵌一段 JSON 注释，供前端/下游解析出结构化引用（去重、带 doc/块/相似度）。
+        citations_md = self._machine_citations(results)
+        return {"status": True, "results": results, "gate": gate,
+                "hint": hint, "citations": citations_md,
+                "citations_data": [
+                    {"doc_id": r["doc_id"], "name": r["name"], "idx": r["idx"],
+                     "score": r["score"]} for r in results
+                ]}
+
+    @staticmethod
+    def _machine_citations(results: list[dict]) -> str:
+        """生成机器可读引用块（去重）。
+
+        格式：<!--bt-kb-citations {"citations":[{doc_id,name,idx,score}...]} -->
+        """
+        seen = set()
+        cites = []
+        for r in results:
+            key = (r["doc_id"], r["idx"])
+            if key in seen:
+                continue
+            seen.add(key)
+            cites.append({"doc_id": r["doc_id"], "name": r["name"],
+                          "idx": r["idx"], "score": r["score"]})
+        if not cites:
+            return ""
+        return "<!--bt-kb-citations " + json.dumps(
+            {"citations": cites}, ensure_ascii=False) + " -->"
+
+    def capability_gate(self) -> dict:
+        """能力门禁（对齐 knowledge/gate.py）：报告 embedding 可用性。
+
+        供上层在检索/入库前判断能力是否就绪，而非硬编码后端。
+        """
+        try:
+            v = self.embed_fn(["ping"])
+            ok = bool(v and len(v[0]) > 0)
+        except Exception as e:
+            return {"passed": False, "reason": f"embedding 调用失败: {e!s}"}
+        return {"passed": ok, "dim": len(v[0]) if ok else 0,
+                "docs": len(self.manifest), "chunks": len(self.chunks)}
 
     # ---------- 管理 ----------
     def list_documents(self) -> list[dict]:
