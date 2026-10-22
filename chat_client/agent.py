@@ -1245,12 +1245,12 @@ Here is some useful information about the environment you are running in:
                         "[Builtin-Defer] 延迟下发 %d 个非核心内置工具，常驻 %d 个核心工具",
                         len(_deferred), len(all_tools),
                     )
-        # 注入延迟工具清单（工具名 + 一行描述），让模型知道有哪些工具可搜索
-        _deferred_lines = []
-        for _t in sorted(_deferred):
-            _meta = registry._metadata.get(_t, {})
-            _desc = (_meta.get("description") or "").split("\n")[0][:80]
-            _deferred_lines.append(f"- {_t}: {_desc}")
+                    # 注入延迟工具清单（工具名 + 一行描述），让模型知道有哪些工具可搜索
+                    _deferred_lines = []
+                    for _t in sorted(_deferred):
+                        _meta = registry._metadata.get(_t, {})
+                        _desc = (_meta.get("description") or "").split("\n")[0][:80]
+                        _deferred_lines.append(f"- {_t}: {_desc}")
                     _deferred_block = (
                         "\n\n## 延迟工具（通过 ToolSearch 搜索并解锁）\n"
                         "以下工具未在当前 tools 数组中下发，调用前先 `ToolSearch(query=\"工具名或关键词\")` "
