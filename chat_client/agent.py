@@ -389,6 +389,12 @@ class Agent:
         ).strip().lower()
         self.thinking = self.config.get("thinking", _agent_cfg.get("thinking", False))
         self.web_search = self.config.get("web_search", _agent_cfg.get("web_search", False))
+        # Responses prompt caching：以 model_name 为稳定 key，命中同一模型的历史缓存
+        self._responses_prompt_cache_key = (
+            self.config.get("prompt_cache_key")
+            or (_agent_cfg.get("prompt_cache_key") if isinstance(_agent_cfg.get("prompt_cache_key"), str) else None)
+            or (self.model_name or "bt-responses")
+        )
 
         # ── 失控防护：单次输出有硬上限、拒绝死循环 ──
         # 单次响应最大输出 token（含思考 token）。0 = 不限制（不推荐）。
@@ -984,6 +990,7 @@ Here is some useful information about the environment you are running in:
                 top_p=self.top_p,
                 reasoning_effort=self.reasoning_effort or None,
                 max_output_tokens=self.max_output_tokens or None,
+                prompt_cache_key=self._responses_prompt_cache_key,
             )
             return iter_chat_chunks(self.client, payload)
 

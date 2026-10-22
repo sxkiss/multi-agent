@@ -102,6 +102,7 @@ def build_request(
     reasoning_effort: str | None = None,
     max_output_tokens: int | None = None,
     store: bool = False,
+    prompt_cache_key: str | None = None,
 ) -> dict[str, Any]:
     """把 chat 历史 + 工具定义组装成 Responses 请求体。"""
     instructions: list[str] = []
@@ -233,6 +234,11 @@ def build_request(
         payload["reasoning"] = {"effort": reasoning_effort}
     if max_output_tokens:
         payload["max_output_tokens"] = max_output_tokens
+    # OpenAI Responses prompt caching：稳定标识符 + 隐式断点
+    # （gpt-5.6+ 支持；不支持的网关/上游会忽略未知字段）
+    if prompt_cache_key:
+        payload["prompt_cache_key"] = prompt_cache_key
+        payload["prompt_cache_options"] = {"mode": "implicit", "ttl": "30m"}
     return payload
 
 
