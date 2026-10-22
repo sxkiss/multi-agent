@@ -743,7 +743,11 @@ Here is some useful information about the environment you are running in:
         return env_info
 
     def _load_agents_md(self) -> str:
-        """加载 AGENTS.md 层级指令（非集团模式不加载全局 ~/.codex/AGENTS.md）"""
+        """加载 AGENTS.md 层级指令（非集团模式不加载全局 ~/.codex/AGENTS.md）
+        
+        单 Agent 模式：直接读 cwd 下的 AGENTS.md，不走 git-project-root 查找，
+        避免 ~/.hermes 等非 git 目录误加载到父目录的项目 AGENTS.md。
+        """
         try:
             from .agents_md import agents_md_manager
             mode = self.config.get("mode", "group")
@@ -751,7 +755,21 @@ Here is some useful information about the environment you are running in:
             if mode == "codex_x":
                 return ""
             else:
-                cwd = self.current_dir if hasattr(self, 'current_dir') else os.getcwd()
+                cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else os.getcwd()
+                # 单 AG 模式：优先直接读 cwd/AGENTS.md，防止非 git 目录（如 ~/.hermes）
+                # 被 agents_md_manager 往上找 project root 而加载错误文件
+                if mode in ("single",):
+                    for fname in ("AGENTS.override.md", "AGENTS.md"):
+                        fpath = os.path.join(cwd, fname)
+                        if os.path.exists(fpath):
+                            try:
+                                with open(fpath, "r", encoding="utf-8") as f:
+                                    content = f.read().strip()
+                                if content:
+                                    return f"<!-- {fpath} -->\n{content}"
+                            except Exception:
+                                pass
+                    return ""
                 return agents_md_manager.load(cwd, load_global=False)
         except Exception as e:
             logger.debug(f"加载 AGENTS.md 失败: {e}")
