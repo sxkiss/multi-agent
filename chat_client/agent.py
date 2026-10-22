@@ -920,9 +920,9 @@ Here is some useful information about the environment you are running in:
     def _create_completion_stream(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None):
         # 协议分流：responses / anthropic 各自在 build_request 内部打 cache_control
         # （Anthropic 协议合法字段，命中前缀缓存）。本函数只负责 chat（OpenAI）分支。
-        # 注意：OpenAI 官方协议**不支持** message/tool 上的 cache_control 字段，
-        # 严格网关（如 ccload）会直接报 400/500。因此 chat 分支不再注入该字段，
-        # 前缀缓存交由 anthropic 适配层处理，避免污染 OpenAI 协议请求体。
+        # 注意：OpenAI chat 协议不支持 message/tool 上的 cache_control 字段，
+        # 严格网关（如 ccload）会直接报 400/500。chat 协议用 prompt_cache_key
+        # 做 prompt caching（gpt-5.6+ 支持），与 responses 共用同一 key。
 
         # 发送前最后一道保险：tool 消息 content 必须是纯字符串（见 _coerce_tool_contents）。
         safe_messages = self._coerce_tool_contents(messages)
@@ -943,6 +943,11 @@ Here is some useful information about the environment you are running in:
         # 单次输出硬上限：防止模型退化后无限输出/无限思考
         if self.max_output_tokens and self.max_output_tokens > 0:
             params["max_tokens"] = self.max_output_tokens
+        # Chat completions prompt caching：gpt-5.6+ 支持 prompt_cache_key + prompt_cache_options
+        cache_key = getattr(self, "_responses_prompt_cache_key", None)
+        if cache_key:
+            params["prompt_cache_key"] = cache_key
+            params["prompt_cache_options"] = {"mode": "implicit", "ttl": "30m"}
 
         thinking = self.thinking
 
