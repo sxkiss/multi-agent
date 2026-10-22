@@ -3,7 +3,7 @@
 # 系统开发文档
 
 > 项目：Multi-agent —— 通用型多智能体协作平台（集团模式）
-> 版本基准：2026-10-21 · 服务端口 9876 · systemd 单元 `bt-agent.service`
+> 版本基准：2026-10-22 · 服务端口 9876 · systemd 单元 `bt-agent.service`
 > 配套文档：`REVIEW.md`（历次审核与修复记录）
 
 ---
@@ -17,7 +17,7 @@ Boss（用户）——只下达目标
    └─ 经理 Manager——拆解计划 · 分派 · 汇总交付（主对话）
         ├─ 各部门 Departments（调研/研发/运维/测试/审核/财务…可自定义）
         │    └─ 成员 Members——每个成员自带专属工具集与系统提示词
-        └─ 能力底座：80+ 内置工具 / 技能(Skill) / MCP / RAG / 定时任务
+        └─ 能力底座：85 内置工具（核心 43 常驻 + ToolSearch 按需解锁）/ 技能(Skill) / MCP / RAG / 定时任务
 ```
 
 技术栈：FastAPI + uvicorn（后端）· Vue3 + Vite（前端）· OpenAI 兼容协议（任意网关）。
@@ -72,7 +72,7 @@ Boss（用户）——只下达目标
 │   ├── [prompts/](./prompts/INDEX.md)      # 系统提示词模板
 │   └── [mcp/](./mcp/INDEX.md)              # MCP 配置文件
 ├── [chat_client/](./chat_client/INDEX.md)  # Agent 核心运行时
-│   └── [tools/](./chat_client/tools/INDEX.md) # 80+ 内置工具实现
+│   └── [tools/](./chat_client/tools/INDEX.md) # 85 内置工具（核心 43 常驻 + 按需解锁）
 ├── [agents/](./agents/INDEX.md)            # 预置 Agent（面板兼容）
 ├── [frontend/src/](./frontend/src/INDEX.md) # Vue3 前端源码
 │   └── [components/](./frontend/src/components/INDEX.md) # UI 组件
@@ -166,7 +166,27 @@ def my_tool(arg1: str, count: int = 10) -> str:
 - WebFetch/curl_url/http_check：仅 http/https
 - extract_archive：tar 'data' filter + 成员路径穿越双重防护
 
+### 工具按需加载（Defer）
+
+85 个内置工具按"核心常驻 + 按需解锁"策略下发，避免首请求 prompt 过大：
+
+- **核心工具（43 个常驻）**：文件操作（Bash/Read/Write/Edit/Grep/Glob/Patch/LargeFileEdit/ReadToolArchive）、命令管理（CheckCommandStatus/StopCommand）、Agent（Task/TaskStatus/TaskStop/TaskSummary/TodoRead/TodoWrite）、媒体微信（WeChatRoute/ClawbotSendMedia/SendMedia/ViewImage）、浏览器（browser_use）、搜索（WebSearch/WebFetch/curl_url/http_check）、市场技能专家（Skills/SkillMarket/ExpertMarket/GetExpertPrompt/InstallExpert/SkillCategories/ExpertScenes）、入口（ToolSearch/MCP）、记忆知识库（mem0_*/Knowledge*）、定时任务（ScheduleTask/ListScheduledTasks）、系统（get_current_time）
+- **延迟工具（42 个）**：首次请求不下发，模型调用 `ToolSearch(keyword=...)` 命中后本会话解锁，后续请求再带上 schema
+- **MCP 工具**：同样走 `ToolSearch` 按需解锁（默认 defer），与内置延迟工具共用同一入口
+- 配置：`mcp_tool_defer`（默认 true，config 或 env `AI_AGENT_MCP_DEFER` 控制）；核心工具清单见 `DEFAULT_CORE_TOOL_NAMES`
+
+机制细节：
+```python
+# 单 AG / Codex-X 模式，非 strict_tools 时触发
+if _builtin_defer_enabled:
+    _unlocked = get_unlocked_builtin_tools(session_id)
+    _deferred = all_tool_names - DEFAULT_CORE_TOOL_NAMES - _unlocked
+    all_tools = [t for t in all_tools if t["function"]["name"] not in _deferred]
+```
+
 ---
+
+
 
 ## 5. 多智能体与部门
 
@@ -294,7 +314,7 @@ kill $(systemctl show bt-agent.service -p MainPID --value)   # 5s 后自动拉�
 
 - 无依赖工具并行执行（当前串行，需设计前端事件顺序）
 - 熔断半开机制未实现
-- 工具场景化自动裁剪（80+ 全下发致首 token 延迟偏高；可在设置隐藏冗余 MCP 缓解）
+- 工具按需加载：85 个内置工具中核心 43 个常驻，其余通过 `ToolSearch` 按需解锁，单 AG 模式首请求节省约 27%（~29 KB）。MCP 工具同样按此机制延迟加载。
 - hierarchical 模式为单层经理；多层嵌套待定
 - 定时任务的 REST/UI 未接前端（工具已可用）
 - `ai_agent_legacy_*` 已删除；`.server.pid` 为历史残留可忽略
