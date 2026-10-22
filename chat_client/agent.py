@@ -505,9 +505,14 @@ class Agent:
                             with open(fpath, "r", encoding="utf-8") as f:
                                 content = f.read().strip()
                             if content:
-                                # MEMORY.md 截断控制 token
-                                if "MEMORY" in title and len(content) > 12000:
-                                    content = content[:12000] + "\n...[截断，总长{}字]...".format(len(content))
+                                # MEMORY.md 统一用占位符，避免加载大文件浪费 token
+                                if "MEMORY" in title:
+                                    _mem_lines = len(content.splitlines())
+                                    _mem_chars = len(content)
+                                    content = (
+                                        f"（MEMORY.md 已加载，{_mem_lines} 行 / {_mem_chars} 字，"
+                                        "具体内容通过 `mem0_search` / `mem0_list` 按需检索，不在提示词中重复展开）"
+                                    )
                                 _ctx_parts.append(f"## {title}\n{content}")
                                 found = True
                                 break
