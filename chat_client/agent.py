@@ -1235,10 +1235,12 @@ Here is some useful information about the environment you are running in:
 
             # 内置非核心工具过滤（单 Agent / Codex-X 模式下生效）
             if _builtin_defer_enabled:
-                from .tools import DEFAULT_CORE_TOOL_NAMES, get_unlocked_builtin_tools
+                from .tools import DEFAULT_CORE_TOOL_NAMES, HIGH_FREQ_TOOL_NAMES, get_unlocked_builtin_tools
                 _unlocked = get_unlocked_builtin_tools(self.session_id)
                 _all_names = {x["function"]["name"] for x in all_tools}
-                _deferred = _all_names - DEFAULT_CORE_TOOL_NAMES - _unlocked
+                # 高频工具动态切换：有历史统计时用 HIGH_FREQ_TOOL_NAMES，否则回退到 DEFAULT_CORE_TOOL_NAMES
+                _active_core = HIGH_FREQ_TOOL_NAMES if metrics_mod.has_history() else DEFAULT_CORE_TOOL_NAMES
+                _deferred = _all_names - _active_core - _unlocked
                 if _deferred:
                     all_tools = [x for x in all_tools if x["function"]["name"] not in _deferred]
                     logger.info(

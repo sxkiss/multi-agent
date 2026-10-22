@@ -1453,3 +1453,20 @@ DEFAULT_CORE_TOOL_NAMES: frozenset[str] = frozenset([
     # 系统
     "get_current_time",
 ])
+
+# 高频工具（有历史统计数据时使用，替代 DEFAULT_CORE_TOOL_NAMES）
+# 来源：metrics 累计调用次数，≥10 次视为高频；按实际使用频率裁剪
+HIGH_FREQ_TOOL_NAMES: frozenset[str] = frozenset([
+    "Bash", "Read", "Write", "Edit", "Grep", "Glob", "Patch",
+    "CheckCommandStatus", "StopCommand",
+    "Task", "TaskStatus", "TaskStop", "TaskSummary",
+    "TodoRead", "TodoWrite",
+    "WeChatRoute", "ClawbotSendMedia", "SendMedia", "ViewImage",
+    "browser_use",
+    "WebSearch", "WebFetch", "curl_url", "http_check",
+    "ToolSearch", "MCP",
+    "mem0_search", "mem0_add", "mem0_list",
+    "KnowledgeSearch", "KnowledgeAdd",
+    "ScheduleTask", "ListScheduledTasks",
+    "get_current_time",
+])

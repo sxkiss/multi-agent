@@ -460,3 +460,12 @@ def reset_metrics() -> None:
     global _registry
     with _reg_lock:
         _registry = None
+
+
+def has_history(min_calls: int = 1) -> bool:
+    """是否有跨重启的历史统计数据（任意工具调用次数 >= min_calls）。"""
+    try:
+        m = get_metrics()
+        return any(v.get("calls", 0) >= min_calls for v in m._history.values())
+    except Exception:
+        return False
