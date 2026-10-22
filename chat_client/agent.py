@@ -480,54 +480,18 @@ class Agent:
             logger.debug(f"current_dir in config: {self.current_dir}")
             self.system_prompt += self._get_environment_info()
         
-        # 加载 AGENTS.md / SOUL / USER / MEMORY 层级指令
-        # 集团模式下始终加载；单 Agent 模式下也加载（让 hermes 等工作区能读到 SOUL 等文件）
+        # 加载 AGENTS.md 层级指令
+        # 集团模式下始终加载；单 Agent 模式下仅在未指定系统提示词时加载
         # 单 Agent 模式下自动过滤集团模式相关内容（如 RunCrew 调度规则），减少 token 消耗
         if self.config.get("enable_agents_md", True):
             mode = self.config.get("mode", "group")
-            if mode in ("single", "codex_x"):
-                # 单 Agent 模式：从 cwd 加载 AGENTS.md（过滤集团内容），再从 cwd 加载 SOUL/USER/MEMORY
+            # 单 Agent 模式已指定预设提示词时跳过 AGENTS.md
+            should_load_md = mode == "group" or not self.system_prompt
+            if should_load_md:
                 agents_md = self._load_agents_md()
                 if agents_md:
-                    agents_md = self._filter_agents_md_for_single(agents_md)
-                    self.system_prompt += f"\n\n## Project Instructions (AGENTS.md)\n\n{agents_md}"
-                # 追加 SOUL / USER / MEMORY（hermes 等工作区需要）
-                # 只在 cwd 和 cwd/memories/ 下查找，不往上爬目录树
-                _ctx_parts = []
-                cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else os.getcwd()
-                for fname, title in [("SOUL.md", "身份与行为准则（SOUL）"),
-                                     ("USER.md", "用户信息（USER）"),
-                                     ("MEMORY.md", "记忆与历史（MEMORY）")]:
-                    found = False
-                    for search_dir in (cwd, os.path.join(cwd, "memories")):
-                        fpath = os.path.join(search_dir, fname)
-                        try:
-                            with open(fpath, "r", encoding="utf-8") as f:
-                                content = f.read().strip()
-                            if content:
-                                # MEMORY.md 统一用占位符，避免加载大文件浪费 token
-                                if "MEMORY" in title:
-                                    _mem_lines = len(content.splitlines())
-                                    _mem_chars = len(content)
-                                    content = (
-                                        f"（MEMORY.md 已加载，{_mem_lines} 行 / {_mem_chars} 字，"
-                                        "具体内容通过 `mem0_search` / `mem0_list` 按需检索，不在提示词中重复展开）"
-                                    )
-                                _ctx_parts.append(f"## {title}\n{content}")
-                                found = True
-                                break
-                        except FileNotFoundError:
-                            pass
-                        except Exception:
-                            pass
-                    if not found:
-                        logger.debug("单AG模式未找到 %s/%s（cwd=%s），跳过", cwd, fname, cwd)
-                if _ctx_parts:
-                    self.system_prompt += "\n\n" + "\n\n".join(_ctx_parts)
-            else:
-                # 集团模式：原有逻辑
-                agents_md = self._load_agents_md()
-                if agents_md:
+                    if mode in ("single", "codex_x"):
+                        agents_md = self._filter_agents_md_for_single(agents_md)
                     self.system_prompt += f"\n\n## Project Instructions (AGENTS.md)\n\n{agents_md}"
 
         # 注入技能摘要，让 AI 知道有哪些技能可用（Codex 式三层披露 Layer 1）
@@ -750,11 +714,7 @@ Here is some useful information about the environment you are running in:
         return env_info
 
     def _load_agents_md(self) -> str:
-        """加载 AGENTS.md 层级指令（非集团模式不加载全局 ~/.codex/AGENTS.md）
-        
-        单 Agent 模式：直接读 cwd 下的 AGENTS.md，不走 git-project-root 查找，
-        避免 ~/.hermes 等非 git 目录误加载到父目录的项目 AGENTS.md。
-        """
+        """加载 AGENTS.md 层级指令（非集团模式不加载全局 ~/.codex/AGENTS.md）"""
         try:
             from .agents_md import agents_md_manager
             mode = self.config.get("mode", "group")
@@ -762,21 +722,7 @@ Here is some useful information about the environment you are running in:
             if mode == "codex_x":
                 return ""
             else:
-                cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else os.getcwd()
-                # 单 AG 模式：优先直接读 cwd/AGENTS.md，防止非 git 目录（如 ~/.hermes）
-                # 被 agents_md_manager 往上找 project root 而加载错误文件
-                if mode in ("single",):
-                    for fname in ("AGENTS.override.md", "AGENTS.md"):
-                        fpath = os.path.join(cwd, fname)
-                        if os.path.exists(fpath):
-                            try:
-                                with open(fpath, "r", encoding="utf-8") as f:
-                                    content = f.read().strip()
-                                if content:
-                                    return f"<!-- {fpath} -->\n{content}"
-                            except Exception:
-                                pass
-                    return ""
+                cwd = self.current_dir if hasattr(self, 'current_dir') else os.getcwd()
                 return agents_md_manager.load(cwd, load_global=False)
         except Exception as e:
             logger.debug(f"加载 AGENTS.md 失败: {e}")
@@ -1216,15 +1162,6 @@ Here is some useful information about the environment you are running in:
                     t = registry.dedup_tools(t)
                 return t
 
-            # 内置非核心工具延迟加载：单 Agent / Codex-X 模式下只下发核心工具，
-            # 其余工具通过 ToolSearch 按需解锁。
-            mode = self.config.get("mode", "group")
-            _builtin_defer_enabled = (
-                self._mcp_defer_enabled()
-                and mode in ("single", "codex_x")
-                and not self.strict_tools
-            )
-
             # 构建工具列表：使用 enabled_tools（已排除集团工具）而非 _build_tools(None)（返回全部工具含 RunCrew）
             # strict_tools 模式（集团经理）：按 original_tools 过滤，未指定则用全量
             # 非 strict 模式（单 Agent / Codex-X）：用 enabled_tools（已排除 _GROUP_TOOLS）
@@ -1233,37 +1170,9 @@ Here is some useful information about the environment you are running in:
             else:
                 all_tools = _build_tools(self.enabled_tools) if self.enabled_tools else _build_tools(None)
 
-            # 内置非核心工具过滤（单 Agent / Codex-X 模式下生效）
-            if _builtin_defer_enabled:
-                from .tools import DEFAULT_CORE_TOOL_NAMES, HIGH_FREQ_TOOL_NAMES, get_unlocked_builtin_tools
-                _unlocked = get_unlocked_builtin_tools(self.session_id)
-                _all_names = {x["function"]["name"] for x in all_tools}
-                # 高频工具动态切换：有历史统计时用 HIGH_FREQ_TOOL_NAMES，否则回退到 DEFAULT_CORE_TOOL_NAMES
-                _active_core = HIGH_FREQ_TOOL_NAMES if metrics_mod.has_history() else DEFAULT_CORE_TOOL_NAMES
-                _deferred = _all_names - _active_core - _unlocked
-                if _deferred:
-                    all_tools = [x for x in all_tools if x["function"]["name"] not in _deferred]
-                    logger.info(
-                        "[Builtin-Defer] 延迟下发 %d 个非核心内置工具，常驻 %d 个核心工具",
-                        len(_deferred), len(all_tools),
-                    )
-                    # 注入延迟工具清单（工具名 + 一行描述），让模型知道有哪些工具可搜索
-                    _deferred_lines = []
-                    for _t in sorted(_deferred):
-                        _meta = registry._metadata.get(_t, {})
-                        _desc = (_meta.get("description") or "").split("\n")[0][:80]
-                        _deferred_lines.append(f"- {_t}: {_desc}")
-                    _deferred_block = (
-                        "\n\n## 延迟工具（通过 ToolSearch 搜索并解锁）\n"
-                        "以下工具未在当前 tools 数组中下发，调用前先 `ToolSearch(query=\"工具名或关键词\")` "
-                        "解锁（命中后本会话有效）：\n"
-                        + "\n".join(_deferred_lines)
-                    )
-                    self.system_prompt += _deferred_block
-
-            # ToolSearch 是按需加载的唯一入口，必须始终可用；
+            # ToolSearch 是 MCP 按需加载的唯一入口，必须始终可用；
             # 否则 strict 模式（经理）按 original_tools 过滤时会把它一起过滤掉，
-            # 模型就永远无法解锁工具。
+            # 模型就永远无法解锁 MCP 工具。
             if self._mcp_loaded and self._mcp_defer_enabled():
                 if not any(x["function"]["name"] == "ToolSearch" for x in all_tools):
                     _ts = [x for x in registry.get_openai_tools()
