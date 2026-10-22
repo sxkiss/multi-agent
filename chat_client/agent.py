@@ -492,25 +492,31 @@ class Agent:
                     agents_md = self._filter_agents_md_for_single(agents_md)
                     self.system_prompt += f"\n\n## Project Instructions (AGENTS.md)\n\n{agents_md}"
                 # 追加 SOUL / USER / MEMORY（hermes 等工作区需要）
-                # 只在 cwd 下查找，不回退到 memories/ 子目录或父目录
+                # 只在 cwd 和 cwd/memories/ 下查找，不往上爬目录树
                 _ctx_parts = []
                 cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else os.getcwd()
                 for fname, title in [("SOUL.md", "身份与行为准则（SOUL）"),
                                      ("USER.md", "用户信息（USER）"),
                                      ("MEMORY.md", "记忆与历史（MEMORY）")]:
-                    fpath = os.path.join(cwd, fname)
-                    try:
-                        with open(fpath, "r", encoding="utf-8") as f:
-                            content = f.read().strip()
-                        if content:
-                            # MEMORY.md 截断控制 token
-                            if "MEMORY" in title and len(content) > 12000:
-                                content = content[:12000] + "\n...[截断，总长{}字]...".format(len(content))
-                            _ctx_parts.append(f"## {title}\n{content}")
-                    except FileNotFoundError:
-                        pass
-                    except Exception:
-                        pass
+                    found = False
+                    for search_dir in (cwd, os.path.join(cwd, "memories")):
+                        fpath = os.path.join(search_dir, fname)
+                        try:
+                            with open(fpath, "r", encoding="utf-8") as f:
+                                content = f.read().strip()
+                            if content:
+                                # MEMORY.md 截断控制 token
+                                if "MEMORY" in title and len(content) > 12000:
+                                    content = content[:12000] + "\n...[截断，总长{}字]...".format(len(content))
+                                _ctx_parts.append(f"## {title}\n{content}")
+                                found = True
+                                break
+                        except FileNotFoundError:
+                            pass
+                        except Exception:
+                            pass
+                    if not found:
+                        logger.debug("单AG模式未找到 %s/%s（cwd=%s），跳过", cwd, fname, cwd)
                 if _ctx_parts:
                     self.system_prompt += "\n\n" + "\n\n".join(_ctx_parts)
             else:
