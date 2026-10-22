@@ -1198,10 +1198,25 @@ def is_mcp_tool(name: str) -> bool:
 
 
 def is_builtin_defer_tool(name: str) -> bool:
-    """该内置工具是否属于「非核心、可延迟下发」集合。"""
+    """该内置工具是否属于「非核心、可延迟下发」集合。
+    MCP 工具（含点号原名及清洗别名）不属于此列，返回 False。"""
+    meta = registry._metadata.get(name) or {}
+    if meta.get("category") == "mcp":
+        return False
     if name not in DEFAULT_CORE_TOOL_NAMES:
         return True
     return False
+
+
+def _seq_match(haystack: str, sub: str) -> bool:
+    """sub 是否为 haystack 的子序列（各字符按序出现），用于工具名模糊匹配。"""
+    i = 0
+    for c in sub:
+        i = haystack.find(c, i)
+        if i < 0:
+            return False
+        i += 1
+    return True
 
 
 # session_id -> 已解锁的内置工具名集合
@@ -1290,19 +1305,27 @@ def ToolSearch(query: str = "", limit: int = 15) -> str:
         terms = [t for t in re.split(r"[\s,，、]+", q) if t]
         scored: list[tuple[int, str, str]] = []
         for name, desc in all_candidates:
+            name_lower = name.lower()
             hay = (name + " " + desc).lower()
-            score = sum(1 for t in terms if t in hay)
-            if score:
-                scored.append((score, name, desc))
-        if not scored:
-            scored = [(0, n, d) for n, d in all_candidates]
+            # 模糊评分：工具名字序列匹配权重 5，子串匹配权重 3，描述子串 1
+            score = 0
+            for t in terms:
+                if _seq_match(name_lower, t):
+                    score += 5
+                elif t in name_lower:
+                    score += 3
+                elif t in hay:
+                    score += 1
+            scored.append((score, name, desc))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        has_match = any(s > 0 for s, _, _ in scored)
+        if not has_match:
             _hint = (
-                f"没有找到精确匹配「{query}」的工具（工具名/描述多为英文）。"
+                f"没有找到「{query}」相关工具（工具名/描述多为英文）。"
                 f"以下列出全部 {len(all_candidates)} 个可解锁工具供挑选：\n"
             )
         else:
             _hint = ""
-        scored.sort(key=lambda x: (-x[0], x[1]))
         picked_items = [(n, d) for _, n, d in scored[:limit]]
     else:
         _hint = ""

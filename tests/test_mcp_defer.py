@@ -192,10 +192,10 @@ class ToolSearchTest(unittest.TestCase):
         self.assertIn("已解锁 3 个", out)
 
     def test_chinese_query_falls_back_to_list(self):
-        """中文匹配不上英文工具名时应回退列出，而非返回空。"""
+        """中文查询若无法匹配任何工具名或描述，应回退列出全部而非返回空。"""
         from chat_client.tools import ToolSearch
-        out = ToolSearch(query="文档", limit=3)
-        self.assertIn("没有找到精确匹配", out)
+        out = ToolSearch(query="飞控发动机", limit=3)
+        self.assertIn("没有找到", out)
         self.assertIn("已解锁", out)
 
     def test_limit_clamped(self):
