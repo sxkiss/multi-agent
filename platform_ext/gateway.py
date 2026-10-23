@@ -87,13 +87,17 @@ _PLATFORM_META: dict[str, dict[str, Any]] = {
     },
     "yuanbao": {
         "label": "元宝",
-        "config_fields": [{"name": "token", "type": "password", "required": True}],
+        "config_fields": [{"name": "app_key", "type": "string", "required": True, "placeholder": "元宝开放平台 AppKey"},
+                          {"name": "app_secret", "type": "password", "required": True, "placeholder": "元宝开放平台 AppSecret"},
+                          {"name": "token", "type": "password", "required": False, "placeholder": "Bot Token（可选）"}],
         "note": "元宝开放平台",
     },
     "xiaoyi": {
         "label": "小一 (xiaoyi)",
-        "config_fields": [{"name": "token", "type": "password", "required": True}],
-        "note": "小一智能助手",
+        "config_fields": [{"name": "ak", "type": "string", "required": True, "placeholder": "Access Key"},
+                          {"name": "sk", "type": "password", "required": True, "placeholder": "Secret Key"},
+                          {"name": "agent_id", "type": "string", "required": True, "placeholder": "Agent ID"}],
+        "note": "小一智能助手（华为云）",
     },
     "mqtt": {
         "label": "MQTT",
