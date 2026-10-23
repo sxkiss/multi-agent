@@ -1,6 +1,6 @@
 """后台任务持久化仓库（SQLite）
 
-对齐 Octop 的 thread_history_projection 机制：
+参考成熟状态机设计：
 - 状态流转：pending → queued → running → done/failed/cancelled → ready
 - ready = 结果已注入对话上下文，不会再被 drain_finished 重复消费
 - 无 delivered 字段，用 status=ready 替代
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 _DB_PATH = Path(__file__).parent.parent.parent / "background_tasks.sqlite"
 
-# 状态常量（对齐 Octop）
+# 状态常量
 STATUS_PENDING   = "pending"
 STATUS_QUEUED    = "queued"
 STATUS_RUNNING   = "running"
@@ -81,7 +81,7 @@ class BgTaskRepo:
     """后台任务持久化仓库（SQLite）
 
     线程安全：所有方法内部加锁，支持多线程并发访问。
-    状态机对齐 Octop：pending → queued → running → done/failed/cancelled → ready
+    状态机：pending → queued → running → done/failed/cancelled → ready
     """
 
     def __init__(self, db_path: Optional[Path] = None):

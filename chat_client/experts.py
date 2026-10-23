@@ -2,7 +2,7 @@
 @input: json, os, threading, time, typing, yaml
 @auto-doc: Update header and folder INDEX.md when this file changes
 
-P5（2026-10-15，boss 反馈「不像 Octop 那样自动发现技能和专家」）：
+P5（2026-10-15，boss 反馈「不像成熟产品那样自动发现技能和专家」）：
 bt 此前专家只能通过外部市场手动查询（ExpertMarket → GetExpertPrompt），
 没有本地专家库、不自动发现、不注入系统提示。
 

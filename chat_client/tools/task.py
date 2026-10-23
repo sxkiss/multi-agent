@@ -40,7 +40,7 @@ class AgentRegistry:
         用于注入到该角色的系统提示词，使其开局即"带上"专属技能，无需再调 Skills 工具。
 
         技能来源（按优先级）：
-        1. 专家目录自带 skills/<name>/（agent_def.expert_dir，Octop 式专家包）
+        1. 专家目录自带 skills/<name>/（agent_def.expert_dir，专家包）
         2. 全局 skill_manager（项目 skills/ 目录）
         """
         names = agent_def.skills or []

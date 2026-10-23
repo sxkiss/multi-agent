@@ -247,8 +247,8 @@ class TestCliInstall:
             assert gw.get_gateway_adapter(k) is not None
 
 
-# ── 回归：对齐 Octop builder 的 remote spec / 凭据归一化 ──────
-class TestOctopAlignment:
+# ── 回归：remote spec / 凭据归一化 ──────
+class TestRemoteSpecAlignment:
     """本次修复的回归用例（此前 4 个真实缺陷）。"""
 
     def test_remote_spec_tencent_docs_uses_openapi_path_and_auth_header(self):

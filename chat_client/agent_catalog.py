@@ -1,4 +1,4 @@
-"""Agent catalog — 对齐 Octop ExpertCatalog/SubagentCatalog 的统一 agent 发现层。
+"""Agent catalog — 统一 agent 发现层。
 
 扫描多个 root，支持:
 - 专家目录（manifest.json + SOUL.md）

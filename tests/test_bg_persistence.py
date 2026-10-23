@@ -1,4 +1,4 @@
-"""后台任务持久化测试（对齐 Octop 状态机）"""
+"""后台任务持久化测试（状态机）"""
 import time
 import pytest
 from concurrent.futures import Future
