@@ -199,7 +199,9 @@
   .mcp-market-item, .mcp-market-head { font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm); margin-bottom: 6px; }
   .mcp-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
   .mcp-tag { font-size: 11px; background: var(--bt-surface-2); padding: 1px 6px; border-radius: 99px; }
-</style>
+  .card-row:hover { background: rgba(74,124,247,.08); }
+  .card-row .btn + .btn { margin-left: 6px; }
+  </style>
 </head>
 <body>
 <div class="wrap">
@@ -592,7 +594,13 @@
               <input type="number" class="form-input" id="cardCount" value="10" />
             </div>
             <button class="btn pri" onclick="createCards()">＋ 生成卡密</button>
-            <div id="cardList" class="card-list" style="margin-top:12px"></div>
+            <div id="cardResult" style="margin-top:12px"></div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:16px">
+              <h3 style="margin:0">已有卡密</h3>
+              <button class="btn" style="padding:4px 10px;font-size:12px" onclick="loadCards()">↻ 刷新</button>
+              <button class="btn" style="padding:4px 10px;font-size:12px" onclick="exportCards()">📤 导出</button>
+            </div>
+            <div id="cardList" class="card-list" style="margin-top:8px"></div>
           </div>
         </div>
       </div>
@@ -1787,27 +1795,151 @@ window.renderSearchProviderOpts = function renderSearchProviderOpts() {
   }
 
   // ── 卡密 ─────────────────────────────
+  // 后端契约：
+  //   GET  /api/card/admin/list   -> {status, data:{cards:[{prefix,key_masked,owner,
+  //                                    note,created_at,expires,days,activated_at,is_activated}]}}
+  //   POST /api/card/admin/create -> {status, data:{prefix,key,...}} 单张，明文 key 仅此一次
+  // 注意：create 接口没有 count 参数，批量必须前端循环调用。
   async function loadCards() {
     var el = $('cardList')
+    if (!el) return
     el.innerHTML = '<div class="loading">加载中...</div>'
     try {
       var res = await apiRaw('/card/admin/list')
-      if (res.status && res.data) {
-        var cards = res.data || []
-        el.innerHTML = cards.length ? cards.map(function(c) {
-          var expired = c.expires && Date.now() > Date.parse(c.expires)
-          return '<div class="tool-item"><span class="tool-item-name">' + esc(c.key ? c.key.slice(0,12) + '...' : '') + '</span><span class="tool-item-desc">持有人: ' + esc(c.owner || '') + ' | ' + esc(c.status || 'active') + (expired ? ' ⚠️已过期' : '') + '</span></div>'
-        }).join('') : '<div class="empty">暂无卡密</div>'
-      } else { el.innerHTML = '<div class="empty">加载失败</div>' }
-    } catch(e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+      if (!res.status) { el.innerHTML = '<div class="empty">加载失败：' + esc(res.msg || '未知错误') + '</div>'; return }
+      var cards = (res.data && res.data.cards) || []
+      if (!cards.length) { el.innerHTML = '<div class="empty">暂无卡密</div>'; return }
+      var today = new Date().toISOString().slice(0, 10)
+      el.innerHTML = cards.map(function (c) {
+        var exp = c.expires || ''
+        var badge, cls
+        if (!exp) { badge = '长期有效'; cls = 'ok' }
+        else if (exp < today) { badge = '已过期 ' + exp; cls = 'err' }
+        else { badge = '有效至 ' + exp; cls = 'ok' }
+        var state = c.is_activated ? '' : ' · 未激活'
+        return '<div class="tool-item card-row" data-prefix="' + esc(c.prefix || '') + '" data-days="' + esc(c.days || 0) + '" style="display:flex;justify-content:space-between;align-items:center;gap:10px">' +
+          '<span class="tool-item-name" style="font-family:monospace">' + esc(c.key_masked || c.prefix || '') + '</span>' +
+          '<span class="tool-item-desc" style="flex:1;text-align:right">' + esc(c.owner || '无主') + state +
+          ' · <span class="badge ' + cls + '">' + esc(badge) + '</span></span>' +
+          '<button class="btn" style="padding:3px 9px;font-size:12px" onclick="editCard(\'' + esc(c.prefix || '') + '\')">续期</button>' +
+          '<button class="btn" style="padding:3px 9px;font-size:12px" onclick="delCard(\'' + esc(c.prefix || '') + '\')">删除</button>' +
+          '</div>'
+      }).join('')
+    } catch (e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
   }
+
   async function createCards() {
-    var days = parseInt($('cardDays').value) || 30
+    var days = parseInt($('cardDays').value)
+    if (isNaN(days) || days < 0) days = 30
     var owner = $('cardOwner').value.trim()
-    var count = parseInt($('cardCount').value) || 10
-    var res = await apiRaw('/card/admin/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: days, owner: owner, count: count }) })
-    if (res.status) { toast('已生成 ' + (res.data.count || count) + ' 个卡密'); loadCards() }
-    else toast(res.msg || '生成失败', 'err')
+    var count = parseInt($('cardCount').value)
+    if (isNaN(count) || count < 1) count = 1
+    if (count > 100) { toast('单次最多生成 100 张', 'err'); return }
+
+    var box = $('cardResult')
+    box.innerHTML = '<div class="loading">正在生成 ' + count + ' 张...</div>'
+    var keys = [], failed = 0
+    for (var i = 1; i <= count; i++) {
+      // 批量时给每张加序号，便于区分归属
+      var nm = count > 1 ? (owner ? owner + i : '') : owner
+      try {
+        var res = await apiRaw('/card/admin/create', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ days: days, owner: nm })
+        })
+        if (res.status && res.data && res.data.key) keys.push(res.data.key)
+        else failed++
+      } catch (e) { failed++ }
+    }
+
+    if (!keys.length) {
+      box.innerHTML = '<div class="empty">生成失败，请检查是否已用管理员身份登录</div>'
+      toast('生成失败', 'err'); return
+    }
+    // 明文 key 后端只返回这一次，必须当场展示并提供复制
+    box.innerHTML = '<div style="padding:10px;border:1px solid rgba(74,124,247,.35);border-radius:8px;background:rgba(74,124,247,.07)">' +
+      '<div style="font-size:13px;margin-bottom:8px">✅ 已生成 <b>' + keys.length + '</b> 张卡密' +
+      (failed ? '（失败 ' + failed + ' 张）' : '') + '，<b style="color:#e5a03a">请立即复制，关闭后不再显示</b></div>' +
+      '<div style="font-family:monospace;font-size:12px;line-height:1.9;max-height:220px;overflow:auto">' +
+      keys.map(function (k) { return esc(k) }).join('<br>') + '</div>' +
+      '<button class="btn pri" style="margin-top:10px" onclick="copyCardKeys()">📋 复制全部</button>' +
+      '<div id="cardKeysRaw" style="display:none">' + keys.map(function (k) { return esc(k) }).join('\n') + '</div>' +
+      '</div>'
+    window._lastCardKeys = keys
+    toast('已生成 ' + keys.length + ' 张卡密')
+    loadCards()
+  }
+
+  function copyCardKeys() {
+    var keys = window._lastCardKeys || []
+    if (!keys.length) { toast('没有可复制的卡密', 'err'); return }
+    var text = keys.join('\n')
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast('✅ 已复制 ' + keys.length + ' 张') },
+        function () { _fallbackCopy(text, keys.length) })
+    } else { _fallbackCopy(text, keys.length) }
+  }
+  function _fallbackCopy(text, n) {
+    var ta = document.createElement('textarea')
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
+    document.body.appendChild(ta); ta.select()
+    try { document.execCommand('copy'); toast('✅ 已复制 ' + n + ' 张') } catch (e) { toast('复制失败，请手动选择', 'err') }
+    document.body.removeChild(ta)
+  }
+
+
+  async function editCard(prefix) {
+    var row = document.querySelector('.card-row[data-prefix="' + esc(prefix) + '"]')
+    var currentDays = 0
+    if (row) {
+      var ds = row.getAttribute('data-days')
+      if (ds !== null) currentDays = parseInt(ds) || 0
+    }
+    var label = currentDays ? (' 当前值 ' + currentDays) : ' 当前值 长期'
+    var days = prompt('续期天数（输入 0 改为长期有效；留空保持当前' + label + '）：', currentDays)
+    if (days === null) return
+    var val = parseInt(days)
+    if (isNaN(val) || val < 0) { toast('天数必须是 >= 0 的整数', 'err'); return }
+    var res = await apiRaw('/card/admin/update', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefix: prefix, days: val })
+    })
+    if (res.status) { toast('已续期至 ' + (res.data.expires || '长期')); loadCards() }
+    else toast(res.msg || '续期失败', 'err')
+  }
+  async function delCard(prefix) {
+    if (!prefix) return
+    if (!confirm('确定删除卡密「' + prefix + '」？该用户会话数据不受影响')) return
+    var res = await apiRaw('/card/admin/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefix: prefix })
+    })
+    if (res.status) { toast('已删除'); loadCards() } else toast(res.msg || '删除失败', 'err')
+  }
+  async function exportCards() {
+    var res = await apiRaw('/card/admin/list')
+    if (!res.status) { toast('导出失败：' + (res.msg || '未知错误'), 'err'); return }
+    var cards = (res.data && res.data.cards) || []
+    if (!cards.length) { toast('暂无卡密', 'err'); return }
+    var header = ['前缀','脱敏卡密','持有人','备注','创建时间','有效期(天)','到期日','是否已激活'].join('\t')
+    var rows = cards.map(function (c) {
+      return [
+        c.prefix || '',
+        c.key_masked || '',
+        c.owner || '',
+        c.note || '',
+        c.created_at || '',
+        c.days || 0,
+        c.expires || '长期',
+        c.is_activated ? '已激活' : '未激活'
+      ].join('\t')
+    }).join('\n')
+    var blob = new Blob(['\ufeff' + header + '\n' + rows], { type: 'text/csv;charset=utf-8;' })
+    var url = URL.createObjectURL(blob)
+    var a = document.createElement('a')
+    a.href = url; a.download = ('卡密列表_' + new Date().toISOString().slice(0,10) + '.csv')
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+    toast('已导出 ' + cards.length + ' 条')
   }
 
   // 设置页初始化
@@ -1856,9 +1988,25 @@ window.renderSearchProviderOpts = function renderSearchProviderOpts() {
   }
   window.doRestart = doRestart
 
-  // 设置面板的保存/加载函数必须挂到 window：
-  // 按钮用 onclick="saveSettingsConfig()" 走全局作用域，
-  // 定义在 IIFE 闭包里不挂 window 会导致点击无任何反应（静默失败）。
+  // ── 全局导出 ─────────────────────────────
+  // 按钮用 onclick="..." 走全局作用域，定义在 IIFE 闭包里若不挂 window
+  // 就会「点击无任何反应」的静默失败。凡是被 onclick 引用的函数都必须在此登记。
+  window.createCards = createCards
+  window.loadCards = loadCards
+  window.editCard = editCard
+  window.delCard = delCard
+  window.exportCards = exportCards
+  window.copyCardKeys = copyCardKeys
+
+  window.fetchMcpServers = fetchMcpServers
+  window.addMcpServer = addMcpServer
+  window.removeMcpServer = removeMcpServer
+  window.fetchMcpMarket = fetchMcpMarket
+  window.installMcp = installMcp
+
+  window.installFromUrl = installFromUrl
+  window.uninstallSkill = uninstallSkill
+
   window.saveSettingsConfig = saveSettingsConfig
   window.loadSettingsConfig = loadSettingsConfig
 
