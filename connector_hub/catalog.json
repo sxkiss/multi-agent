@@ -80,25 +80,42 @@
         "en": "Click “Open auth page” to get an API Key and Client ID in IMA (the API Key is shown only once)",
         "zh": "点击「打开授权页」在 IMA 中获取 API Key 与 Client ID（API Key 仅展示一次）"
       },
-      "credential_fields": [
-        {
-          "key": "api_key",
-          "label": {
-            "en": "API Key",
-            "zh": "API Key"
-          },
-          "required": true,
-          "secret": true,
-          "placeholder": {
-            "en": "Paste API key (shown only once)",
-            "zh": "粘贴 API Key（仅展示一次）"
-          },
-          "help": {
-            "en": "From IMA configuration page",
-            "zh": "从 IMA 配置页复制"
-          }
-        }
-      ]
+       "credential_fields": [
+         {
+           "key": "client_id",
+           "label": {
+             "en": "Client ID",
+             "zh": "Client ID"
+           },
+           "required": true,
+           "secret": false,
+           "placeholder": {
+             "en": "Client ID from IMA configuration",
+             "zh": "从 IMA 配置页获取的 Client ID"
+           },
+           "help": {
+             "en": "Obtained together with API Key in IMA configuration",
+             "zh": "与 API Key 一起在 IMA 配置页获取"
+           }
+         },
+         {
+           "key": "api_key",
+           "label": {
+             "en": "API Key",
+             "zh": "API Key"
+           },
+           "required": true,
+           "secret": true,
+           "placeholder": {
+             "en": "Paste API key (shown only once)",
+             "zh": "粘贴 API Key（仅展示一次）"
+           },
+           "help": {
+             "en": "From IMA configuration page",
+             "zh": "从 IMA 配置页复制"
+           }
+         }
+       ]
     },
     {
       "kind": "tencent-meeting",
@@ -734,7 +751,26 @@
       "mcp_url": "https://agent.qcc.com/mcp/company/stream",
       "oauth_resource": "https://agent.qcc.com/mcp/company/stream",
       "oauth_scopes": "mcp:tools",
-      "remote_transport": "streamable_http"
+      "remote_transport": "streamable_http",
+      "credential_fields": [
+        {
+          "key": "manual_token",
+          "label": {
+            "en": "API Key / Access Token",
+            "zh": "API Key / Access Token"
+          },
+          "required": false,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste API Key or manual token (OAuth flow recommended)",
+            "zh": "粘贴 API Key 或手动 Token（推荐走一键 OAuth）"
+          },
+          "help": {
+            "en": "If one-click OAuth is unavailable (no public HTTPS / localhost), paste the token from qcc-agent console",
+            "zh": "一键 OAuth 不可用（无公网 HTTPS / 本机 localhost）时，粘贴企查查 Agent 控制台的 API Key"
+          }
+        }
+      ]
     },
     {
       "kind": "tencent-ardot",
@@ -760,7 +796,26 @@
       },
       "oauth_issuer": "https://ardot.tencent.com",
       "mcp_url": "https://ardot.tencent.com/mcp",
-      "oauth_resource": "https://ardot.tencent.com/mcp"
+      "oauth_resource": "https://ardot.tencent.com/mcp",
+      "credential_fields": [
+        {
+          "key": "manual_token",
+          "label": {
+            "en": "Access Token",
+            "zh": "Access Token"
+          },
+          "required": false,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste token from Ardot docs (OAuth flow recommended)",
+            "zh": "按文档获取并粘贴 Access Token（推荐走一键 OAuth）"
+          },
+          "help": {
+            "en": "One-click OAuth is preferred. If that fails, paste a token from the documentation",
+            "zh": "优先使用一键 OAuth。如失败，可粘贴文档里的 Token"
+          }
+        }
+      ]
     },
     {
       "kind": "youdao-note",
@@ -830,7 +885,26 @@
       },
       "oauth_issuer": "https://mcp.notion.com",
       "mcp_url": "https://mcp.notion.com/mcp",
-      "mcp_user_agent": "octop-connector/0.1"
+      "mcp_user_agent": "octop-connector/0.1",
+      "credential_fields": [
+        {
+          "key": "manual_token",
+          "label": {
+            "en": "Access Token",
+            "zh": "Access Token"
+          },
+          "required": false,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste Notion integration token (OAuth flow recommended)",
+            "zh": "粘贴 Notion 集成 Token（推荐走一键 OAuth）"
+          },
+          "help": {
+            "en": "One-click OAuth is preferred. If manual entry is needed, create an integration at notion.so/my-integrations and paste its token",
+            "zh": "优先使用一键 OAuth。如需手动填写，在 notion.so/my-integrations 创建集成后粘贴 Token"
+          }
+        }
+      ]
     },
     {
       "kind": "openalex",
@@ -858,7 +932,26 @@
       "mcp_url": "https://mcp.openalex.org/mcp",
       "oauth_resource": "https://mcp.openalex.org/mcp",
       "oauth_scopes": "openalex:query",
-      "remote_transport": "streamable_http"
+      "remote_transport": "streamable_http",
+      "credential_fields": [
+        {
+          "key": "manual_token",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": false,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste your OpenAlex API Key",
+            "zh": "粘贴你的 OpenAlex API Key"
+          },
+          "help": {
+            "en": "Get one at https://openalex.org/settings/api. One-click OAuth is preferred on desktop.",
+            "zh": "在 https://openalex.org/settings/api 获取。桌面端优先走一键 OAuth。"
+          }
+        }
+      ]
     },
     {
       "kind": "dida365",
@@ -886,7 +979,26 @@
       "oauth_issuer": "https://dida365.com",
       "mcp_url": "https://mcp.dida365.com",
       "oauth_resource": "https://mcp.dida365.com/",
-      "oauth_scopes": "tasks:read tasks:write"
+      "oauth_scopes": "tasks:read tasks:write",
+      "credential_fields": [
+        {
+          "key": "manual_token",
+          "label": {
+            "en": "API Token",
+            "zh": "API 口令"
+          },
+          "required": false,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste API Token from Account & Security settings",
+            "zh": "在「账户与安全」创建并粘贴 API 口令"
+          },
+          "help": {
+            "en": "One-click OAuth is preferred. If manual entry is needed, create an API Token at Avatar → Settings → Account and Security",
+            "zh": "优先使用一键 OAuth。如需手动填写，进入「头像 → 设置 → 账户与安全」创建 API 口令"
+          }
+        }
+      ]
     },
     {
       "kind": "feishu-cli",

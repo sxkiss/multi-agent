@@ -263,8 +263,9 @@
       if (isOAuth2) {
         // OAuth2 连接器统一走「一键授权」（后端已对所有 5 个实现完整 OAuth 流程 + DCR）
         actions += '<button class="btn primary" data-oauth2="' + esc(e.kind) + '">⚡ 一键授权</button>';
-        // 少数厂商额外支持「手动粘贴 Token」作为兜底（openalex / qcc）
-        if (e.kind === 'openalex' || e.kind === 'qcc') {
+        // 是否支持手动粘贴：以 catalog 的 credential_fields 为准（含 manual_token 字段即可）
+        var hasManualField = (e.credential_fields || []).some(function (f) { return f.key === 'manual_token'; });
+        if (hasManualField) {
           actions += '<button class="btn" data-manual-oauth2="' + esc(e.kind) + '">手动粘贴 Token</button>';
         }
       } else if (supported) {
@@ -430,35 +431,42 @@
       return h;
     }
 
-    if (fields.length) {
-      // credential_fields 已定义：统一走循环，auth_hint 提示也一并保留
-      fields.forEach(function (f) {
-        var label = f.label || f.key;
-        var ph = f.placeholder || '';
-        if (typeof ph === 'object') ph = ph['zh'] || ph.en || '';
-        var help = f.help || '';
-        if (typeof help === 'object') help = help['zh'] || help.en || '';
-        body += fieldHtml(f.key, label, {
-          placeholder: ph,
-          secret: f.secret || f.field_type === 'password',
-          fieldType: f.field_type,
-          required: f.required !== false,
-          help: help,
-        });
+    function renderField(f) {
+      var label = f.label || f.key;
+      var ph = f.placeholder || '';
+      if (typeof ph === 'object') ph = ph['zh'] || ph.en || '';
+      var help = f.help || '';
+      if (typeof help === 'object') help = help['zh'] || help.en || '';
+      body += fieldHtml(f.key, label, {
+        placeholder: ph,
+        secret: f.secret || f.field_type === 'password',
+        fieldType: f.field_type,
+        required: f.required !== false,
+        help: help,
       });
-    } else if (e.auth_kind === 'oauth2') {
-      // OAuth2：提示走一键授权（卡片上有「一键授权」按钮）
-      var manualSupported = (e.kind === 'openalex' || e.kind === 'qcc');
+    }
+
+    if (e.auth_kind === 'oauth2') {
+      // OAuth2 优先走一键授权；仅在「手动粘贴」入口进入时才渲染手动 Token 字段，
+      // 避免把兜底字段当成必填项误导用户。
+      var manualFields = fields.filter(function (f) { return f.key === 'manual_token'; });
       body += '<div class="hint" style="padding:12px;background:var(--bt-surface-2);border-radius:8px">' +
         '该连接器使用 OAuth2 授权。请在连接器卡片上点击「⚡ 一键授权」完成授权。' +
-        (manualSupported ? '也可在下方手动粘贴 Access Token 保存。' : '当前连接器不支持手动粘贴 Token。') +
+        (manualFields.length ? '若一键授权不可用，也可在下方手动粘贴 Token 保存。' : '当前连接器不支持手动粘贴 Token。') +
         '</div>';
-      if (manualSupported && currentManualOAuth2) {
-        body += fieldHtml('manual_token', 'Access Token', {
-          placeholder: '粘贴 Access Token', secret: true, required: true,
-          help: '手动粘贴的 Token 会作为 OAuth2 凭据保存',
-        });
+      if (currentManualOAuth2) {
+        if (manualFields.length) {
+          manualFields.forEach(renderField);
+        } else {
+          body += fieldHtml('manual_token', 'Access Token', {
+            placeholder: '粘贴 Access Token', secret: true, required: true,
+            help: '手动粘贴的 Token 会作为 OAuth2 凭据保存',
+          });
+        }
       }
+    } else if (fields.length) {
+      // credential_fields 已定义：统一走循环，auth_hint 提示也一并保留
+      fields.forEach(renderField);
     } else {
       // 兜底：通用 Token 输入
       body += '<div class="field"><label>凭据 <span class="req">*</span></label><textarea id="f_creds" rows="2" placeholder="粘贴 Token / API Key"></textarea>' +
