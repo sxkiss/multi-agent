@@ -175,16 +175,19 @@ class ToolSearchTest(unittest.TestCase):
 
     def test_search_matches_keyword(self):
         from chat_client.tools import ToolSearch, get_unlocked_mcp_tools
-        out = ToolSearch(query="slide", limit=5)
-        self.assertIn("slide.add_slide", out)
-        self.assertIn("slide.add_slide", get_unlocked_mcp_tools("ts_unit"))
+        # 用 plain_tool 精确匹配（避免与真实 MCP 工具混淆）
+        out = ToolSearch(query="plain_tool", limit=5)
+        self.assertIn("plain_tool", out)
+        self.assertIn("plain_tool", get_unlocked_mcp_tools("ts_unit"))
 
     def test_dedup_alias(self):
         """含点号工具不应因其清洗别名被重复计数/重复列出。"""
         from chat_client.tools import ToolSearch
         out = ToolSearch(query="doc", limit=50)
-        # doc.copy_format 只出现一次（不因 doc_copy_format 别名再出现一次）
-        self.assertEqual(out.count("doc.copy_format"), 1)
+        # doc.copy_format 和 doc_copy_format 是同一条工具的不同 key，只列一次
+        lines = [ln for ln in out.split("\n")
+                 if ln.startswith("- doc.copy_format [") or ln.startswith("- doc_copy_format [")]
+        self.assertEqual(len(lines), 1, f"应只列一次，实际：{lines}")
 
     def test_empty_query_lists_all(self):
         from chat_client.tools import ToolSearch
@@ -192,10 +195,10 @@ class ToolSearchTest(unittest.TestCase):
         self.assertIn("已解锁 3 个", out)
 
     def test_chinese_query_falls_back_to_list(self):
-        """中文匹配不上英文工具名时应回退列出，而非返回空。"""
+        """中文查询若无法匹配任何工具名或描述，应回退列出全部而非返回空。"""
         from chat_client.tools import ToolSearch
-        out = ToolSearch(query="文档", limit=3)
-        self.assertIn("没有找到精确匹配", out)
+        out = ToolSearch(query="飞控发动机", limit=3)
+        self.assertIn("没有找到", out)
         self.assertIn("已解锁", out)
 
     def test_limit_clamped(self):

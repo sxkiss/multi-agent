@@ -169,3 +169,4 @@ usage_ledger.jsonl
 # octop-memory 增强记忆 sqlite（运行时数据）
 memory_octop.sqlite
 metrics/
+market_cache/

@@ -22,6 +22,7 @@
 
 import json
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -38,9 +39,72 @@ MCP_MARKET = "https://cnb.cool/codebuddy/mcp-market"
 
 REQUEST_TIMEOUT = 20
 
-# 专家清单缓存：1.1MB，避免每次重复拉取
+# ============================================================
+# 统一市场缓存层（内存 + 落盘）
+#
+# 设计：
+# - 每个市场维护一个 _xx_cache（内存）+ 一个磁盘 JSON（跨重启）
+# - 加载时先查内存（快），再查磁盘（跨重启），最后才联网
+# - 联网成功后同时刷新内存 + 磁盘；失败不清旧缓存
+# - 专家市场已用 _expert_cache（30min），这里保留；新增落盘
+# - SkillMarket/SkillCategories/ExpertScenes 原每次联网，补全缓存
+# ============================================================
+
+_MARKET_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "market_cache",
+)
+_MARKET_CACHE_TTL = 3600  # 1 小时（统一 TTL，可按需调）
 _expert_cache: Dict[str, Any] = {"ts": 0.0, "data": None}
-_EXPERT_TTL = 1800  # 30 分钟
+_EXPERT_TTL = 1800  # 30 分钟（保留原值）
+
+
+def _market_cache_path(key: str) -> str:
+    return os.path.join(_MARKET_CACHE_DIR, f"{key}.json")
+
+
+def _market_cache_load(key: str, ttl: int = _MARKET_CACHE_TTL) -> Any:
+    """尝试从内存/磁盘加载市场缓存；命中返回数据，否则 None。"""
+    global _market_cache_state
+    now = time.time()
+    # 1) 内存
+    mem = _market_cache_state.get(key, {})
+    if mem.get("data") is not None and now - mem.get("ts", 0) < ttl:
+        return mem["data"]
+    # 2) 磁盘
+    path = _market_cache_path(key)
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            saved_at = data.get("saved_at", 0)
+            if now - float(saved_at) <= ttl:
+                # 回写内存
+                _market_cache_state[key] = {"ts": now, "data": data.get("data")}
+                return data.get("data")
+    except Exception:
+        pass
+    return None
+
+
+def _market_cache_save(key: str, data: Any) -> None:
+    """保存市场缓存到内存 + 磁盘（原子写）。失败静默。"""
+    global _market_cache_state
+    now = time.time()
+    _market_cache_state[key] = {"ts": now, "data": data}
+    try:
+        os.makedirs(_MARKET_CACHE_DIR, exist_ok=True)
+        payload = {"data": data, "saved_at": now}
+        tmp = _market_cache_path(key) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, _market_cache_path(key))
+    except Exception:
+        logger.debug(f"市场缓存写入失败 {key}", exc_info=True)
+
+
+# 内存缓存全局状态（key -> {ts, data}）
+_market_cache_state: Dict[str, Dict[str, Any]] = {}
 
 
 def _get_json(url: str) -> Any:
@@ -50,14 +114,26 @@ def _get_json(url: str) -> Any:
 
 
 def _load_experts(force: bool = False) -> List[Dict[str, Any]]:
-    """拉取专家清单（带缓存，TTL 30 分钟）。"""
-    now = time.time()
-    if not force and _expert_cache["data"] is not None and now - _expert_cache["ts"] < _EXPERT_TTL:
-        return _expert_cache["data"]
-    data = _get_json(f"{EXPERT_BASE}/expert_center.json")
+    """拉取专家清单（带缓存：内存 30min + 落盘 1h）。"""
+    if not force:
+        cached = _market_cache_load("experts", _EXPERT_TTL)
+        if cached is not None:
+            _expert_cache["data"] = cached
+            _expert_cache["ts"] = time.time()
+            return cached
+    try:
+        data = _get_json(f"{EXPERT_BASE}/expert_center.json")
+    except Exception:
+        # 网络失败：若有旧缓存（内存/磁盘），降级返回旧数据
+        fallback = _market_cache_load("experts", ttl=86400)
+        if fallback is not None:
+            logger.warning("专家市场联网失败，降级使用旧缓存")
+            return fallback
+        raise
     items = data if isinstance(data, list) else (data.get("experts") or data.get("list") or [])
     _expert_cache["data"] = items
-    _expert_cache["ts"] = now
+    _expert_cache["ts"] = time.time()
+    _market_cache_save("experts", items)
     return items
 
 
@@ -384,14 +460,28 @@ def SkillMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
     - limit：返回条数上限（默认 20）
     """
     try:
+        # 带缓存：搜索关键词（缓存 key = "search_{keyword}_{limit}"，TTL 1h）
         if keyword.strip():
-            data = _get_json(f"{SKILLHUB_BASE}/api/v1/search?q={requests.utils.quote(keyword)}&limit={max(1, int(limit))}")
+            cache_key = f"skill_search_{keyword.strip().lower()[:50]}_{limit}"
+            cached = _market_cache_load(cache_key)
+            if cached is not None:
+                data = cached
+            else:
+                data = _get_json(f"{SKILLHUB_BASE}/api/v1/search?q={requests.utils.quote(keyword)}&limit={max(1, int(limit))}")
+                _market_cache_save(cache_key, data)
             items = data if isinstance(data, list) else (data.get("skills") or data.get("items") or data.get("results") or [])
         else:
-            params = f"page=1&pageSize={max(1, int(limit))}"
-            if category.strip():
-                params += f"&category={requests.utils.quote(category)}"
-            data = _get_json(f"{SKILLHUB_BASE}/api/skills?{params}")
+            # 分类浏览（缓存 key = "skills_list_{category}_{limit}"）
+            cache_key = f"skill_list_{category.strip().lower()[:30]}_{limit}"
+            cached = _market_cache_load(cache_key)
+            if cached is not None:
+                data = cached
+            else:
+                params = f"page=1&pageSize={max(1, int(limit))}"
+                if category.strip():
+                    params += f"&category={requests.utils.quote(category)}"
+                data = _get_json(f"{SKILLHUB_BASE}/api/skills?{params}")
+                _market_cache_save(cache_key, data)
             items = data if isinstance(data, list) else (data.get("skills") or data.get("items") or data.get("data") or [])
     except Exception as e:
         return _xml_response("error", f"技能市场查询失败: {e!s}")
@@ -417,7 +507,13 @@ def SkillMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
 def SkillCategories() -> str:
     """列出技能市场（SkillHub）的全部分类（公开接口，无需认证）。"""
     try:
-        data = _get_json(f"{SKILLHUB_BASE}/api/v1/categories")
+        # 带缓存（key="categories"，TTL 1h）
+        cached = _market_cache_load("categories")
+        if cached is not None:
+            data = cached
+        else:
+            data = _get_json(f"{SKILLHUB_BASE}/api/v1/categories")
+            _market_cache_save("categories", data)
     except Exception as e:
         return _xml_response("error", f"获取分类失败: {e!s}")
     cats = data if isinstance(data, list) else (data.get("categories") or data.get("data") or [])
@@ -438,7 +534,13 @@ def SkillCategories() -> str:
 def ExpertScenes() -> str:
     """列出专家市场的精选场景（featuredScenes.json，公开无需认证）。"""
     try:
-        data = _get_json(f"{EXPERT_BASE}/featuredScenes.json")
+        # 带缓存（key="scenes"，TTL 1h）
+        cached = _market_cache_load("scenes")
+        if cached is not None:
+            data = cached
+        else:
+            data = _get_json(f"{EXPERT_BASE}/featuredScenes.json")
+            _market_cache_save("scenes", data)
     except Exception as e:
         return _xml_response("error", f"获取精选场景失败: {e!s}")
     items = data if isinstance(data, list) else (data.get("scenes") or data.get("list") or data.get("data") or [])
