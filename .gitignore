@@ -142,6 +142,7 @@ knowledge/
 
 # ===== 敏感文件：卡密库与用户配置（含真实卡密，禁止入库/push）=====
 card_keys.json
+card_channels.json
 card_user_configs.json
 *.key
 

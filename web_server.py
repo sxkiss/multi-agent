@@ -5271,7 +5271,9 @@ try:
     app.include_router(_gateway_router, prefix="/api/v2")
     from platform_ext.memory_octop import router as _memory_router
     app.include_router(_memory_router, prefix="/api/v2")
-    logger.info("[platform-ext] 平台扩展路由已挂载: /api/v2/{teams,channels,storage,usage,gateway,memory}/*")
+    from platform_ext.card_gateway import router as _card_gateway_router
+    app.include_router(_card_gateway_router, prefix="/api/v2")
+    logger.info("[platform-ext] 平台扩展路由已挂载: /api/v2/{teams,channels,storage,usage,gateway,memory,card}/*")
 except Exception:  # noqa: BLE001
     logger.exception("[platform-ext] 平台扩展路由挂载失败（主服务继续运行）")
 
