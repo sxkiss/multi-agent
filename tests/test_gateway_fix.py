@@ -315,6 +315,7 @@ class TestRuntimeDepsAndFillback:
         应保持空字段，不读取/回填任何已有实例数据。
         """
         import json
+        import os
 
         from platform_ext import gateway
 
@@ -336,6 +337,11 @@ class TestRuntimeDepsAndFillback:
         assert fields["secret"]["saved"] is False
         assert fields["secret"]["saved_value"] == ""
 
+        # 关键：tmp_path 目录下的 gateway.json 由 save_section 写入，测试结束后清理
+        gateway_json = str(tmp_path / "gateway.json")
+        if os.path.exists(gateway_json):
+            os.remove(gateway_json)
+
     def test_list_instances_fills_saved_value(self, tmp_path, monkeypatch):
         """GET /gateway/instances 应对具体实例回填 saved_value。
 
@@ -343,6 +349,7 @@ class TestRuntimeDepsAndFillback:
         这是保存凭证后面板回显的正确接口。
         """
         import json
+        import os
 
         from platform_ext import gateway
 
@@ -375,6 +382,11 @@ class TestRuntimeDepsAndFillback:
         # 敏感字段不回填明文
         assert fields["secret"]["saved"] is True
         assert fields["secret"]["saved_value"] == ""
+
+        # 关键：tmp_path 目录下的 gateway.json 由 save_section 写入，测试结束后清理
+        gateway_json = str(tmp_path / "gateway.json")
+        if os.path.exists(gateway_json):
+            os.remove(gateway_json)
 
 
 class TestGatewayQrInstanceBinding:
