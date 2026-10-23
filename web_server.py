@@ -3365,6 +3365,16 @@ async def _lifespan(_app):
         chat_jobs.recover_all()
     except Exception:
         logger.warning("[startup] job 恢复失败", exc_info=True)
+    # 恢复后台任务（进程重启后未完成的任务）
+    try:
+        from chat_client.tools import recover_running_tasks
+        recovered = recover_running_tasks()
+        if recovered:
+            logger.info("[startup] 恢复 %d 个未完成的后台任务", len(recovered))
+            # 注意：恢复的任务需要重新注册到线程池，但 future 已失效
+            # 这里只记录日志，实际恢复逻辑需在工具层处理
+    except Exception:
+        logger.warning("[startup] 后台任务恢复失败", exc_info=True)
     # 启动时先清一轮内存僵尸任务（recover 会把中断任务置为 stopped，
     # 超过 JOB_TTL 的即可释放 agent/历史，避免上次进程遗留的大对象堆积）
     try:
@@ -3453,6 +3463,116 @@ if not _cors_origins:
         "同源直连（Nginx 反代）不受影响。"
     )
 
+# ============================================================
+# 孤儿后台任务主动回调：父会话已结束，子代理结果无人消费
+# ============================================================
+_orphan_cb_registered = False
+
+
+def _register_orphan_callback():
+    """在 agent_main 初始化后注册孤儿回调。由 _setup_lifespan 调用一次。"""
+    global _orphan_cb_registered
+    if _orphan_cb_registered:
+        return
+    _orphan_cb_registered = True
+    from chat_client.tools import get_background_manager
+    bg = get_background_manager()
+
+    def _handler(session_id: str, task_id: str, tool: str, status: str, result: str):
+        """孤儿回调：父会话已结束，自动开新 job 把结果推给模型。
+
+        实现步骤：
+        1. 查该 session 有没有正在跑的 job（还在 drain 窗口的不算孤儿）。
+        2. 没有的话，用 `_dispatch_orphan_job` 派发一轮"系统任务"，
+           把 background_task_done 包成用户消息塞进新 job。
+        3. 失败不抛异常（只打日志），避免影响主服务。
+        """
+        try:
+            if not chat_jobs.count_running(session_id) == 0:
+                return  # 仍在运行，不是孤儿
+            _dispatch_orphan_job(session_id, task_id, tool, status, result)
+        except Exception:
+            logger.warning(
+                "[Background] 孤儿回调触发失败 session=%s task=%s",
+                session_id[:24], task_id[:12], exc_info=True,
+            )
+
+    bg.set_orphan_callback(_handler)
+    logger.info("[Background] 孤儿回调已注册（AI_AGENT_ORPHAN_DELAY=%ss）", bg._orphan_delay)
+
+
+def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, result: str):
+    """为孤儿 session 派发新一轮对话，把后台任务结果塞进去让模型消费。
+
+    复用的是与 chat_start 相同的 Agent 构建逻辑，只是把 payload 中的 message
+    替换成"系统任务结果回灌"格式，让模型把它当作刚收到的 background_task_done。
+    """
+    payload = {
+        "session_id": session_id,
+        "message": (
+            f"[后台任务结果回灌]\n"
+            f"<background_task_done>\n"
+            f"<task_id>{task_id}</task_id>\n"
+            f"<tool>{tool}</tool>\n"
+            f"<status>{status}</status>\n"
+            f"<result>\n{result}\n</result>\n"
+            f"</background_task_done>\n"
+            f"以上是之前派发的后台任务执行结果，现已完成。\n"
+            f"请基于以上结果回答用户的问题。如果之前用户在等你完成任务，"
+            f"现在请给出完整答案。"
+        ),
+        "mode": "single",
+    }
+    job = chat_jobs.create_if_idle(session_id, label=f"bg_orphan_{task_id[:8]}")
+    if job is None:
+        logger.warning(
+            "[Background] 孤儿回灌跳过（会话并行满）session=%s task=%s",
+            session_id[:24], task_id[:12],
+        )
+        return
+
+    agent, user_input, err = agent_main._build_chat_agent(payload)
+    if agent is None or err:
+        logger.warning(
+            "[Background] 孤儿回灌 Agent 初始化失败 session=%s task=%s err=%s",
+            session_id[:24], task_id[:12], err,
+        )
+        chat_jobs.discard(job.key)
+        return
+
+    job.attach_agent(agent)
+
+    def _run():
+        from chat_client.tools import set_current_job as _set_job
+        _set_job(job)
+        try:
+            for chunk in agent.chat(user_input):
+                for ev, data in _map_agent_chunk(chunk):
+                    job.append(ev, data)
+            job.append("message_end", None)
+            job.finish("done")
+        except Exception as e:
+            job.append("error", {"msg": f"孤儿回灌异常: {e!s}"})
+            job.append("message_end", None)
+            job.finish("error")
+        finally:
+            try:
+                agent.close()
+            except Exception:
+                pass
+
+    t = threading.Thread(
+        target=_run,
+        name=f"orphan-{task_id[:8]}",
+        daemon=True,
+    )
+    t.start()
+    logger.info(
+        "[Background] 孤儿回灌已派发 session=%s task=%s job=%s",
+        session_id[:24], task_id[:12], job.key,
+    )
+
+
 # 后台预加载 MCP（避免首次 get_tool_list 阻塞）
 def _preload_mcp():
     try:
@@ -3470,6 +3590,9 @@ def _preload_mcp():
             print(f"MCP 预加载完成: {len(mcp_client.get_tool_schemas())} 个工具")
     except Exception as e:
         print(f"MCP 预加载（非阻塞）: {e}")
+
+# 注册孤儿回调（在 agent_main 初始化完成后、MCP 预加载之前）
+_register_orphan_callback()
 
 _preload_thread = threading.Thread(target=_preload_mcp, name="mcp-preload", daemon=True)
 _preload_thread.start()

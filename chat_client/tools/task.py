@@ -349,9 +349,11 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
 
     # 先注册再启动：避免子代理瞬间完成时 notify 早于 register 而丢结果
     if bg_manager is not None:
+        _reg_sid = parent_session_id or ""
         bg_manager.register(
-            bg_task_id, "Task", (description,), fut, parent_session_id or ""
+            bg_task_id, "Task", (description,), fut, _reg_sid
         )
+        logger.info("[Task] 注册后台任务 bg_task_id=%s parent_session_id=%s", bg_task_id[:12], _reg_sid[:40])
 
     def _on_subagent_done(f: Future):
         if bg_manager is None:
@@ -361,8 +363,10 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
                 return
             exc = f.exception()
             if exc is None:
+                logger.info("[Task] 子代理完成，notify_done bg_task_id=%s", bg_task_id[:12])
                 bg_manager.notify_done(bg_task_id, f.result())
             else:
+                logger.warning("[Task] 子代理失败，notify_failed bg_task_id=%s error=%s", bg_task_id[:12], str(exc)[:100])
                 bg_manager.notify_failed(bg_task_id, str(exc))
         except Exception:
             logger.warning("子代理完成回调失败 bg_task=%s", bg_task_id, exc_info=True)

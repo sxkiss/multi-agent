@@ -129,6 +129,39 @@ class _BgTask:
         self.delivered = False
 
 
+# ============================================================
+# 持久化仓库：进程重启后恢复任务状态
+# ============================================================
+def _recover_running_tasks() -> list[dict]:
+    """从 SQLite 恢复 running/pending/queued 状态的任务
+    
+    Returns:
+        [{"task_id", "tool", "args", "session_id", "start_time"}, ...]
+    """
+    try:
+        from .bg_repo import get_repo
+        repo = get_repo()
+        rows = repo.restore_running()
+        result = []
+        for row in rows:
+            try:
+                args = json.loads(row.args_json) if row.args_json else ()
+            except Exception:
+                args = ()
+            result.append({
+                "task_id": row.task_id,
+                "tool": row.tool,
+                "args": args if isinstance(args, tuple) else tuple(args),
+                "session_id": row.session_id,
+                "start_time": row.start_time,
+            })
+        logger.info("[Background] 恢复 %d 个未完成任务", len(result))
+        return result
+    except Exception as e:
+        logger.warning("[Background] 恢复任务失败: %s", e)
+        return []
+
+
 class BackgroundTaskManager:
     """统一后台任务注册/查询/完成通知。
 
@@ -147,6 +180,55 @@ class BackgroundTaskManager:
         # 挂起等待（取代旧版 "轮询 + 过早终止"）。避免主循环在后台任务未跑完时
         # 就 yield stop 终止会话、导致结果只推 SSE 进不了上下文。
         self._wake_events: dict[str, threading.Event] = {}
+        # 孤儿结果回调：后台任务完成时，若父会话的主循环已经结束（本轮 message_end
+        # 之后才完成的），结果就没有任何消费者——只会推 SSE、永远进不了对话。
+        # 表现是"上一轮说结果会自动回来，下一轮却什么都没有"。
+        # 由 web_server 在启动时注册：收到回调后自行判断该会话有无 running job，
+        # 没有就用该结果发起一轮新的对话，把结果主动推给模型。
+        self._orphan_callback = None
+        # 判定延迟（秒）：给主循环留出 drain 的时间窗口。主循环正常运行时
+        # 会在 1 秒内完成注入并把 delivered 置 True，不会误触发。
+        self._orphan_delay = float(os.environ.get("AI_AGENT_ORPHAN_DELAY", "6"))
+
+    def set_orphan_callback(self, callback) -> None:
+        """注册孤儿结果回调。
+
+        callback(session_id: str, task_id: str, tool: str, status: str, result: str)
+        仅在"任务已完成但迟迟无人 drain"时调用（说明父会话本轮已结束）。
+        """
+        self._orphan_callback = callback
+
+    def _schedule_orphan_check(self, task_id: str) -> None:
+        """延迟检查：任务完成后若 delivered 仍为 False，判定为孤儿结果并回调。
+
+        为什么要延迟而不是立刻判断：正常路径下主循环会先 drain（delivered=True），
+        但这个 drain 发生在子代理回调线程之后，立刻判断必然误报。
+        """
+        def _check():
+            try:
+                with self._lock:
+                    t = self._tasks.get(task_id)
+                    if t is None or t.delivered:
+                        return
+                    if t.status not in ("done", "failed"):
+                        return
+                    _sid, _tool, _status, _res = (
+                        t.session_id, t.tool, t.status, t.result)
+                if not _sid:
+                    return
+                cb = self._orphan_callback
+                if cb is None:
+                    return
+                logger.info(
+                    "[Background] 检测到孤儿结果（无人消费），触发主动回调 "
+                    "task=%s tool=%s session=%s", task_id[:12], _tool, _sid[:24])
+                cb(_sid, task_id, _tool, _status, _res)
+            except Exception:
+                logger.warning("[Background] 孤儿结果回调失败 task=%s", task_id, exc_info=True)
+
+        timer = threading.Timer(max(1.0, self._orphan_delay), _check)
+        timer.daemon = True
+        timer.start()
 
     def register(self, task_id: str, tool: str, args: tuple,
                  future, session_id: str) -> None:
@@ -156,6 +238,12 @@ class BackgroundTaskManager:
                 oldest = min(self._tasks, key=lambda k: self._tasks[k].start_time)
                 self._tasks.pop(oldest, None)
             self._tasks[task_id] = _BgTask(task_id, tool, args, future, session_id)
+        # 持久化：确保进程重启后能恢复
+        try:
+            from .bg_repo import get_repo
+            get_repo().insert(task_id, tool, args, "running", session_id)
+        except Exception as e:
+            logger.warning("[Background] 持久化任务失败 task=%s: %s", task_id[:12], e)
 
     def get(self, task_id: str) -> _BgTask | None:
         with self._lock:
@@ -205,7 +293,13 @@ class BackgroundTaskManager:
             _sid = t.session_id
         # 1) 完整结果落盘：进程重启后仍能回查（旧版 emit_progress 仅推 500 字预览）
         self._persist_result(task_id, t.tool, "done", result)
-        # 2) 推 SSE 预览事件，前端可见状态
+        # 2) 持久化到 SQLite
+        try:
+            from .bg_repo import get_repo
+            get_repo().set_result(task_id, result, "done")
+        except Exception as e:
+            logger.warning("[Background] 持久化结果失败 task=%s: %s", task_id[:12], e)
+        # 3) 推 SSE 预览事件，前端可见状态
         try:
             emit_progress("background_done", {
                 "task_id": task_id,
@@ -214,8 +308,11 @@ class BackgroundTaskManager:
             })
         except Exception:
             logger.warning("后台任务完成通知失败 task=%s", task_id, exc_info=True)
-        # 3) 唤醒挂起的主循环收尾段，使其 drain_finished 注入结果后正常收尾
+        # 4) 唤醒挂起的主循环收尾段，使其 drain_finished 注入结果后正常收尾
         self._wake(_sid)
+        # 5) 孤儿回调（兜底）：若主循环已结束，本轮不会再 drain，结果会"飞掉"。
+        #    延迟检查，等主循环的 drain 窗口结束；仍未被 delivered 则主动回调。
+        self._schedule_orphan_check(task_id)
 
     def notify_failed(self, task_id: str, error: str) -> None:
         with self._lock:
@@ -226,6 +323,12 @@ class BackgroundTaskManager:
             t.result = f"[执行失败] {error}"
             _sid = t.session_id
         self._persist_result(task_id, t.tool, "failed", t.result)
+        # 持久化失败状态
+        try:
+            from .bg_repo import get_repo
+            get_repo().set_result(task_id, t.result, "failed")
+        except Exception as e:
+            logger.warning("[Background] 持久化失败状态 task=%s: %s", task_id[:12], e)
         try:
             emit_progress("background_done", {
                 "task_id": task_id,
@@ -235,6 +338,8 @@ class BackgroundTaskManager:
         except Exception:
             logger.warning("后台任务失败通知失败 task=%s", task_id, exc_info=True)
         self._wake(_sid)
+        # 孤儿回调同样适用于失败结果
+        self._schedule_orphan_check(task_id)
 
     def pending_count(self, session_id: str) -> int:
         """本会话中仍在运行、且结果尚未注入上下文的后台任务数。
@@ -283,6 +388,14 @@ class BackgroundTaskManager:
                     # 后台任务总耗时（秒，保留两位小数）：从注册到完成
                     "duration_s": round(time.time() - t.start_time, 2),
                 })
+        # 持久化 delivered 标记
+        if out:
+            try:
+                from .bg_repo import get_repo
+                for item in out:
+                    get_repo().mark_delivered(item["task_id"])
+            except Exception as e:
+                logger.warning("[Background] 持久化 delivered 标记失败: %s", e)
         return out
 
 
@@ -292,6 +405,11 @@ _BG = BackgroundTaskManager()
 def get_background_manager() -> BackgroundTaskManager:
     """取全局后台任务管理器（供 Agent 主循环注入完成结果，避免直接引用私有名）"""
     return _BG
+
+
+def recover_running_tasks() -> list[dict]:
+    """恢复进程重启时未完成的后台任务（供 web_server 启动时调用）"""
+    return _recover_running_tasks()
 # - 键：session_id（来自 ChatJob.session_id）
 # - 值：是否放行高风险工具（true 表示非严格/破甲模式成员代理）
 # - 无 job/session 上下文时保守返回 False，避免跨会话泄漏
