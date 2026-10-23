@@ -105,20 +105,61 @@
     .settings-msg { font-size: 12px; margin-top: 8px; min-height: 18px; }
     .settings-msg.ok { color: #5fd17c; }
     .settings-msg.err { color: #e5636a; }
+
+    /* Tab 导航 */
+    .tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid #2c303a; }
+    .tab {
+      flex: 1; padding: 10px 8px; font-size: 13px; color: #8b909a;
+      background: transparent; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: all .2s;
+    }
+    .tab:hover { color: #b8bcc4; }
+    .tab.active { color: #4a7cf7; border-bottom-color: #4a7cf7; font-weight: 600; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .tab-panel .card-info, .tab-panel .settings-panel { margin-top: 0; padding-top: 0; border-top: none; }
+
+    /* 通道管理 */
+    .chan-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .chan-title { font-size: 14px; font-weight: 600; color: #e8eaed; }
+    .btn-sm {
+      padding: 4px 10px; font-size: 12px; color: #e8eaed;
+      background: #2c303a; border: none; border-radius: 6px; cursor: pointer;
+    }
+    .btn-sm:hover { background: #3a3f4b; }
+    .chan-list { margin-bottom: 20px; }
+    .chan-item {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      background: #12141a; border: 1px solid #2c303a; border-radius: 8px; margin-bottom: 8px;
+    }
+    .chan-item-info { flex: 1; min-width: 0; }
+    .chan-item-name { font-size: 13px; font-weight: 600; color: #e8eaed; }
+    .chan-item-meta { font-size: 11px; color: #8b909a; margin-top: 3px; }
+    .chan-badge {
+      display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; margin-left: 6px;
+    }
+    .chan-badge.on { background: rgba(40,167,69,.2); color: #5fd17c; }
+    .chan-badge.off { background: rgba(139,144,154,.2); color: #8b909a; }
+    .chan-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .chan-create {
+      margin-top: 20px; padding-top: 20px; border-top: 1px solid #2c303a;
+    }
+    .chan-create-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: #e8eaed; }
+    .empty { text-align: center; color: #5a5f6b; font-size: 13px; padding: 24px 0; }
   </style>
 </head>
 <body>
 <div class="container">
   <div class="logo">
     <h1>🤖 AI Agent</h1>
-    <p>卡密用户入口 · 专属会话 · 微信扫码绑定机器人</p>
+    <p>卡密用户入口 · 专属会话 · 独立通道</p>
   </div>
 
   <div class="box">
     <!-- Login Form -->
     <div id="loginForm">
       <div class="title">输入卡密登录</div>
-      <div class="sub">前 6 位作为您的专属会话 ID，登录后扫码绑定微信机器人</div>
+      <div class="sub">前 6 位作为您的专属会话 ID，登录后可配置自己的通道</div>
 
       <div class="field">
         <label for="cardKey">卡密</label>
@@ -131,23 +172,24 @@
 
       <div class="hint">
         提示：卡密前 6 位为您的会话 ID，<code>ABC123</code> 格式。<br>
-        同一卡密前缀相同则共享会话历史。聊天在微信中完成。
+        同一卡密前缀相同则共享会话历史。
       </div>
     </div>
 
     <!-- Success + Bot QR + Card Info -->
     <div id="successView" style="display:none">
       <div class="title" id="welcomeTitle">🎉 登录成功</div>
-      <div class="sub" id="welcomeSub">会话已绑定，请扫码连接微信机器人</div>
+      <div class="sub" id="welcomeSub">会话已绑定，可在下方管理你的独立通道</div>
 
-      <!-- Bot QR -->
-      <div class="bot show" id="botSection">
-        <div class="bot-title">📱 绑定微信机器人</div>
-        <div class="qr-wrap" id="qrWrap"><span class="spinner"></span></div>
-        <div class="bot-status" id="botStatus">正在加载二维码…</div>
+      <!-- Tab 导航 -->
+      <div class="tabs">
+        <button class="tab active" data-tab="info" onclick="switchTab('info')">卡密信息</button>
+        <button class="tab" data-tab="channels" onclick="switchTab('channels')">通道管理</button>
+        <button class="tab" data-tab="settings" onclick="switchTab('settings')">个人配置</button>
       </div>
 
-      <!-- Card Info -->
+      <!-- Tab: 卡密信息 -->
+      <div class="tab-panel active" id="tab-info">
       <div class="card-info show" id="cardInfo">
         <div class="card-info-title">📋 卡密信息</div>
         <div class="info-row">
@@ -167,8 +209,36 @@
           <span class="info-value" id="infoCreated">—</span>
         </div>
       </div>
+      </div>
 
-      <!-- 用户配置面板 -->
+      <!-- Tab: 通道管理 -->
+      <div class="tab-panel" id="tab-channels">
+        <div class="chan-header">
+          <div class="chan-title">🔌 我的通道</div>
+          <button class="btn-sm" onclick="loadChannels()">↻ 刷新</button>
+        </div>
+        <div class="chan-list" id="chanList"><div class="empty">加载中…</div></div>
+
+        <div class="chan-create">
+          <div class="chan-create-title">＋ 新建通道</div>
+          <div class="setting-group">
+            <label class="setting-label">通道类型</label>
+            <select class="setting-select" id="chanKind" onchange="onKindChange()">
+              <option value="">— 请选择 —</option>
+            </select>
+          </div>
+          <div class="setting-group">
+            <label class="setting-label">名称（可选）</label>
+            <input class="setting-input" id="chanName" type="text" placeholder="例如：我的 MQTT" />
+          </div>
+          <div id="chanFields"></div>
+          <button class="btn-save-settings" id="chanCreateBtn" onclick="createChannel()">创建通道</button>
+          <div class="settings-msg" id="chanMsg"></div>
+        </div>
+      </div>
+
+      <!-- Tab: 个人配置 -->
+      <div class="tab-panel" id="tab-settings">
       <div class="settings-panel" id="settingsPanel">
         <div class="settings-title">个人配置</div>
         <div class="setting-group">
@@ -203,6 +273,7 @@
         <button class="btn-save-settings" id="saveSettingsBtn" onclick="saveUserConfig()">保存配置</button>
         <div class="settings-msg" id="settingsMsg"></div>
       </div>
+      </div>
 
       <div class="link" onclick="location.href='/static/card-admin.html'" style="color:#5a5f6b;text-decoration:none;font-size:12px">管理员入口</div>
       <div class="link" onclick="doLogout()" style="margin-top:4px">退出登录</div>
@@ -214,7 +285,6 @@
 const TOKEN_KEY = 'bt_agent_token'
 let currentPrefix = ''
 let currentOwner = ''
-let botTimer = null
 
 function getToken() { try { return localStorage.getItem(TOKEN_KEY) || '' } catch(e) { return '' } }
 function setToken(t) { try { localStorage.setItem(TOKEN_KEY, t) } catch(e) {} }
@@ -273,8 +343,7 @@ async function login() {
       createdEl.textContent = created_at || '—'
     }
     document.getElementById('successView').style.display = 'block'
-    // Start bot QR polling
-    setTimeout(() => startBotPoll(), 500)
+    setTimeout(() => loadChannels(), 300)
   } catch(e) {
     showErr('网络错误')
     btn.disabled = false; btn.textContent = '登录'
@@ -294,53 +363,170 @@ function doLogout() {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem('ai_card_prefix')
   localStorage.removeItem('ai_session_id')
-  if (botTimer) clearInterval(botTimer)
   location.href = '/static/card-login.html'
 }
 
-function startBotPoll() {
-  fetchQr()
-  botTimer = setInterval(fetchStatus, 3000)
+
+// ========== Tab 切换 ==========
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name))
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name))
+  if (name === 'channels') loadChannels()
 }
 
-async function fetchQr() {
-  const wrap = document.getElementById('qrWrap')
-  wrap.innerHTML = '<span class="spinner"></span>'
-  try {
-    const r = await fetch('/api/mp/bot/qrcode', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() }
-    })
-    const res = await r.json()
-    if (!res.status || !res.data?.qr_payload) {
-      document.getElementById('botStatus').textContent = res.msg || '获取二维码失败'
-      return
-    }
-    const qr = res.data.qr_payload
-    wrap.innerHTML = `<img src="${qr.startsWith('data:') ? qr : 'data:image/png;base64,' + qr}" alt="QR Code">`
-    document.getElementById('botStatus').textContent = '用微信扫描二维码，绑定专属机器人'
-  } catch(e) {
-    document.getElementById('botStatus').textContent = '获取二维码失败'
-  }
-}
+// ========== 通道管理 ==========
+let _chanTypes = {}
+let _chanTypesLoaded = false
 
-async function fetchStatus() {
+async function loadChannelTypes() {
+  if (_chanTypesLoaded) return
   try {
-    const r = await fetch('/api/mp/bot/status', {
+    const r = await fetch('/api/v2/card/channels/types', {
       headers: { 'Authorization': 'Bearer ' + getToken() }
     })
     const res = await r.json()
     if (!res.status) return
-    const st = res.data?.status
-    if (st === 'active' || st === 'scaned') {
-      clearInterval(botTimer)
-      document.getElementById('botStatus').textContent = '✅ 机器人已连接！在微信中搜索 clawbot 即可对话'
-    } else if (st === 'expired') {
-      clearInterval(botTimer)
-      fetchQr()
-      botTimer = setInterval(fetchStatus, 3000)
+    _chanTypes = res.data.types || {}
+    _chanTypesLoaded = true
+    const sel = document.getElementById('chanKind')
+    sel.innerHTML = '<option value="">— 请选择 —</option>' +
+      Object.keys(_chanTypes).map(k =>
+        '<option value="' + esc(k) + '">' + esc(_chanTypes[k].label || k) + '</option>').join('')
+  } catch (e) { console.warn('loadChannelTypes failed', e) }
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+}
+
+function onKindChange() {
+  const kind = document.getElementById('chanKind').value
+  const box = document.getElementById('chanFields')
+  if (!kind || !_chanTypes[kind]) { box.innerHTML = ''; return }
+  const meta = _chanTypes[kind]
+  box.innerHTML = (meta.config_fields || []).map(f => {
+    const req = f.required ? ' <span style="color:#e5636a">*</span>' : ''
+    const ph = f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : ''
+    if (f.type === 'select') {
+      const opts = (f.options || []).map(o =>
+        '<option value="' + esc(o.value) + '">' + esc(o.label) + '</option>').join('')
+      return '<div class="setting-group"><label class="setting-label">' + esc(f.name) + req + '</label>' +
+        '<select class="setting-select" data-field="' + esc(f.name) + '">' + opts + '</select></div>'
     }
-  } catch(e) {}
+    const type = f.type === 'password' ? 'password' : (f.type === 'number' ? 'number' : 'text')
+    return '<div class="setting-group"><label class="setting-label">' + esc(f.name) + req + '</label>' +
+      '<input class="setting-input" type="' + type + '" data-field="' + esc(f.name) + '"' + ph + ' /></div>'
+  }).join('') || '<div class="setting-hint">该通道无需额外配置</div>'
+}
+
+async function loadChannels() {
+  const el = document.getElementById('chanList')
+  if (!el) return
+  await loadChannelTypes()
+  el.innerHTML = '<div class="empty">加载中…</div>'
+  try {
+    const r = await fetch('/api/v2/card/channels', {
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    })
+    const res = await r.json()
+    if (!res.status) { el.innerHTML = '<div class="empty">加载失败：' + esc(res.msg || '') + '</div>'; return }
+    const chans = res.data.channels || []
+    if (!chans.length) { el.innerHTML = '<div class="empty">暂无通道，在下方新建</div>'; return }
+    el.innerHTML = chans.map(c => {
+      const badge = c.running
+        ? '<span class="chan-badge on">运行中</span>'
+        : '<span class="chan-badge off">已停止</span>'
+      const cfgHint = c.configured ? '' : ' · <span style="color:#e5a03a">未配置完整</span>'
+      const actionBtn = c.running
+        ? '<button class="btn-sm" onclick="stopChannel(\'' + esc(c.channel_id) + '\')">停止</button>'
+        : '<button class="btn-sm" onclick="startChannel(\'' + esc(c.channel_id) + '\')">启动</button>'
+      return '<div class="chan-item">' +
+        '<div class="chan-item-info">' +
+          '<div class="chan-item-name">' + esc(c.name) + badge + '</div>' +
+          '<div class="chan-item-meta">' + esc(c.label || c.kind) + cfgHint + '</div>' +
+        '</div>' +
+        '<div class="chan-actions">' + actionBtn +
+          '<button class="btn-sm" onclick="deleteChannel(\'' + esc(c.channel_id) + '\',\'' + esc(c.name) + '\')">删除</button>' +
+        '</div>' +
+      '</div>'
+    }).join('')
+  } catch (e) {
+    el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>'
+  }
+}
+
+async function createChannel() {
+  const btn = document.getElementById('chanCreateBtn')
+  const msg = document.getElementById('chanMsg')
+  const kind = document.getElementById('chanKind').value
+  const name = document.getElementById('chanName').value.trim()
+  if (!kind) { msg.textContent = '请选择通道类型'; msg.className = 'settings-msg err'; return }
+
+  const config = {}
+  document.querySelectorAll('#chanFields [data-field]').forEach(el => {
+    const v = el.value.trim()
+    if (v) config[el.dataset.field] = el.value
+  })
+
+  btn.disabled = true
+  msg.textContent = '创建中…'; msg.className = 'settings-msg'
+  try {
+    const r = await fetch('/api/v2/card/channels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ kind, name, config })
+    })
+    const res = await r.json()
+    if (res.status) {
+      msg.textContent = '✅ 已创建：' + (res.data.name || kind)
+      msg.className = 'settings-msg ok'
+      document.getElementById('chanName').value = ''
+      document.getElementById('chanKind').value = ''
+      document.getElementById('chanFields').innerHTML = ''
+      loadChannels()
+    } else {
+      msg.textContent = '❌ ' + (res.msg || '创建失败')
+      msg.className = 'settings-msg err'
+    }
+  } catch (e) {
+    msg.textContent = '❌ 网络错误'
+    msg.className = 'settings-msg err'
+  }
+  btn.disabled = false
+}
+
+async function startChannel(chid) {
+  try {
+    const r = await fetch('/api/v2/card/channels/' + chid + '/start', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() }
+    })
+    const res = await r.json()
+    if (!res.status) alert(res.msg || '启动失败')
+    loadChannels()
+  } catch (e) { alert('网络错误: ' + e.message) }
+}
+
+async function stopChannel(chid) {
+  try {
+    const r = await fetch('/api/v2/card/channels/' + chid + '/stop', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() }
+    })
+    const res = await r.json()
+    if (!res.status) alert(res.msg || '停止失败')
+    loadChannels()
+  } catch (e) { alert('网络错误: ' + e.message) }
+}
+
+async function deleteChannel(chid, name) {
+  if (!confirm('确定删除通道「' + name + '」？')) return
+  try {
+    const r = await fetch('/api/v2/card/channels/' + chid, {
+      method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() }
+    })
+    const res = await r.json()
+    if (!res.status) alert(res.msg || '删除失败')
+    loadChannels()
+  } catch (e) { alert('网络错误: ' + e.message) }
 }
 
 // ========== 用户配置 ==========
@@ -494,9 +680,9 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     document.getElementById('successView').style.display = 'block'
     setTimeout(() => {
-      startBotPoll()
+      loadChannels()
       loadUserConfig()
-    }, 500)
+    }, 300)
   }
 })
 </script>
