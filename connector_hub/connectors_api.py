@@ -401,6 +401,15 @@ async def api_cli_install(kind: str):
     return _ok(res, "已安装" if res.get("ok") else "安装失败") if res.get("ok") else _err(res.get("error", "安装失败"))
 
 
+# ── 缓存管理 ────────────────────────────────────────────────
+@router.post("/catalog/cache/reset")
+async def api_reset_catalog_cache():
+    """清除连接器目录缓存，下次请求重新读取 catalog.json。"""
+    import connector_hub.connectors_catalog as cat
+    cat.reset_catalog_cache()
+    return _ok({"reset": True}, "缓存已清除")
+
+
 # ── 同步到 mcp/config.json ──────────────────────────────────
 @router.post("/sync")
 async def api_sync(request: Request):

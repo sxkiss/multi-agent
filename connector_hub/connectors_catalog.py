@@ -193,6 +193,15 @@ def list_catalog_entries() -> list[CatalogEntry]:
     return list(_load().values())
 
 
+def reset_catalog_cache() -> None:
+    """强制清除进程级缓存，下次调用 _load() 会重新读取 catalog.json。
+
+    用于管理面板编辑 catalog 后无需重启服务即可生效。
+    """
+    global _ENTRIES
+    _ENTRIES = None
+
+
 def is_gateway_kind(kind: str) -> bool:
     return kind in GATEWAY_KINDS
 
