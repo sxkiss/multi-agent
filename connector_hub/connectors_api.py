@@ -35,6 +35,23 @@ logger = logging.getLogger("connector-hub-api")
 router = APIRouter(prefix="/api/v2/connectors", tags=["connectors"])
 
 
+def _card_prefix(request: Request) -> str | None:
+    """从请求中提取卡密前缀，非卡密用户返回 None。"""
+    try:
+        from auth import extract_token, verify_token, is_card_token
+        from web_server import BASE_DIR as _BASE
+        token = extract_token(request)
+        if not token or not is_card_token(_BASE, token):
+            return None
+        payload = verify_token(_BASE, token)
+        sub = str(payload.get("sub") or "")
+        if not sub.startswith("card:"):
+            return None
+        return sub[5:]
+    except Exception:
+        return None
+
+
 async def _sse_keepalive():
     """streamable_http 客户端初始化后保持 SSE 通道活跃。"""
     yield "event: message\ndata: \n\n"
@@ -80,8 +97,9 @@ async def api_catalog(request: Request):
 
 # ── 实例 CRUD ───────────────────────────────────────────────
 @router.get("/instances")
-async def api_list_instances():
-    return _ok({"instances": svc.list_instances()})
+async def api_list_instances(request: Request):
+    prefix = _card_prefix(request)
+    return _ok({"instances": svc.list_instances(owner=prefix or "")})
 
 
 @router.post("/instances")
@@ -95,8 +113,9 @@ async def api_create_instance(request: Request):
         return _err("缺少 kind")
     if not isinstance(creds, dict):
         return _err("credentials 必须是对象")
+    prefix = _card_prefix(request)
     try:
-        inst = svc.create_instance(kind, name, creds, enabled)
+        inst = svc.create_instance(kind, name, creds, enabled, owner=prefix or "")
     except ValueError as exc:
         return _err(str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -106,8 +125,9 @@ async def api_create_instance(request: Request):
 
 
 @router.get("/instances/{instance_id}")
-async def api_get_instance(instance_id: str):
-    inst = svc.get_instance(instance_id)
+async def api_get_instance(instance_id: str, request: Request):
+    prefix = _card_prefix(request)
+    inst = svc.get_instance(instance_id, owner=prefix or "")
     if not inst:
         return _err(f"实例不存在: {instance_id}")
     return _ok(inst)
@@ -117,12 +137,14 @@ async def api_get_instance(instance_id: str):
 async def api_update_instance(instance_id: str, request: Request):
     body = await _body(request)
     creds = body.get("credentials") or body.get("creds")
+    prefix = _card_prefix(request)
     try:
         inst = svc.update_instance(
             instance_id,
             name=body.get("name"),
             creds=creds if isinstance(creds, dict) else None,
             enabled=body.get("enabled"),
+            owner=prefix or "",
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("update connector instance failed")
@@ -133,16 +155,18 @@ async def api_update_instance(instance_id: str, request: Request):
 
 
 @router.delete("/instances/{instance_id}")
-async def api_delete_instance(instance_id: str):
-    ok = svc.delete_instance(instance_id)
+async def api_delete_instance(instance_id: str, request: Request):
+    prefix = _card_prefix(request)
+    ok = svc.delete_instance(instance_id, owner=prefix or "")
     return _ok({"deleted": ok}, "已删除") if ok else _err(f"实例不存在: {instance_id}")
 
 
 @router.post("/instances/{instance_id}/test")
-async def api_test_instance(instance_id: str):
-    # 在线程池里执行同步 test_instance，避免其内部 asyncio.run() 与
-    # uvicorn 的事件循环冲突（否则 remote 模式连接器测试报
-    # "asyncio.run() cannot be called from a running event loop"）。
+async def api_test_instance(instance_id: str, request: Request):
+    prefix = _card_prefix(request)
+    inst = svc.get_instance(instance_id, owner=prefix or "", include_secrets=True)
+    if not inst:
+        return _err(f"实例不存在: {instance_id}")
     res = await asyncio.to_thread(svc.test_instance, instance_id)
     return _ok(res) if res.get("ok") else _err(res.get("error", "测试失败"))
 

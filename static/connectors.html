@@ -430,75 +430,20 @@
       return h;
     }
 
-    if (e.auth_kind === 'personal_token') {
-      // 与上游一致：Token 字段
-      body += fieldHtml('token', '访问 Token', {
-        placeholder: e.kind === 'tencent-weiyun' ? '粘贴 MCP Token 或 WyHeader 片段' : '粘贴 Token',
-        secret: true, required: true,
-        help: e.kind === 'tencent-weiyun'
-          ? '支持直接粘贴 MCP Token，也支持粘贴含 mcp_token=xxx 或 WEIYUN_MCP_TOKEN=xxx 的 env/WyHeader 片段，后端会自动提取'
-          : '打开授权页获取 Token 后粘贴到此处',
-      });
-    } else if (e.auth_kind === 'api_key') {
-      if (e.kind === 'feishu-cli') {
-        // 飞书 CLI：App ID + App Secret（+ 飞书账号授权在下方单独处理）
-        body += fieldHtml('app_id', 'App ID', {
-          placeholder: '例如 cli_xxxxxxxx', required: true,
-          help: '在飞书开放平台创建应用并获取 App ID；文档搜索需再点「登录授权」',
-        });
-        body += fieldHtml('app_secret', 'App Secret', {
-          placeholder: '飞书应用 App Secret', secret: true, required: true,
-        });
-      } else if (e.kind === 'wecom-cli') {
-        // 企业微信 CLI：Bot ID + Secret
-        body += fieldHtml('bot_id', 'Bot ID', {
-          placeholder: '企业微信智能机器人 Bot ID', required: true,
-          help: '在企业微信开放平台获取长连接智能机器人 Bot ID',
-        });
-        body += fieldHtml('bot_secret', 'Secret', {
-          placeholder: '企业微信机器人 Secret', secret: true, required: true,
-          help: '主机需已安装 @wecom/cli（wecom-cli）',
-        });
-      } else {
-        body += fieldHtml('api_key', 'API Key', {
-          placeholder: e.kind === 'tencent-ima' ? '从 IMA 配置页复制（仅展示一次）' : '粘贴 API Key',
-          secret: true, required: true,
-          help: e.kind === 'qq-music' ? '以 qmk- 开头' : e.kind === 'wechat-reading' ? '以 wrk- 开头' : e.kind === 'yuandian' ? '以 sk_ 开头' : '打开配置页获取 API Key',
-        });
-        if (e.kind === 'tencent-ima') {
-          body += fieldHtml('client_id', 'Client ID', {
-            placeholder: '从 IMA 配置页复制', required: true,
-          });
-        }
-        if (e.kind === 'tencent-lexiang') {
-          body += fieldHtml('company_from', 'Company ID', {
-            placeholder: '乐享企业标识', required: true,
-          });
-        }
-      }
-    } else if (e.auth_kind === 'imap_app_password') {
-      // 邮箱 + 授权码 + 服务商
-      body += fieldHtml('email', '邮箱', {
-        placeholder: 'example@qq.com', required: true,
-      });
-      body += fieldHtml('password', '授权码', {
-        placeholder: 'SMTP/IMAP 授权码', secret: true, required: true,
-        help: '在邮箱设置中生成 IMAP/SMTP 授权码，不是登录密码',
-      });
-      if (e.kind === 'qq-mail') {
-        body += fieldHtml('mail_provider', '邮箱服务商', {
-          placeholder: 'qq', required: false,
-          help: '默认 qq，其它服务商填对应标识',
-        });
-      }
-    } else if (e.auth_kind === 'custom_fields' && fields.length) {
+    if (fields.length) {
+      // credential_fields 已定义：统一走循环，auth_hint 提示也一并保留
       fields.forEach(function (f) {
-        body += fieldHtml(f.key, f.label, {
-          placeholder: f.placeholder || '',
+        var label = f.label || f.key;
+        var ph = f.placeholder || '';
+        if (typeof ph === 'object') ph = ph['zh'] || ph.en || '';
+        var help = f.help || '';
+        if (typeof help === 'object') help = help['zh'] || help.en || '';
+        body += fieldHtml(f.key, label, {
+          placeholder: ph,
           secret: f.secret || f.field_type === 'password',
           fieldType: f.field_type,
-          required: f.required,
-          help: f.help || '',
+          required: f.required !== false,
+          help: help,
         });
       });
     } else if (e.auth_kind === 'oauth2') {

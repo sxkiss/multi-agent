@@ -185,6 +185,7 @@
       <div class="tabs">
         <button class="tab active" data-tab="info" onclick="switchTab('info')">卡密信息</button>
         <button class="tab" data-tab="channels" onclick="switchTab('channels')">通道管理</button>
+        <button class="tab" data-tab="connectors" onclick="switchTab('connectors')">我的连接器</button>
         <button class="tab" data-tab="settings" onclick="switchTab('settings')">个人配置</button>
       </div>
 
@@ -236,6 +237,17 @@
           <button class="btn-save-settings" style="background:#2d4a6a;margin-top:6px" onclick="testChannelFields()">测试连接</button>
           <div class="settings-msg" id="chanMsg"></div>
         </div>
+      </div>
+
+      <!-- Tab: 我的连接器 -->
+      <div class="tab-panel" id="tab-connectors">
+        <div class="chan-header">
+          <div class="chan-title">🔌 我的连接器</div>
+          <button class="btn-sm" onclick="loadConnectors()">↻ 刷新</button>
+          <button class="btn-sm primary" onclick="openConnectorModal()">＋ 添加连接器</button>
+        </div>
+        <div id="connTabs" style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap"></div>
+        <div id="connList"><div class="empty">加载中…</div></div>
       </div>
 
       <!-- Tab: 个人配置 -->
@@ -373,6 +385,7 @@ function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name))
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name))
   if (name === 'channels') loadChannels()
+  if (name === 'connectors') loadConnectors()
 }
 
 // ========== 通道管理 ==========
@@ -738,6 +751,252 @@ window.addEventListener('DOMContentLoaded', () => {
     }, 300)
   }
 })
+
+// 连接器弹窗
+document.addEventListener('DOMContentLoaded', function () {
+  const modal = document.createElement('div')
+  modal.id = 'connModalBg'
+  modal.className = 'modal-bg'
+  modal.innerHTML = '<div class="modal">' +
+    '<div class="mh">' +
+      '<div class="icon" id="connModalIcon" style="width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700"></div>' +
+      '<h3 id="connModalTitle">添加连接器</h3>' +
+      '<button class="btn ghost" onclick="closeConnModal()">✕</button>' +
+    '</div>' +
+    '<div class="mb" id="connModalBody"></div>' +
+    '<div class="mf">' +
+      '<button class="btn ghost" onclick="closeConnModal()">取消</button>' +
+      '<button class="btn" id="connModalTest">测试凭据</button>' +
+      '<button class="btn primary" id="connModalSave">保存</button>' +
+    '</div>' +
+  '</div>'
+  document.body.appendChild(modal)
+  modal.onclick = function (e) { if (e.target === modal) closeConnModal() }
+})
+
+// ========== 我的连接器 ==========
+let _connCatalog = null
+let _connInstances = []
+let _connCatMap = {}
+let _currentConnCat = 'all'
+
+async function loadConnectors() {
+  try {
+    // 加载目录
+    if (!_connCatalog) {
+      const r = await fetch('/api/v2/connectors/catalog?locale=zh', {
+        headers: { 'Authorization': 'Bearer ' + getToken() }
+      })
+      const res = await r.json()
+      if (!res.status) return
+      _connCatalog = res.data || {}
+      _connCatMap = {}
+      for (const c of (_connCatalog.connectors || [])) {
+        _connCatMap[c.kind] = c
+        ;(_connCatMap[c.category] || (_connCatMap[c.category] = [])).push(c)
+      }
+    }
+    // 加载实例
+    const r2 = await fetch('/api/v2/connectors/instances', {
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    })
+    const res2 = await r2.json()
+    _connInstances = (res2.data && res2.data.instances) || []
+    _renderConnTabs()
+    _renderConnList()
+  } catch (e) {
+    document.getElementById('connList').innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>'
+  }
+}
+
+function _renderConnTabs() {
+  const cats = ['all', ...new Set(Object.values(_connCatMap).map(c => c.category).filter(Boolean))]
+  const el = document.getElementById('connTabs')
+  if (!el) return
+  el.innerHTML = cats.map(c => {
+    const label = c === 'all' ? '全部' : (c === 'office' ? '办公' : c === 'search' ? '搜索' : c === 'social' ? '社交' : c || c)
+    const active = _currentConnCat === c ? 'active' : ''
+    return '<button class="btn-sm ' + active + '" onclick="filterConnCat(\'' + esc(c) + '\')">' + esc(label) + '</button>'
+  }).join('')
+}
+
+function filterConnCat(cat) {
+  _currentConnCat = cat
+  _renderConnTabs()
+  _renderConnList()
+}
+
+function _colorOf(e) { return e.color || '#666' }
+function _initial(e) { return (e.name || e.kind || '?')[0].toUpperCase() }
+
+function _renderConnList() {
+  const el = document.getElementById('connList')
+  if (!el) return
+  const cats = _currentConnCat === 'all'
+    ? Object.values(_connCatMap)
+    : (Object.values(_connCatMap).filter(c => c.category === _currentConnCat))
+  // 按 category 分组
+  const grouped = {}
+  for (const c of cats) {
+    const cat = c.category || 'other'
+    ;(grouped[cat] || (grouped[cat] = [])).push(c)
+  }
+  let html = ''
+  for (const cat of Object.keys(grouped).sort()) {
+    const items = grouped[cat]
+    html += '<h4 style="margin:10px 0 6px;font-size:13px;color:var(--bt-text-3)">' + esc(cat) + ' (' + items.length + ')</h4><div class="grid">'
+    for (const c of items) {
+      const hasInst = _connInstances.some(i => i.kind === c.kind)
+      const badge = hasInst
+        ? '<span class="badge ok" style="font-size:11px">已添加</span>'
+        : '<span class="badge no" style="font-size:11px">未配置</span>'
+      html += '<div class="card" style="cursor:pointer" onclick="openConnectorModal(\'' + esc(c.kind) + '\')">' +
+        '<div class="hd"><div class="icon" style="background:' + _colorOf(c) + '">' + _initial(c) + '</div>' +
+        '<div style="flex:1;min-width:0"><div class="nm">' + esc(c.name || c.kind) + '</div>' +
+        '<div class="kind">' + esc((c.description || {}).zh || c.description || c.kind || '') + '</div></div>' +
+        '<div>' + badge + '</div></div></div>'
+    }
+    html += '</div>'
+  }
+  if (!html) html = '<div class="empty">暂无连接器</div>'
+  el.innerHTML = html
+}
+
+// ── 连接器弹窗（复用 connectors.html 字段渲染逻辑）────────────────
+let _connModalKind = null
+let _connModalEditId = null
+
+function openConnectorModal(kind, editId) {
+  _connModalKind = kind || null
+  _connModalEditId = editId || null
+  _renderConnModal()
+  document.getElementById('connModalBg').classList.add('show')
+}
+
+function closeConnModal() {
+  document.getElementById('connModalBg').classList.remove('show')
+  _connModalKind = null
+  _connModalEditId = null
+}
+
+async function _renderConnModal() {
+  const kind = _connModalKind
+  if (!kind) return
+  const entry = _connCatMap[kind]
+  if (!entry) return
+  const inst = _connModalEditId ? (_connInstances.find(i => i.instance_id === _connModalEditId) || null) : null
+  const fields = entry.credential_fields || []
+
+  // 找已有的凭据（编辑时解密回填）
+  let existingCreds = {}
+  if (inst && inst.creds_decoded) {
+    existingCreds = inst.creds_decoded
+  }
+
+  let body = ''
+  if (entry.auth_hint) {
+    const hint = typeof entry.auth_hint === 'object' ? (entry.auth_hint.zh || entry.auth_hint.en || '') : entry.auth_hint
+    body += '<div class="hint" style="margin-bottom:14px;padding:10px;background:var(--bt-surface-2);border-radius:8px">💡 ' + esc(hint) + '</div>'
+  }
+  body += '<div class="field"><label>实例名称</label><input id="c_name" placeholder="' + esc(entry.name || kind) + '" value=""></div>'
+
+  function fieldHtml(key, label, opts) {
+    opts = opts || {}
+    const isSecret = opts.secret || false
+    const isUrl = opts.fieldType === 'url'
+    const ph = opts.placeholder || ''
+    const help = opts.help || ''
+    const req = opts.required !== false
+    const stored = inst && isSecret && existingCreds[key]
+    let h = '<div class="field"><label>' + esc(label) + (req ? ' <span class="req">*</span>' : '') + '</label>'
+    h += '<input id="c_' + esc(key) + '" type="' + (isSecret ? 'password' : isUrl ? 'url' : 'text') + '" placeholder="' + esc(stored ? '已配置，留空不修改' : ph) + '">'
+    if (help) h += '<div class="hint">' + esc(help) + '</div>'
+    if (stored) h += '<div class="hint">已配置，留空不修改</div>'
+    h += '</div>'
+    return h
+  }
+
+  if (fields.length) {
+    for (const f of fields) {
+      const label = typeof f.label === 'object' ? (f.label.zh || f.label.en || f.key) : (f.label || f.key)
+      const ph = typeof f.placeholder === 'object' ? (f.placeholder.zh || f.placeholder.en || '') : (f.placeholder || '')
+      const help = typeof f.help === 'object' ? (f.help.zh || f.help.en || '') : (f.help || '')
+      body += fieldHtml(f.key, label, {
+        placeholder: ph, secret: f.secret || f.field_type === 'password',
+        fieldType: f.field_type, required: f.required !== false, help: help
+      })
+    }
+  } else if (entry.auth_kind === 'oauth2') {
+    body += '<div class="hint" style="padding:12px;background:var(--bt-surface-2);border-radius:8px">该连接器使用 OAuth2 授权，请在「连接器」页面完成授权。</div>'
+  } else {
+    body += '<div class="field"><label>凭据</label><input id="c_token" type="password" placeholder="粘贴 Token 或 API Key"></div>'
+  }
+
+  const title = inst ? '编辑：' + (entry.name || kind) : '添加：' + (entry.name || kind)
+  document.getElementById('connModalTitle').textContent = title
+  document.getElementById('connModalIcon').style.background = _colorOf(entry)
+  document.getElementById('connModalIcon').textContent = _initial(entry)
+  document.getElementById('connModalBody').innerHTML = body
+
+  const mSave = document.getElementById('connModalSave')
+  const mTest = document.getElementById('connModalTest')
+  if (mSave) mSave.onclick = _saveConnInstance
+  if (mTest) mTest.onclick = _testConnCreds
+}
+
+function _collectConnCreds() {
+  const creds = {}
+  const tokenEl = document.getElementById('c_token')
+  if (tokenEl && tokenEl.value.trim()) { creds.token = tokenEl.value.trim(); return creds }
+  for (const el of document.querySelectorAll('#connModalBody input[id^="c_"], #connModalBody textarea[id^="c_"]')) {
+    const key = el.id.replace(/^c_/, '')
+    const v = el.value.trim()
+    if (v) creds[key] = v
+  }
+  return creds
+}
+
+async function _saveConnInstance() {
+  const kind = _connModalKind
+  const name = (document.getElementById('c_name') || {}).value.trim() || kind
+  const creds = _collectConnCreds()
+  const url = _connModalEditId
+    ? '/api/v2/connectors/instances/' + encodeURIComponent(_connModalEditId)
+    : '/api/v2/connectors/instances'
+  const method = _connModalEditId ? 'PATCH' : 'POST'
+  try {
+    const r = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ kind, name, credentials: creds })
+    })
+    const res = await r.json()
+    if (res.status) {
+      closeConnModal()
+      loadConnectors()
+    } else {
+      alert('保存失败：' + (res.msg || '未知错误'))
+    }
+  } catch (e) {
+    alert('请求失败：' + e.message)
+  }
+}
+
+async function _testConnCreds() {
+  const kind = _connModalKind
+  const creds = _collectConnCreds()
+  try {
+    const r = await fetch('/api/v2/connectors/test-credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ kind, credentials: creds })
+    })
+    const res = await r.json()
+    alert(res.status ? ('✅ 凭据可用' + (res.data && res.data.tool_count ? '（' + res.data.tool_count + ' 工具）' : '')) : ('❌ ' + (res.msg || '失败')))
+  } catch (e) {
+    alert('测试失败：' + e.message)
+  }
+}
 </script>
 </body>
 </html>

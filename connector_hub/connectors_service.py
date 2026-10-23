@@ -307,17 +307,21 @@ def sync_to_mcp_config(dry_run: bool = False) -> dict[str, Any]:
 
 
 # ── CRUD ───────────────────────────────────────────────────
-def list_instances(include_secrets: bool = False) -> list[dict[str, Any]]:
+def list_instances(owner: str = "", include_secrets: bool = False) -> list[dict[str, Any]]:
     out = []
     for inst in _instances():
+        if owner and inst.get("owner") != owner:
+            continue
         d = _redact(inst, include_secrets)
         out.append(d)
     return out
 
 
-def get_instance(instance_id: str, include_secrets: bool = False) -> dict[str, Any] | None:
+def get_instance(instance_id: str, owner: str = "", include_secrets: bool = False) -> dict[str, Any] | None:
     for inst in _instances():
         if inst["instance_id"] == instance_id:
+            if owner and inst.get("owner") != owner:
+                return None
             return _redact(inst, include_secrets)
     return None
 
@@ -410,7 +414,7 @@ def normalize_credentials(kind: str, entry: Any, creds: dict[str, Any]) -> dict[
     return creds
 
 
-def create_instance(kind: str, name: str, creds: dict[str, Any], enabled: bool = True) -> dict[str, Any]:
+def create_instance(kind: str, name: str, creds: dict[str, Any], enabled: bool = True, owner: str = "") -> dict[str, Any]:
     entry = get_catalog_entry(kind)
     if entry is None:
         raise ValueError(f"unknown connector kind: {kind}")
@@ -426,6 +430,7 @@ def create_instance(kind: str, name: str, creds: dict[str, Any], enabled: bool =
         "enabled": enabled,
         "created_at": _now(),
         "creds_enc": encrypt_credentials(creds) if creds else "",
+        "owner": owner,
     }
     instances = _instances()
     instances.append(inst)
@@ -436,10 +441,13 @@ def create_instance(kind: str, name: str, creds: dict[str, Any], enabled: bool =
 
 def update_instance(instance_id: str, *, name: str | None = None,
                     creds: dict[str, Any] | None = None,
-                    enabled: bool | None = None) -> dict[str, Any] | None:
+                    enabled: bool | None = None,
+                    owner: str = "") -> dict[str, Any] | None:
     instances = _instances()
     for inst in instances:
         if inst["instance_id"] == instance_id:
+            if owner and inst.get("owner") != owner:
+                return None
             if name is not None:
                 inst["name"] = name
             if creds is not None:
@@ -471,10 +479,12 @@ def update_instance(instance_id: str, *, name: str | None = None,
     return None
 
 
-def delete_instance(instance_id: str) -> bool:
+def delete_instance(instance_id: str, owner: str = "") -> bool:
     instances = _instances()
     new = [i for i in instances if i["instance_id"] != instance_id]
     if len(new) == len(instances):
+        return False
+    if owner and instances and any(i.get("owner") != owner for i in instances if i["instance_id"] == instance_id):
         return False
     _save_instances(new)
     sync_to_mcp_config()

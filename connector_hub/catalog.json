@@ -3,7 +3,10 @@
   "connectors": [
     {
       "kind": "tencent-docs",
-      "name": { "en": "Tencent Docs", "zh": "腾讯文档" },
+      "name": {
+        "en": "Tencent Docs",
+        "zh": "腾讯文档"
+      },
       "description": {
         "en": "Read and write Tencent Docs, Smart Sheets, and workspace files",
         "zh": "读写腾讯文档、智能表格与空间文件"
@@ -33,11 +36,33 @@
         "manage.search_file",
         "manage.set_privilege",
         "manage.folder_list"
+      ],
+      "credential_fields": [
+        {
+          "key": "token",
+          "label": {
+            "en": "Token",
+            "zh": "访问 Token"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste MCP token here",
+            "zh": "粘贴 MCP Token"
+          },
+          "help": {
+            "en": "Copy from the authorization page after signing in",
+            "zh": "在授权页登录后复制 Token"
+          }
+        }
       ]
     },
     {
       "kind": "tencent-ima",
-      "name": { "en": "Tencent IMA", "zh": "腾讯 IMA" },
+      "name": {
+        "en": "Tencent IMA",
+        "zh": "腾讯 IMA"
+      },
       "description": {
         "en": "Read, write, search, and manage notes and knowledge bases",
         "zh": "笔记与知识库读写、检索与管理"
@@ -54,11 +79,33 @@
       "auth_hint": {
         "en": "Click “Open auth page” to get an API Key and Client ID in IMA (the API Key is shown only once)",
         "zh": "点击「打开授权页」在 IMA 中获取 API Key 与 Client ID（API Key 仅展示一次）"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste API key (shown only once)",
+            "zh": "粘贴 API Key（仅展示一次）"
+          },
+          "help": {
+            "en": "From IMA configuration page",
+            "zh": "从 IMA 配置页复制"
+          }
+        }
+      ]
     },
     {
       "kind": "tencent-meeting",
-      "name": { "en": "Tencent Meeting", "zh": "腾讯会议" },
+      "name": {
+        "en": "Tencent Meeting",
+        "zh": "腾讯会议"
+      },
       "description": {
         "en": "Manage meetings, recordings, and AI summaries",
         "zh": "会议管理、查询、录制与智能纪要"
@@ -76,11 +123,33 @@
       "auth_hint": {
         "en": "Open the authorization page, sign in to Tencent Meeting, then copy the token and paste it below",
         "zh": "打开授权页登录腾讯会议，复制页面上的 Token 并粘贴到下方"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "token",
+          "label": {
+            "en": "Token",
+            "zh": "访问 Token"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste X-Tencent-Meeting-Token",
+            "zh": "粘贴 X-Tencent-Meeting-Token"
+          },
+          "help": {
+            "en": "From Tencent Meeting Open Platform",
+            "zh": "从腾讯会议开放平台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "tencent-news",
-      "name": { "en": "Tencent News", "zh": "腾讯新闻" },
+      "name": {
+        "en": "Tencent News",
+        "zh": "腾讯新闻"
+      },
       "description": {
         "en": "Search news and follow trending topics",
         "zh": "新闻搜索与热点订阅"
@@ -98,11 +167,33 @@
       "auth_hint": {
         "en": "Sign in on the Tencent News Skills page, generate an API Key, and paste it below (one key per account)",
         "zh": "登录腾讯新闻 Skills 页生成 API Key 并粘贴到下方（每个账号仅一个 Key）"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste API key",
+            "zh": "粘贴 API Key"
+          },
+          "help": {
+            "en": "From Tencent News API console",
+            "zh": "从腾讯新闻 API 控制台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "wechat-reading",
-      "name": { "en": "Weixin Reading", "zh": "微信读书" },
+      "name": {
+        "en": "Weixin Reading",
+        "zh": "微信读书"
+      },
       "description": {
         "en": "Sync your bookshelf and reading notes",
         "zh": "书架同步与读书笔记"
@@ -118,11 +209,33 @@
       "auth_hint": {
         "en": "Sign in at https://weread.qq.com/r/weread-skills, copy the wrk- API Key, and paste it below",
         "zh": "登录 https://weread.qq.com/r/weread-skills 获取 wrk- 开头的 API Key 后粘贴到下方"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Starts with wrk-",
+            "zh": "以 wrk- 开头"
+          },
+          "help": {
+            "en": "From WeRead Open Platform",
+            "zh": "从微信读书开放平台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "tencent-lexiang",
-      "name": { "en": "Tencent Lexiang", "zh": "腾讯乐享" },
+      "name": {
+        "en": "Tencent Lexiang",
+        "zh": "腾讯乐享"
+      },
       "description": {
         "en": "Search, read, create, and manage knowledge-base documents",
         "zh": "知识库检索、阅读、创建与文档管理"
@@ -140,11 +253,45 @@
       "auth_hint": {
         "en": "Open the Lexiang credentials page, sign in, then copy the company id (company_from) and access token into the fields below",
         "zh": "打开乐享凭证页登录，复制企业标识（company_from）与访问令牌，分别填入下方"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste API key",
+            "zh": "粘贴 API Key"
+          }
+        },
+        {
+          "key": "company_from",
+          "label": {
+            "en": "Company ID",
+            "zh": "企业标识"
+          },
+          "required": true,
+          "placeholder": {
+            "en": "Company identifier",
+            "zh": "乐享企业标识"
+          },
+          "help": {
+            "en": "From 乐享 admin console",
+            "zh": "从乐享管理后台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "tencent-weiyun",
-      "name": { "en": "Tencent Weiyun", "zh": "腾讯微云" },
+      "name": {
+        "en": "Tencent Weiyun",
+        "zh": "腾讯微云"
+      },
       "description": {
         "en": "Official MCP: list, upload, download, share, and manage cloud files",
         "zh": "官方 MCP：网盘列表、上传、下载、分享与文件管理"
@@ -176,11 +323,33 @@
         "weiyun.move_dir",
         "weiyun.move_file",
         "check_skill_update"
+      ],
+      "credential_fields": [
+        {
+          "key": "token",
+          "label": {
+            "en": "Token",
+            "zh": "访问 Token"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste WyHeader or mcp_token=xxx",
+            "zh": "粘贴 WyHeader 或 mcp_token=xxx"
+          },
+          "help": {
+            "en": "Supports full WyHeader or just the token value",
+            "zh": "支持粘贴完整 WyHeader，也支持只粘贴 token 值"
+          }
+        }
       ]
     },
     {
       "kind": "qq-mail",
-      "name": { "en": "Personal Mail", "zh": "个人邮箱" },
+      "name": {
+        "en": "Personal Mail",
+        "zh": "个人邮箱"
+      },
       "description": {
         "en": "Connect QQ Mail, NetEase Mail, Gmail, and others over IMAP/SMTP",
         "zh": "通过 IMAP/SMTP 连接 QQ 邮箱、网易邮箱、Gmail 等"
@@ -196,11 +365,45 @@
       "auth_hint": {
         "en": "Pick your mail provider, enable IMAP/SMTP in the mailbox settings, generate an authorization code, and fill it in below",
         "zh": "选择邮箱服务商，在邮箱设置中开启 IMAP/SMTP 并生成授权码后填入下方"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "email",
+          "label": {
+            "en": "Email",
+            "zh": "邮箱"
+          },
+          "required": true,
+          "placeholder": {
+            "en": "example@qq.com",
+            "zh": "example@qq.com"
+          }
+        },
+        {
+          "key": "password",
+          "label": {
+            "en": "Auth Code",
+            "zh": "授权码"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "SMTP/IMAP auth code",
+            "zh": "SMTP/IMAP 授权码"
+          },
+          "help": {
+            "en": "Generate IMAP/SMTP auth code in email settings, not your login password",
+            "zh": "在邮箱设置中生成 IMAP/SMTP 授权码，不是登录密码"
+          }
+        }
+      ]
     },
     {
       "kind": "qq-music",
-      "name": { "en": "QQ Music", "zh": "QQ 音乐" },
+      "name": {
+        "en": "QQ Music",
+        "zh": "QQ 音乐"
+      },
       "description": {
         "en": "Search songs, charts, playlists, and listening reports",
         "zh": "搜歌、排行榜、歌单与听歌报告"
@@ -217,11 +420,33 @@
       "auth_hint": {
         "en": "Sign in on the QQ Music Skills page, generate a qmk- API Key, and paste it below",
         "zh": "登录 QQ 音乐 Skills 页生成 qmk- 开头的 API Key 并粘贴到下方"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Starts with qmk-",
+            "zh": "以 qmk- 开头"
+          },
+          "help": {
+            "en": "QQ Music Open Platform API key",
+            "zh": "QQ音乐开放平台 API Key"
+          }
+        }
+      ]
     },
     {
       "kind": "fliggy",
-      "name": { "en": "Fliggy", "zh": "飞猪" },
+      "name": {
+        "en": "Fliggy",
+        "zh": "飞猪"
+      },
       "description": {
         "en": "Smart search for flights, hotels, attractions, and itineraries",
         "zh": "机票、酒店、景点与行程智能搜索"
@@ -239,11 +464,33 @@
       "auth_hint": {
         "en": "Sign in to the Fliggy AI Open Platform console, copy the API Key, and paste it below",
         "zh": "登录飞猪 AI 开放平台控制台获取 API Key 并粘贴到下方"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste API key",
+            "zh": "粘贴 API Key"
+          },
+          "help": {
+            "en": "From Fliggy Open Platform",
+            "zh": "从飞猪开放平台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "baidu-map",
-      "name": { "en": "Baidu Maps", "zh": "百度地图" },
+      "name": {
+        "en": "Baidu Maps",
+        "zh": "百度地图"
+      },
       "description": {
         "en": "Place search, route planning, and weather",
         "zh": "地点检索、路线规划与天气查询"
@@ -261,11 +508,33 @@
       "auth_hint": {
         "en": "Get a Token from the Baidu Maps Agent Plan console (starts with sk-ap-) and paste it below",
         "zh": "在百度地图 Agent Plan 控制台获取 Token（sk-ap- 开头）并粘贴到下方"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste Baidu Map API key",
+            "zh": "粘贴百度地图 API Key"
+          },
+          "help": {
+            "en": "From Baidu Map Open Platform",
+            "zh": "从百度地图开放平台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "ctrip-wendao",
-      "name": { "en": "Trip.com Wendao", "zh": "携程问道" },
+      "name": {
+        "en": "Trip.com Wendao",
+        "zh": "携程问道"
+      },
       "description": {
         "en": "Q&A and recommendations for hotels, flights, and trips",
         "zh": "酒店、机票与行程问答推荐"
@@ -283,11 +552,33 @@
       "auth_hint": {
         "en": "Open the Wendao authorization page, copy the Token, and paste it below (the upstream does not reject invalid tokens — copy the full value)",
         "zh": "打开携程问道授权页获取 Token 并粘贴到下方（上游不校验无效 Token，请确认复制完整）"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste API key",
+            "zh": "粘贴 API Key"
+          },
+          "help": {
+            "en": "From Ctrip Wendao Open Platform",
+            "zh": "从携程问答开放平台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "meituan-travel",
-      "name": { "en": "Meituan Travel", "zh": "美团旅游助手" },
+      "name": {
+        "en": "Meituan Travel",
+        "zh": "美团旅游助手"
+      },
       "description": {
         "en": "Q&A for hotels, flights, trains, attractions, and itineraries",
         "zh": "酒店、机票、火车票、景点与行程问答"
@@ -305,11 +596,33 @@
       "auth_hint": {
         "en": "Get a Token from the Meituan personal developer page and paste it below (probe only checks the format; real availability is verified when tools are called)",
         "zh": "在美团个人开发者页面获取 Token 并粘贴到下方（探测仅校验格式；真实可用性在对话调用时验证）"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste API key",
+            "zh": "粘贴 API Key"
+          },
+          "help": {
+            "en": "From Meituan Travel Open Platform",
+            "zh": "从美团旅行开放平台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "didi",
-      "name": { "en": "DiDi", "zh": "滴滴" },
+      "name": {
+        "en": "DiDi",
+        "zh": "滴滴"
+      },
       "description": {
         "en": "Ride estimates and booking, place search, and trip routing",
         "zh": "网约车预估/叫车、地点检索与出行路线规划"
@@ -328,11 +641,33 @@
         "en": "Open the DiDi developer console, sign in, activate your personal MCP Key, and paste it below",
         "zh": "打开滴滴开发者控制台登录并激活个人 MCP Key，复制后粘贴到下方"
       },
-      "remote_transport": "streamable_http"
+      "remote_transport": "streamable_http",
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste API key",
+            "zh": "粘贴 API Key"
+          },
+          "help": {
+            "en": "From Didi Open Platform",
+            "zh": "从滴滴开放平台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "yuandian",
-      "name": { "en": "Yuandian", "zh": "元典" },
+      "name": {
+        "en": "Yuandian",
+        "zh": "元典"
+      },
       "description": {
         "en": "Laws, case documents, company data, and legal hallucination checks",
         "zh": "法律法规、案例文书、企业信息与法律幻觉检测"
@@ -350,11 +685,33 @@
       "auth_hint": {
         "en": "Sign in to the Yuandian open platform, copy the sk_ API Key, and paste it below",
         "zh": "登录元典开放平台获取 sk_ 开头的 API Key 并粘贴到下方"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "api_key",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Starts with sk_",
+            "zh": "以 sk_ 开头"
+          },
+          "help": {
+            "en": "From YuanDian Legal Tech platform",
+            "zh": "从元典法律科技平台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "qcc",
-      "name": { "en": "Qichacha", "zh": "企查查" },
+      "name": {
+        "en": "Qichacha",
+        "zh": "企查查"
+      },
       "description": {
         "en": "One-click OAuth or paste an API Key to query companies, risk, IP, operations, and executives",
         "zh": "一键 OAuth 或粘贴 API Key，接入企业、风险、知识产权、经营及董监高五类数据"
@@ -381,7 +738,10 @@
     },
     {
       "kind": "tencent-ardot",
-      "name": { "en": "Tencent Ardot", "zh": "腾讯设计 Ardot" },
+      "name": {
+        "en": "Tencent Ardot",
+        "zh": "腾讯设计 Ardot"
+      },
       "description": {
         "en": "Official Tencent design-platform MCP: read/write drafts, design systems, and export",
         "zh": "腾讯设计平台官方 MCP：设计稿读写、设计系统与导出"
@@ -404,7 +764,10 @@
     },
     {
       "kind": "youdao-note",
-      "name": { "en": "Youdao Note", "zh": "有道云笔记" },
+      "name": {
+        "en": "Youdao Note",
+        "zh": "有道云笔记"
+      },
       "description": {
         "en": "Official MCP: create, search, organize, and manage notes",
         "zh": "官方 MCP：笔记创建、搜索、整理与管理"
@@ -422,11 +785,33 @@
       "auth_hint": {
         "en": "Click “Open auth page”, sign in to the MCP platform, create an API Key under API management, and paste it below",
         "zh": "点击「打开授权页」登录 MCP 平台，在 API 管理创建 API Key 并粘贴到下方"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "token",
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Paste API key",
+            "zh": "粘贴 API Key"
+          },
+          "help": {
+            "en": "From Youdao Note Open Platform",
+            "zh": "从有道云笔记开放平台获取"
+          }
+        }
+      ]
     },
     {
       "kind": "notion",
-      "name": { "en": "Notion", "zh": "Notion" },
+      "name": {
+        "en": "Notion",
+        "zh": "Notion"
+      },
       "description": {
         "en": "Official MCP: search and read/write pages and databases",
         "zh": "官方 MCP：搜索、读写页面与数据库"
@@ -449,7 +834,10 @@
     },
     {
       "kind": "openalex",
-      "name": { "en": "OpenAlex", "zh": "OpenAlex" },
+      "name": {
+        "en": "OpenAlex",
+        "zh": "OpenAlex"
+      },
       "description": {
         "en": "Official MCP: search scholarly works, citations, research entities, and statistics",
         "zh": "官方 MCP：检索学术文献、引文、研究实体与统计分析"
@@ -474,7 +862,10 @@
     },
     {
       "kind": "dida365",
-      "name": { "en": "TickTick", "zh": "滴答清单" },
+      "name": {
+        "en": "TickTick",
+        "zh": "滴答清单"
+      },
       "description": {
         "en": "Official MCP: tasks, lists, habits, and focus records",
         "zh": "官方 MCP：任务、清单、习惯与专注记录"
@@ -499,7 +890,10 @@
     },
     {
       "kind": "feishu-cli",
-      "name": { "en": "Feishu CLI", "zh": "飞书 CLI" },
+      "name": {
+        "en": "Feishu CLI",
+        "zh": "飞书 CLI"
+      },
       "description": {
         "en": "Use the official lark-cli for docs, Bitable, calendar, and messages (host CLI required)",
         "zh": "通过官方 lark-cli 操作文档、多维表格、日历与消息（需主机安装 CLI）"
@@ -516,11 +910,45 @@
       "auth_hint": {
         "en": "Enter the Feishu app App ID and App Secret; document search also needs Authorize",
         "zh": "填写飞书应用 App ID 与 App Secret；文档搜索需再点「登录授权」"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "app_id",
+          "label": {
+            "en": "App ID",
+            "zh": "App ID"
+          },
+          "required": true,
+          "placeholder": {
+            "en": "e.g. cli_xxxxxxxxx",
+            "zh": "例如 cli_xxxxxxxxx"
+          },
+          "help": {
+            "en": "Create an app on Feishu Open Platform to get App ID",
+            "zh": "在飞书开放平台创建应用后获取 App ID"
+          }
+        },
+        {
+          "key": "app_secret",
+          "label": {
+            "en": "App Secret",
+            "zh": "App Secret"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "Feishu App Secret",
+            "zh": "飞书应用 App Secret"
+          }
+        }
+      ]
     },
     {
       "kind": "wecom-cli",
-      "name": { "en": "WeCom CLI", "zh": "企业微信 CLI" },
+      "name": {
+        "en": "WeCom CLI",
+        "zh": "企业微信 CLI"
+      },
       "description": {
         "en": "Use the official wecom-cli for docs, calendar, and messages (host CLI required)",
         "zh": "通过官方 wecom-cli 操作文档、日程与消息（需主机安装 CLI）"
@@ -537,11 +965,49 @@
       "auth_hint": {
         "en": "Enter the long-connection smart bot Bot ID and Secret; the host must have @wecom/cli (wecom-cli) installed",
         "zh": "填写长连接智能机器人 Bot ID 与 Secret；主机需已安装 @wecom/cli（wecom-cli）"
-      }
+      },
+      "credential_fields": [
+        {
+          "key": "bot_id",
+          "label": {
+            "en": "Bot ID",
+            "zh": "Bot ID"
+          },
+          "required": true,
+          "placeholder": {
+            "en": "WeCom AI Bot ID",
+            "zh": "企业微信智能机器人 Bot ID"
+          },
+          "help": {
+            "en": "Get from WeCom Open Platform (长连接智能机器人)",
+            "zh": "在企业微信开放平台获取长连接智能机器人 Bot ID"
+          }
+        },
+        {
+          "key": "bot_secret",
+          "label": {
+            "en": "Secret",
+            "zh": "Secret"
+          },
+          "required": true,
+          "secret": true,
+          "placeholder": {
+            "en": "WeCom Bot Secret",
+            "zh": "企业微信机器人 Secret"
+          },
+          "help": {
+            "en": "Host must have @wecom/cli installed",
+            "zh": "主机需已安装 @wecom/cli（wecom-cli）"
+          }
+        }
+      ]
     },
     {
       "kind": "agently-cli",
-      "name": { "en": "Agent Mail", "zh": "Agent Mail" },
+      "name": {
+        "en": "Agent Mail",
+        "zh": "Agent Mail"
+      },
       "description": {
         "en": "Use an independent Agent mailbox through the official CLI, with mail, attachments, device authorization and two-phase confirmation.",
         "zh": "通过官方 CLI 使用独立的 Agent 邮箱，支持邮件与附件、设备码授权和两阶段确认。"
@@ -558,11 +1024,15 @@
       "auth_hint": {
         "en": "Save the connector, then authorize it. Each instance binds an independent mailbox.",
         "zh": "先保存连接器，再完成设备码授权；每个实例独立绑定邮箱"
-      }
+      },
+      "credential_fields": []
     },
     {
       "kind": "obsidian-cli",
-      "name": { "en": "Obsidian", "zh": "Obsidian" },
+      "name": {
+        "en": "Obsidian",
+        "zh": "Obsidian"
+      },
       "description": {
         "en": "Search, read, and write notes in a vault via the official Obsidian CLI (Obsidian must be running on this host)",
         "zh": "通过官方 Obsidian CLI 搜索、阅读和写入指定库中的笔记（需本机运行 Obsidian）"
@@ -583,8 +1053,14 @@
       "credential_fields": [
         {
           "key": "vault",
-          "label": { "en": "Vault name", "zh": "库名" },
-          "placeholder": { "en": "e.g. Notes", "zh": "例如 Notes" },
+          "label": {
+            "en": "Vault name",
+            "zh": "库名"
+          },
+          "placeholder": {
+            "en": "e.g. Notes",
+            "zh": "例如 Notes"
+          },
           "help": {
             "en": "The vault name in the Obsidian sidebar, not a folder path",
             "zh": "Obsidian 侧边栏显示的库名，不是文件夹路径"
@@ -592,7 +1068,10 @@
         },
         {
           "key": "binary_path",
-          "label": { "en": "CLI path", "zh": "CLI 路径" },
+          "label": {
+            "en": "CLI path",
+            "zh": "CLI 路径"
+          },
           "required": false,
           "placeholder": "/usr/local/bin/obsidian",
           "help": {
@@ -604,7 +1083,10 @@
     },
     {
       "kind": "weknora",
-      "name": { "en": "WeKnora", "zh": "WeKnora" },
+      "name": {
+        "en": "WeKnora",
+        "zh": "WeKnora"
+      },
       "description": {
         "en": "Connect a private WeKnora knowledge base for read-only search and document reading",
         "zh": "连接 WeKnora 私有知识库，提供只读检索与文档阅读"
@@ -624,7 +1106,10 @@
       "credential_fields": [
         {
           "key": "base_url",
-          "label": { "en": "Service URL", "zh": "服务地址" },
+          "label": {
+            "en": "Service URL",
+            "zh": "服务地址"
+          },
           "field_type": "url",
           "placeholder": {
             "en": "http://127.0.0.1:8080 or https://weknora.example.com",
@@ -637,7 +1122,10 @@
         },
         {
           "key": "api_key",
-          "label": { "en": "API Key", "zh": "API Key" },
+          "label": {
+            "en": "API Key",
+            "zh": "API Key"
+          },
           "field_type": "password",
           "required": false,
           "placeholder": {
@@ -648,7 +1136,10 @@
         },
         {
           "key": "tenant_id",
-          "label": { "en": "Tenant ID", "zh": "Tenant ID" },
+          "label": {
+            "en": "Tenant ID",
+            "zh": "Tenant ID"
+          },
           "required": false,
           "help": {
             "en": "Required when a platform-level API Key must target a workspace",
@@ -657,7 +1148,10 @@
         },
         {
           "key": "knowledge_base_ids",
-          "label": { "en": "Default knowledge-base IDs", "zh": "默认知识库 ID" },
+          "label": {
+            "en": "Default knowledge-base IDs",
+            "zh": "默认知识库 ID"
+          },
           "field_type": "tags",
           "required": false,
           "placeholder": "kb-123, kb-456",
@@ -670,7 +1164,10 @@
     },
     {
       "kind": "dify",
-      "name": { "en": "Dify", "zh": "Dify" },
+      "name": {
+        "en": "Dify",
+        "zh": "Dify"
+      },
       "description": {
         "en": "Connect the MCP endpoint of a published Dify app or workflow",
         "zh": "连接 Dify 已发布应用或工作流的 MCP 服务"
@@ -689,7 +1186,10 @@
       "credential_fields": [
         {
           "key": "mcp_url",
-          "label": { "en": "MCP Server URL", "zh": "MCP Server URL" },
+          "label": {
+            "en": "MCP Server URL",
+            "zh": "MCP Server URL"
+          },
           "field_type": "url",
           "placeholder": "https://dify.example.com/mcp/server/<server_code>/mcp",
           "help": {
