@@ -487,6 +487,12 @@ def delete_instance(instance_id: str, owner: str = "") -> bool:
     if owner and instances and any(i.get("owner") != owner for i in instances if i["instance_id"] == instance_id):
         return False
     _save_instances(new)
+    # 清理 OAuth2 token_cache，防止旧凭据被新实例复用
+    try:
+        from connector_hub import oauth_manager as oauth
+        oauth.delete_credentials(instance_id)
+    except Exception:
+        logger.warning("delete_instance 清理 token_cache 失败 instance_id=%s", instance_id, exc_info=True)
     sync_to_mcp_config()
     return True
 
@@ -539,6 +545,9 @@ def test_instance(instance_id: str) -> dict[str, Any]:
         if entry and entry.mcp_mode == "remote":
             from connector_hub.http_mcp import amap_list_tools
             import asyncio
+            # OAuth2 实例需要把 instance_id 带给 _remote_spec_for，用于自动刷新
+            if getattr(entry, "auth_kind", "") == "oauth2" and creds:
+                creds["_instance_id"] = inst["instance_id"]
             spec3 = _remote_spec_for(kind, creds, entry)
             if not spec3:
                 return {"ok": False, "error": "无法构建连接配置（缺少必要凭据）"}

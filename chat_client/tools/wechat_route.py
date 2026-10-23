@@ -71,12 +71,19 @@ def _resolve_scripts() -> tuple[Path, Path]:
 
 
 def _default_target_wxid() -> str:
-    """从当前会话上下文取默认接收方 wxid。"""
+    """从当前会话上下文取默认接收方 wxid。
+
+    session_id 格式为 <type>:<role>:<sender_wxid>:<date>（冒号4段），
+    提取第3段（sender_wxid）作为默认接收方；chatroom 场景下 sender_wxid
+    即为群聊 id（xxx@chatroom）。
+    """
     sid = (_current_session_id() or "").strip()
     if not sid:
         return ""
-    # session_id 格式可能为 wx_<hash>、 chatroom@<...>，或带前缀。
-    # 直接返回，由调用方决定是否用。
+    parts = sid.split(":")
+    # 兼容旧格式（纯 wxid 或含 @chatroom 的群聊 id）
+    if len(parts) >= 4:
+        return parts[2]
     return sid
 
 
