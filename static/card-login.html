@@ -900,7 +900,16 @@ function _renderConnList() {
         '<div class="hd"><div class="icon" style="background:' + _colorOf(c) + '">' + _initial(c) + '</div>' +
         '<div style="flex:1;min-width:0"><div class="nm">' + esc(c.name || c.kind) + '</div>' +
         '<div class="kind">' + esc((c.description || {}).zh || c.description || c.kind || '') + '</div></div>' +
-        '<div>' + badge + '</div></div></div>'
+        '<div>' + badge + '</div></div>'
+      // OAuth2：显示一键授权按钮；含 manual_token 字段时额外显示手动粘贴
+      if (c.auth_kind === 'oauth2') {
+        const supportsManual = (c.credential_fields || []).some(function(f){ return f.key === 'manual_token' })
+        html += '<div class="ft" style="padding:6px 8px;display:flex;gap:6px;flex-wrap:wrap">'
+        html += '<button class="btn-sm primary" onclick="event.stopPropagation();startConnOAuth2(\'' + esc(c.kind) + '\')">⚡ 一键授权</button>'
+        if (supportsManual) html += '<button class="btn-sm" onclick="event.stopPropagation();openConnectorModal(\'' + esc(c.kind) + '\',null,true)">手动粘贴 Token</button>'
+        html += '</div>'
+      }
+      html += '</div>'
     }
     html += '</div>'
   }
@@ -911,10 +920,12 @@ function _renderConnList() {
 // ── 连接器弹窗（复用 connectors.html 字段渲染逻辑）────────────────
 let _connModalKind = null
 let _connModalEditId = null
+let _connModalManualOAuth2 = false  // 是否从「手动粘贴 Token」入口进入
 
-function openConnectorModal(kind, editId) {
+function openConnectorModal(kind, editId, manualOAuth2) {
   _connModalKind = kind || null
   _connModalEditId = editId || null
+  _connModalManualOAuth2 = !!manualOAuth2
   _renderConnModal()
   document.getElementById('connModalBg').classList.add('show')
 }
@@ -923,6 +934,7 @@ function closeConnModal() {
   document.getElementById('connModalBg').classList.remove('show')
   _connModalKind = null
   _connModalEditId = null
+  _connModalManualOAuth2 = false
 }
 
 async function _renderConnModal() {
@@ -950,30 +962,55 @@ async function _renderConnModal() {
     opts = opts || {}
     const isSecret = opts.secret || false
     const isUrl = opts.fieldType === 'url'
+    const isTags = opts.fieldType === 'tags'
+    const isTextarea = isTags || opts.fieldType === 'textarea'
     const ph = opts.placeholder || ''
     const help = opts.help || ''
     const req = opts.required !== false
     const stored = inst && isSecret && existingCreds[key]
     let h = '<div class="field"><label>' + esc(label) + (req ? ' <span class="req">*</span>' : '') + '</label>'
-    h += '<input id="c_' + esc(key) + '" type="' + (isSecret ? 'password' : isUrl ? 'url' : 'text') + '" placeholder="' + esc(stored ? '已配置，留空不修改' : ph) + '">'
+    const phText = stored ? '已配置，留空不修改' : ph
+    if (isTextarea) {
+      h += '<textarea id="c_' + esc(key) + '" rows="2" placeholder="' + esc(phText) + '"></textarea>'
+    } else {
+      h += '<input id="c_' + esc(key) + '" type="' + (isSecret ? 'password' : isUrl ? 'url' : 'text') + '" placeholder="' + esc(phText) + '">'
+    }
     if (help) h += '<div class="hint">' + esc(help) + '</div>'
+    if (isTags) h += '<div class="hint">用逗号分隔多个值，例如 kb-123, kb-456</div>'
     if (stored) h += '<div class="hint">已配置，留空不修改</div>'
     h += '</div>'
     return h
   }
 
-  if (fields.length) {
-    for (const f of fields) {
-      const label = typeof f.label === 'object' ? (f.label.zh || f.label.en || f.key) : (f.label || f.key)
-      const ph = typeof f.placeholder === 'object' ? (f.placeholder.zh || f.placeholder.en || '') : (f.placeholder || '')
-      const help = typeof f.help === 'object' ? (f.help.zh || f.help.en || '') : (f.help || '')
-      body += fieldHtml(f.key, label, {
-        placeholder: ph, secret: f.secret || f.field_type === 'password',
-        fieldType: f.field_type, required: f.required !== false, help: help
-      })
+  function renderField(f) {
+    const label = typeof f.label === 'object' ? (f.label.zh || f.label.en || f.key) : (f.label || f.key)
+    const ph = typeof f.placeholder === 'object' ? (f.placeholder.zh || f.placeholder.en || '') : (f.placeholder || '')
+    const help = typeof f.help === 'object' ? (f.help.zh || f.help.en || '') : (f.help || '')
+    body += fieldHtml(f.key, label, {
+      placeholder: ph, secret: f.secret || f.field_type === 'password',
+      fieldType: f.field_type, required: f.required !== false, help: help
+    })
+  }
+
+  if (entry.auth_kind === 'oauth2') {
+    // OAuth2 优先走一键授权；仅当从「手动粘贴」入口进入时才渲染 manual_token
+    const manualFields = fields.filter(function (f) { return f.key === 'manual_token' })
+    body += '<div class="hint" style="padding:12px;background:var(--bt-surface-2);border-radius:8px">' +
+      '该连接器使用 OAuth2 授权，请点击卡片上的「⚡ 一键授权」完成登录。' +
+      (manualFields.length ? '若一键授权不可用，也可在下方手动粘贴 Token 保存。' : '当前连接器不支持手动粘贴 Token。') +
+      '</div>'
+    if (_connModalManualOAuth2) {
+      if (manualFields.length) {
+        manualFields.forEach(renderField)
+      } else {
+        body += fieldHtml('manual_token', 'Access Token', {
+          placeholder: '粘贴 Access Token', secret: true, required: true,
+          help: '手动粘贴的 Token 会作为 OAuth2 凭据保存'
+        })
+      }
     }
-  } else if (entry.auth_kind === 'oauth2') {
-    body += '<div class="hint" style="padding:12px;background:var(--bt-surface-2);border-radius:8px">该连接器使用 OAuth2 授权，请在「连接器」页面完成授权。</div>'
+  } else if (fields.length) {
+    for (const f of fields) renderField(f)
   } else {
     body += '<div class="field"><label>凭据</label><input id="c_token" type="password" placeholder="粘贴 Token 或 API Key"></div>'
   }
@@ -1042,6 +1079,53 @@ async function _testConnCreds() {
   } catch (e) {
     alert('测试失败：' + e.message)
   }
+}
+
+// ── OAuth2 一键授权（card-login 版）─────────────────────────
+let _connOAuth2PollTimer = null
+
+async function startConnOAuth2(kind) {
+  try {
+    const r = await fetch('/api/v2/connectors/oauth2/authorize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ kind })
+    })
+    const res = await r.json()
+    if (!res.status) { alert(res.msg || '启动授权失败'); return }
+    window.open(res.data.auth_url, '_blank', 'noopener')
+    alert('请在打开的页面中完成授权…')
+    _pollConnOAuth2Status(kind)
+  } catch (e) {
+    alert('启动授权失败：' + e.message)
+  }
+}
+
+function _pollConnOAuth2Status(kind) {
+  if (_connOAuth2PollTimer) clearInterval(_connOAuth2PollTimer)
+  let tries = 0
+  _connOAuth2PollTimer = setInterval(async function () {
+    tries++
+    try {
+      const r = await fetch('/api/v2/connectors/oauth2/status', {
+        headers: { 'Authorization': 'Bearer ' + getToken() }
+      })
+      const res = await r.json()
+      if (res.status && res.data && res.data.token_cache_kinds &&
+          res.data.token_cache_kinds.indexOf(kind) >= 0) {
+        clearInterval(_connOAuth2PollTimer)
+        _connOAuth2PollTimer = null
+        loadConnectors()
+        alert('🎉 OAuth2 授权成功！连接器已自动保存。')
+      } else if (tries > 60) {
+        clearInterval(_connOAuth2PollTimer)
+        _connOAuth2PollTimer = null
+        alert('授权超时，请重试。')
+      }
+    } catch (e) {
+      if (tries > 60) { clearInterval(_connOAuth2PollTimer); _connOAuth2PollTimer = null }
+    }
+  }, 3000)
 }
 
 // ========== MCP 服务器（卡密用户）==========
