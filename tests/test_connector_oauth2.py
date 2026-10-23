@@ -169,6 +169,37 @@ class TestCallbackURL:
         assert url.endswith("/api/v2/connectors/oauth2/callback")
         assert url.startswith("http://localhost:")
 
+    def test_port_appended_when_missing_from_host(self):
+        """host 不含端口但 url.port 有值时，端口应补到 host 里。"""
+        from connector_hub.oauth_manager import build_callback_url
+
+        class FakeURL:
+            scheme = "https"
+            port = 8443
+
+        class FakeReq:
+            url = FakeURL()
+            headers = {"host": "panel.example.com", "x-forwarded-proto": "https"}
+
+        url = build_callback_url(FakeReq())
+        assert url == "https://panel.example.com:8443/api/v2/connectors/oauth2/callback"
+
+    def test_port_not_duplicated_when_already_in_host(self):
+        """host 已含端口时不应重复追加。"""
+        from connector_hub.oauth_manager import build_callback_url
+
+        class FakeURL:
+            scheme = "http"
+            port = 9876
+
+        class FakeReq:
+            url = FakeURL()
+            headers = {"host": "127.0.0.1:9876"}
+
+        url = build_callback_url(FakeReq())
+        assert url == "http://127.0.0.1:9876/api/v2/connectors/oauth2/callback"
+        assert url.count(":9876") == 1
+
 
 # ── auth state 生命周期 ──────────────────────────────────────
 class TestAuthState:

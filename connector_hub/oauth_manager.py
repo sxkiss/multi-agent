@@ -526,7 +526,7 @@ def get_callback_host_from_request(request: Request | None = None) -> str:
         # 若 host 包含端口则直接用，否则补上端口
         port = request.url.port
         if port and str(port) not in host:
-            return f"{proto}://{host}"
+            host = f"{host}:{port}"
         return f"{proto}://{host}"
 
     # 无 request 时用默认端口兜底（服务端口固定由 web_server --port 控制）

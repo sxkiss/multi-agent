@@ -523,6 +523,20 @@ async function createChannel() {
   const kind = document.getElementById('chanKind').value
   const name = document.getElementById('chanName').value.trim()
   if (!kind) { msg.textContent = '请选择通道类型'; msg.className = 'settings-msg err'; return }
+  if (!name) { msg.textContent = '请输入通道名称'; msg.className = 'settings-msg err'; return }
+
+  // 必填字段前向校验
+  const meta = _chanTypes[kind]
+  if (meta && meta.config_fields) {
+    const missing = []
+    for (const f of meta.config_fields) {
+      if (f.required) {
+        const el = document.querySelector('#chanFields [data-field="' + f.name + '"]')
+        if (!el || !el.value.trim()) missing.push(f.label || f.name)
+      }
+    }
+    if (missing.length) { msg.textContent = '请填写必填字段：' + missing.join('、'); msg.className = 'settings-msg err'; return }
+  }
 
   const config = {}
   document.querySelectorAll('#chanFields [data-field]').forEach(el => {
