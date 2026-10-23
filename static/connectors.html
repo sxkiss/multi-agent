@@ -284,15 +284,15 @@
     }).join('') + '</div>';
     $('#marketList').innerHTML = html;
     document.querySelectorAll('[data-add]').forEach(function (b) {
-      b.onclick = function () { openModal(b.getAttribute('data-add'), null); };
-    });
-    document.querySelectorAll('[data-oauth2]').forEach(function (b) {
-      b.onclick = function () { startOAuth2(b.getAttribute('data-oauth2')); };
-    });
-    document.querySelectorAll('[data-manual-oauth2]').forEach(function (b) {
-      b.onclick = function () { openModal(b.getAttribute('data-manual-oauth2'), null, true); };
-    });
-  }
+    b.onclick = function () { openModal(b.getAttribute('data-add'), null); };
+  });
+  document.querySelectorAll('[data-oauth2]').forEach(function (b) {
+    b.onclick = function () { startOAuth2(b.getAttribute('data-oauth2')); };
+  });
+  document.querySelectorAll('[data-manual-oauth2]').forEach(function (b) {
+    b.onclick = function () { openModal(b.getAttribute('data-manual-oauth2'), null, true); };
+  });
+}
 
   // ── OAuth2 一键授权 ────────────────────────────────────────
   async function startOAuth2(kind) {
@@ -307,20 +307,7 @@
     pollOAuthStatus(kind);
   }
 
-  // 手动粘贴 Token（无标准发现的 OAuth2 兜底）
-  function openManualToken(kind) {
-    var token = prompt('请粘贴 ' + kind + ' 的 Access Token：');
-    if (!token) return;
-    saveManualToken(kind, token);
-  }
-  async function saveManualToken(kind, token) {
-    var r = await api('/oauth2/manual-token', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: kind, token: token }) });
-    if (r.status) { toast('已保存', 'ok'); loadInstances(); }
-    else toast(r.msg || '保存失败', 'err');
-  }
-
-  // 轮询 OAuth 授权状态（简单版：轮询 status 看是否有新实例）
+  // 轮询 OAuth 授权状态（轮询 status 看是否有新实例）
   function pollOAuthStatus(kind) {
     var tries = 0;
     var timer = setInterval(async function () {
@@ -522,8 +509,14 @@
       r = await api('/instances', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ kind: currentKind, name: name, credentials: creds }) });
     }
-    if (r.status) { toast('已保存', 'ok'); closeModal(); loadInstances(); switchTab('instances'); }
-    else toast(r.msg || '保存失败', 'err');
+    if (r.status) {
+      toast('已保存', 'ok');
+      closeModal();
+      loadInstances();
+      switchTab('instances');
+    } else {
+      toast(r.msg || '保存失败', 'err');
+    }
   }
 
   async function testCreds() {
