@@ -66,6 +66,20 @@ def resolve_mail_servers(credentials: dict[str, Any]) -> MailServers:
     )
 
 
+def preferred_netease_imap_host(email: str) -> str | None:
+    domain = _email_domain(email)
+    if domain in _NETEASE_DOMAIN_SERVERS:
+        return _NETEASE_DOMAIN_SERVERS[domain][0]
+    return None
+
+
+def preferred_netease_smtp_host(email: str) -> str | None:
+    domain = _email_domain(email)
+    if domain in _NETEASE_DOMAIN_SERVERS:
+        return _NETEASE_DOMAIN_SERVERS[domain][2]
+    return None
+
+
 def correct_netease_imap_host(email: str, stored_host: str | None) -> str:
     host = str(stored_host or "").strip()
     preferred = preferred_netease_imap_host(email)
