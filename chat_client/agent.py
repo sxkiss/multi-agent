@@ -1272,7 +1272,10 @@ Here is some useful information about the environment you are running in:
                 # 追加到 messages（本轮内存态）：跨迭代可见；不写 memory，避免污染长期历史。
                 try:
                     _bg = get_background_manager()
+                    _pending = _bg.pending_count(self.session_id)
                     _finished = _bg.drain_finished(self.session_id)
+                    if _pending > 0 or _finished:
+                        logger.info("[Background] drain session_id=%s pending=%d finished=%d", self.session_id[:20], _pending, len(_finished))
                     for _t in _finished:
                         _text = (
                             f"<background_task_done>\n"
@@ -2016,6 +2019,51 @@ Here is some useful information about the environment you are running in:
                     }
                     self._mark_unexecuted_tools(_tool_calls, messages, ai_msg_id)
                     return
+
+                # 【静默等待后台任务】工具执行完若仍有后台任务在跑（典型：刚派发
+                # Task/RunCrew/ConsultPeer 子代理），立刻在此静默阻塞等它完成并把
+                # 结果注入 messages，然后 continue 让模型带着结果继续——中途不再请求
+                # 模型，模型因此不会开口说"已派发，请稍候"这类空话。
+                # 旧行为：循环自然回到开头 → 再请求一次模型 → 模型输出废话或又发工具
+                # 调用，用户看到的就是"派完子代理不静默"。
+                try:
+                    _bg2 = get_background_manager()
+                    if _bg2.pending_count(self.session_id) > 0:
+                        _wake2 = _bg2.get_wake_event(self.session_id)
+                        _waited2 = 0.0
+                        _step2 = 5.0
+                        _budget2 = float(self.config.get("background_wait_seconds", 0))
+                        logger.info(
+                            "[Background] 工具执行后静默等待 pending=%d session=%s",
+                            _bg2.pending_count(self.session_id), self.session_id[:20],
+                        )
+                        while (_bg2.pending_count(self.session_id) > 0
+                               and not _is_cancelled()):
+                            if _budget2 > 0 and _waited2 >= _budget2:
+                                break
+                            _wake2.wait(timeout=_step2)
+                            _waited2 += _step2
+                        for _t2 in _bg2.drain_finished(self.session_id):
+                            messages.append({
+                                "role": "system",
+                                "content": (
+                                    f"<background_task_done>\n"
+                                    f"<task_id>{_t2['task_id']}</task_id>\n"
+                                    f"<tool>{_t2['tool']}</tool>\n"
+                                    f"<status>{_t2['status']}</status>\n"
+                                    f"<duration_s>{_t2.get('duration_s', '')}</duration_s>\n"
+                                    f"<result>\n{_t2['result']}\n</result>\n"
+                                    f"</background_task_done>\n"
+                                    f"以上是你之前转入后台的工具任务的执行结果，现已完成，"
+                                    f"请据此继续推进任务，不要重复调用该工具。"
+                                ),
+                            })
+                            logger.info(
+                                "[Background] 静默等待后注入结果 task=%s tool=%s",
+                                _t2['task_id'], _t2['tool'],
+                            )
+                except Exception:
+                    logger.warning("[Background] 静默等待后台任务失败", exc_info=True)
             # 6. 最终记忆更新 (助手响应)
             if not tool_call_chunks and full_response_content:
                  kwargs = {}
