@@ -81,7 +81,12 @@ def _default_target_wxid() -> str:
 
 
 def _run(cmd: list[str], timeout: int = 120) -> dict:
-    """执行发送脚本，返回解析后的 JSON 结果。"""
+    """执行发送脚本，返回解析后的 JSON 结果。
+
+    869 脚本在 verify_send_result 检测到失败时抛出 RuntimeError 并返回非零退出码，
+    stdout 中会输出错误 JSON（含 msg 字段）。本函数提取最具体的失败原因，
+    避免把 "exit_code=1" 这类噪声当作错误信息返回给模型。
+    """
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout
@@ -91,7 +96,6 @@ def _run(cmd: list[str], timeout: int = 120) -> dict:
     except Exception as exc:
         return {"status": False, "msg": f"调用 869 脚本异常: {exc}"}
 
-    # 合并 stdout / stderr 尝试解析 JSON
     out = (result.stdout or "").strip()
     err = (result.stderr or "").strip()
     payload = None
@@ -102,16 +106,35 @@ def _run(cmd: list[str], timeout: int = 120) -> dict:
             pass
 
     if result.returncode != 0:
-        msg = err or out or "发送失败"
+        # 优先从 payload 取 msg（869 脚本在失败时也会输出 JSON）
         if isinstance(payload, dict):
-            msg = payload.get("msg") or payload.get("error") or msg
-        return {"status": False, "msg": str(msg)}
+            detail = payload.get("msg") or payload.get("error") or ""
+            if detail:
+                return {"status": False, "msg": detail}
+        # stderr 可能有 WARN 或 RuntimeError 详情
+        if err:
+            return {"status": False, "msg": err}
+        return {"status": False, "msg": "发送失败（脚本返回非零退出码）"}
 
+    # 成功路径：payload 已是 869 原始响应，简化为 {status, msg, data}
     if isinstance(payload, dict):
-        if payload.get("status") is False:
-            return {"status": False, "msg": payload.get("msg") or "发送失败"}
-        return payload
+        data = payload.get("Data")
+        # 提取新MsgId 作为送达证据
+        new_msg_id = _extract_new_msg_id(data)
+        success_info = {"status": True, "msg": "已发送", "newMsgId": new_msg_id}
+        return success_info
     return {"status": True, "msg": out or "已发送"}
+
+
+def _extract_new_msg_id(data: Any) -> int | None:
+    """从 869 响应 Data 中提取 newMsgId（最可靠的送达证据）。"""
+    if not isinstance(data, dict):
+        return None
+    for key in ("newMsgId", "NewMsgId", "new_msg_id"):
+        val = data.get(key)
+        if isinstance(val, int) and val > 0:
+            return val
+    return None
 
 
 def _target_arg(to_wxid: str | None) -> str:
