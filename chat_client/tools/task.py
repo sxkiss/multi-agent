@@ -1071,3 +1071,45 @@ def RecruitMember(name: str, department: str, description: str, backstory: str, 
         f"成员「{name}」已入职「{department}」部，授予工具：{', '.join(granted)}。{note}\\n"
         f"立即生效：可通过 Task(subagent_type='{name}') 派发任务，或在 RunCrew 计划中使用。",
     )
+
+
+# ============================================================
+# AgentCatalog 集成：从 catalog 加载专家/子代理定义
+# ============================================================
+def _load_from_catalog():
+    """从 AgentCatalog 加载专家/子代理定义到 agent_registry"""
+    try:
+        from ..agent_catalog import get_catalog
+        catalog = get_catalog()
+        agents = catalog.scan()
+        loaded = 0
+        for defn in agents:
+            # 跳过已存在的内置 agent
+            if agent_registry.get(defn.name):
+                continue
+            agent_registry.register(AgentDefinition(
+                name=defn.name,
+                description=defn.description,
+                allowed_tools=defn.allowed_tools,
+                system_prompt_template=defn.system_prompt_template,
+                department=defn.department,
+                skills=[],
+                expert_dir=defn.summary.source_path,
+            ))
+            loaded += 1
+        if loaded:
+            logger.info("[AgentCatalog] 从 catalog 加载 %d 个专家/子代理", loaded)
+        return loaded
+    except Exception as e:
+        logger.warning("[AgentCatalog] 加载失败: %s", e)
+        return 0
+
+
+def reload_all_agents():
+    """重新加载所有 agent（内置 + 自定义 + catalog）"""
+    agent_registry._agents.clear()
+    agent_registry.departments = []
+    agent_registry._register_default_agents()
+    agent_registry.load_custom_agents()
+    _load_from_catalog()
+    return [a.name for a in agent_registry.list_agents()]

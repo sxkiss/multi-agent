@@ -1,9 +1,9 @@
 """后台任务持久化仓库（SQLite）
 
-对齐 Octop 的 thread_history_projection 机制，但针对 BT 的后台任务场景简化：
-- 每个任务一行，状态从 pending → queued → running → done/failed/cancelled
-- delivered 标记结果是否已注入对话上下文
-- 支持进程重启后恢复 running 状态的任务
+对齐 Octop 的 thread_history_projection 机制：
+- 状态流转：pending → queued → running → done/failed/cancelled → ready
+- ready = 结果已注入对话上下文，不会再被 drain_finished 重复消费
+- 无 delivered 字段，用 status=ready 替代
 """
 
 from __future__ import annotations
@@ -18,15 +18,40 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# 数据库路径：与 memory_octop.sqlite 同目录
 _DB_PATH = Path(__file__).parent.parent.parent / "background_tasks.sqlite"
+
+# 状态常量（对齐 Octop）
+STATUS_PENDING   = "pending"
+STATUS_QUEUED    = "queued"
+STATUS_RUNNING   = "running"
+STATUS_DONE      = "done"
+STATUS_FAILED    = "failed"
+STATUS_CANCELLED = "cancelled"
+STATUS_READY     = "ready"
+
+ALL_STATUSES = (
+    STATUS_PENDING, STATUS_QUEUED, STATUS_RUNNING,
+    STATUS_DONE, STATUS_FAILED, STATUS_CANCELLED, STATUS_READY,
+)
+
+# 允许的状态迁移；空集合表示终态
+_TRANSITIONS: dict[str, set[str]] = {
+    STATUS_PENDING:   {STATUS_QUEUED, STATUS_RUNNING, STATUS_CANCELLED},
+    STATUS_QUEUED:    {STATUS_RUNNING, STATUS_CANCELLED},
+    STATUS_RUNNING:   {STATUS_DONE, STATUS_FAILED, STATUS_CANCELLED},
+    STATUS_DONE:      {STATUS_READY},
+    STATUS_FAILED:    {STATUS_READY},
+    STATUS_CANCELLED: set(),
+    STATUS_READY:     set(),
+}
+
+TERMINAL_STATUSES = frozenset({STATUS_CANCELLED, STATUS_READY})
 
 
 class BgTaskRow:
-    """任务数据行"""
     __slots__ = (
         "task_id", "tool", "args_json", "status", "result",
-        "session_id", "delivered", "start_time", "updated_at", "error"
+        "session_id", "start_time", "updated_at", "error",
     )
 
     def __init__(
@@ -37,7 +62,6 @@ class BgTaskRow:
         status: str,
         result: str = "",
         session_id: str = "",
-        delivered: int = 0,
         start_time: float = 0.0,
         updated_at: float = 0.0,
         error: str = "",
@@ -48,16 +72,16 @@ class BgTaskRow:
         self.status = status
         self.result = result
         self.session_id = session_id
-        self.delivered = bool(delivered)
         self.start_time = start_time
         self.updated_at = updated_at
         self.error = error
 
 
 class BgTaskRepo:
-    """后台任务持久化仓库
+    """后台任务持久化仓库（SQLite）
 
     线程安全：所有方法内部加锁，支持多线程并发访问。
+    状态机对齐 Octop：pending → queued → running → done/failed/cancelled → ready
     """
 
     def __init__(self, db_path: Optional[Path] = None):
@@ -67,7 +91,6 @@ class BgTaskRepo:
         self._init_db()
 
     def _init_db(self) -> None:
-        """初始化数据库表结构"""
         with self._lock:
             conn = self._get_conn()
             conn.execute("""
@@ -78,90 +101,90 @@ class BgTaskRepo:
                     status TEXT NOT NULL DEFAULT 'pending',
                     result TEXT DEFAULT '',
                     session_id TEXT DEFAULT '',
-                    delivered INTEGER DEFAULT 0,
                     start_time REAL DEFAULT 0,
                     updated_at REAL DEFAULT 0,
                     error TEXT DEFAULT ''
                 )
             """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_bg_tasks_session 
-                ON bg_tasks(session_id, status)
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_bg_tasks_updated 
-                ON bg_tasks(updated_at)
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_bg_tasks_status 
-                ON bg_tasks(status)
-            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_bg_session ON bg_tasks(session_id, status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_bg_updated  ON bg_tasks(updated_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_bg_status  ON bg_tasks(status)")
             conn.commit()
 
     def _get_conn(self) -> sqlite3.Connection:
-        """获取数据库连接（线程内缓存）"""
         if self._conn is None:
             self._conn = sqlite3.connect(
-                str(self._db_path),
-                timeout=5,
-                check_same_thread=False  # 允许跨线程访问
+                str(self._db_path), timeout=5, check_same_thread=False
             )
             self._conn.row_factory = sqlite3.Row
-            # WAL 模式：提高并发性能
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
         return self._conn
 
     def insert(self, task_id: str, tool: str, args: tuple,
-               status: str = "pending", session_id: str = "") -> None:
-        """注册新任务"""
+               status: str = STATUS_PENDING, session_id: str = "") -> None:
         now = time.time()
         args_json = json.dumps(args, ensure_ascii=False)
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                """INSERT OR REPLACE INTO bg_tasks
-                   (task_id, tool, args_json, status, session_id, start_time, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (task_id, tool, args_json, status, session_id, now, now)
+                "INSERT OR REPLACE INTO bg_tasks "
+                "(task_id, tool, args_json, status, session_id, start_time, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (task_id, tool, args_json, status, session_id, now, now),
             )
             conn.commit()
 
+    def transition(self, task_id: str, new_status: str, error: str = "") -> bool:
+        """按状态机迁移任务状态。
+
+        Returns:
+            True = 迁移成功（或已是目标状态），False = 非法迁移。
+        """
+        if new_status not in ALL_STATUSES:
+            logger.warning("[BgTask] 非法目标状态 %r task=%s", new_status, task_id[:12])
+            return False
+        current = self.get(task_id)
+        if current is None:
+            logger.warning("[BgTask] 任务不存在 task=%s", task_id[:12])
+            return False
+        if current.status == new_status:
+            return True
+        allowed = _TRANSITIONS.get(current.status, set())
+        if new_status not in allowed:
+            logger.warning(
+                "[BgTask] 非法迁移 %s -> %s task=%s（允许：%s）",
+                current.status, new_status, task_id[:12],
+                sorted(allowed) or "终态",
+            )
+            return False
+        self.update_status(task_id, new_status, error)
+        return True
+
+    def is_terminal(self, task_id: str) -> bool:
+        """任务是否已到终态（cancelled / ready），终态不再产生新结果。"""
+        row = self.get(task_id)
+        return bool(row and row.status in TERMINAL_STATUSES)
+
     def update_status(self, task_id: str, status: str, error: str = "") -> None:
-        """更新任务状态"""
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                """UPDATE bg_tasks SET status = ?, error = ?, updated_at = ?
-                   WHERE task_id = ?""",
-                (status, error, time.time(), task_id)
+                "UPDATE bg_tasks SET status=?, error=?, updated_at=? WHERE task_id=?",
+                (status, error, time.time(), task_id),
             )
             conn.commit()
 
     def set_result(self, task_id: str, result: str, status: str) -> None:
-        """设置任务结果并更新状态"""
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                """UPDATE bg_tasks SET result = ?, status = ?, updated_at = ?
-                   WHERE task_id = ?""",
-                (result, status, time.time(), task_id)
-            )
-            conn.commit()
-
-    def mark_delivered(self, task_id: str) -> None:
-        """标记结果已注入上下文"""
-        with self._lock:
-            conn = self._get_conn()
-            conn.execute(
-                """UPDATE bg_tasks SET delivered = 1, updated_at = ?
-                   WHERE task_id = ?""",
-                (time.time(), task_id)
+                "UPDATE bg_tasks SET result=?, status=?, updated_at=? WHERE task_id=?",
+                (result, status, time.time(), task_id),
             )
             conn.commit()
 
     def get(self, task_id: str) -> Optional[BgTaskRow]:
-        """查询单条任务"""
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
@@ -176,35 +199,29 @@ class BgTaskRepo:
                 status=row["status"],
                 result=row["result"] or "",
                 session_id=row["session_id"] or "",
-                delivered=row["delivered"],
                 start_time=row["start_time"] or 0.0,
                 updated_at=row["updated_at"] or 0.0,
                 error=row["error"] or "",
             )
 
     def get_by_session(self, session_id: str, status: Optional[str] = None) -> list[BgTaskRow]:
-        """查询某会话的所有任务"""
         with self._lock:
             conn = self._get_conn()
             if status:
                 rows = conn.execute(
-                    "SELECT * FROM bg_tasks WHERE session_id = ? AND status = ? ORDER BY start_time",
-                    (session_id, status)
+                    "SELECT * FROM bg_tasks WHERE session_id=? AND status=? ORDER BY start_time",
+                    (session_id, status),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM bg_tasks WHERE session_id = ? ORDER BY start_time",
-                    (session_id,)
+                    "SELECT * FROM bg_tasks WHERE session_id=? ORDER BY start_time",
+                    (session_id,),
                 ).fetchall()
             return [
                 BgTaskRow(
-                    task_id=r["task_id"],
-                    tool=r["tool"],
-                    args_json=r["args_json"] or "",
-                    status=r["status"],
-                    result=r["result"] or "",
-                    session_id=r["session_id"] or "",
-                    delivered=r["delivered"],
+                    task_id=r["task_id"], tool=r["tool"],
+                    args_json=r["args_json"] or "", status=r["status"],
+                    result=r["result"] or "", session_id=r["session_id"] or "",
                     start_time=r["start_time"] or 0.0,
                     updated_at=r["updated_at"] or 0.0,
                     error=r["error"] or "",
@@ -213,21 +230,18 @@ class BgTaskRepo:
             ]
 
     def restore_running(self) -> list[BgTaskRow]:
-        """进程重启后恢复 running 状态的任务"""
+        """进程重启后恢复 pending/queued/running 状态的任务。"""
         with self._lock:
             conn = self._get_conn()
             rows = conn.execute(
-                "SELECT * FROM bg_tasks WHERE status IN ('pending', 'queued', 'running') ORDER BY start_time"
+                "SELECT * FROM bg_tasks WHERE status IN (?,?,?) ORDER BY start_time",
+                (STATUS_PENDING, STATUS_QUEUED, STATUS_RUNNING),
             ).fetchall()
             return [
                 BgTaskRow(
-                    task_id=r["task_id"],
-                    tool=r["tool"],
-                    args_json=r["args_json"] or "",
-                    status=r["status"],
-                    result=r["result"] or "",
-                    session_id=r["session_id"] or "",
-                    delivered=r["delivered"],
+                    task_id=r["task_id"], tool=r["tool"],
+                    args_json=r["args_json"] or "", status=r["status"],
+                    result=r["result"] or "", session_id=r["session_id"] or "",
                     start_time=r["start_time"] or 0.0,
                     updated_at=r["updated_at"] or 0.0,
                     error=r["error"] or "",
@@ -236,26 +250,18 @@ class BgTaskRepo:
             ]
 
     def cleanup_completed(self, keep_seconds: int = 604800) -> int:
-        """清理已完成的旧任务（默认保留 7 天）
-
-        Returns:
-            删除的任务数
-        """
+        """清理已完成且超过保留期的任务（默认 7 天）。"""
         cutoff = time.time() - keep_seconds
         with self._lock:
             conn = self._get_conn()
-            # 删除已完成且超过保留期的任务
             cur = conn.execute(
-                """DELETE FROM bg_tasks 
-                   WHERE status IN ('done', 'failed', 'cancelled') 
-                   AND updated_at < ?""",
-                (cutoff,)
+                "DELETE FROM bg_tasks WHERE status IN (?,?,?) AND updated_at < ?",
+                (STATUS_DONE, STATUS_FAILED, STATUS_CANCELLED, cutoff),
             )
             conn.commit()
             return cur.rowcount
 
     def close(self) -> None:
-        """关闭数据库连接"""
         with self._lock:
             if self._conn is not None:
                 self._conn.close()
@@ -268,7 +274,6 @@ _repo_lock = threading.Lock()
 
 
 def get_repo() -> BgTaskRepo:
-    """获取全局仓库单例"""
     global _repo
     with _repo_lock:
         if _repo is None:
@@ -277,7 +282,6 @@ def get_repo() -> BgTaskRepo:
 
 
 def close_repo() -> None:
-    """关闭全局仓库（服务关闭时调用）"""
     global _repo
     with _repo_lock:
         if _repo is not None:

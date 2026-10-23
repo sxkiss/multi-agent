@@ -112,7 +112,7 @@ def disclosure_mode() -> str:
 class _BgTask:
     """单条后台任务的状态数据"""
     __slots__ = ("task_id", "tool", "args", "future", "status", "result",
-                 "start_time", "session_id", "delivered")
+                 "start_time", "session_id")
 
     def __init__(self, task_id: str, tool: str, args: tuple, future,
                  session_id: str = ""):
@@ -124,9 +124,6 @@ class _BgTask:
         self.result: str = ""
         self.start_time = time.time()
         self.session_id = session_id
-        # 结果是否已注入过对话上下文。避免同一条完成通知在每轮迭代里
-        # 被重复注入，把上下文撑爆（长任务可能跨几十轮迭代）。
-        self.delivered = False
 
 
 # ============================================================
@@ -187,7 +184,7 @@ class BackgroundTaskManager:
         # 没有就用该结果发起一轮新的对话，把结果主动推给模型。
         self._orphan_callback = None
         # 判定延迟（秒）：给主循环留出 drain 的时间窗口。主循环正常运行时
-        # 会在 1 秒内完成注入并把 delivered 置 True，不会误触发。
+        # 会在 1 秒内完成注入并把状态推进到 ready，不会误触发。
         self._orphan_delay = float(os.environ.get("AI_AGENT_ORPHAN_DELAY", "6"))
 
     def set_orphan_callback(self, callback) -> None:
@@ -199,16 +196,16 @@ class BackgroundTaskManager:
         self._orphan_callback = callback
 
     def _schedule_orphan_check(self, task_id: str) -> None:
-        """延迟检查：任务完成后若 delivered 仍为 False，判定为孤儿结果并回调。
+        """延迟检查：任务完成后若状态仍非 ready，判定为孤儿结果并回调。
 
-        为什么要延迟而不是立刻判断：正常路径下主循环会先 drain（delivered=True），
+        为什么要延迟而不是立刻判断：正常路径下主循环会先 drain（状态变为 ready），
         但这个 drain 发生在子代理回调线程之后，立刻判断必然误报。
         """
         def _check():
             try:
                 with self._lock:
                     t = self._tasks.get(task_id)
-                    if t is None or t.delivered:
+                    if t is None:
                         return
                     if t.status not in ("done", "failed"):
                         return
@@ -244,6 +241,28 @@ class BackgroundTaskManager:
             get_repo().insert(task_id, tool, args, "running", session_id)
         except Exception as e:
             logger.warning("[Background] 持久化任务失败 task=%s: %s", task_id[:12], e)
+
+    def cancel(self, task_id: str, reason: str = "") -> bool:
+        """标记任务为 cancelled（不强制杀线程，仅状态层面终止消费）。
+
+        与 register() 的"不允许取消"原则一致：线程仍在跑完，但结果不再注入
+        对话、不再触发孤儿回调。用于用户主动放弃任务的场景。
+        """
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if not t:
+                return False
+            if t.status in ("done", "failed", "stopped"):
+                return False
+            t.status = "stopped"
+            t.result = f"[已取消] {reason}" if reason else "[已取消]"
+        try:
+            from .bg_repo import get_repo, STATUS_CANCELLED
+            get_repo().transition(task_id, STATUS_CANCELLED, reason)
+        except Exception as e:
+            logger.warning("[Background] 持久化取消状态失败 task=%s: %s", task_id[:12], e)
+        self._wake(t.session_id)
+        return True
 
     def get(self, task_id: str) -> _BgTask | None:
         with self._lock:
@@ -293,10 +312,11 @@ class BackgroundTaskManager:
             _sid = t.session_id
         # 1) 完整结果落盘：进程重启后仍能回查（旧版 emit_progress 仅推 500 字预览）
         self._persist_result(task_id, t.tool, "done", result)
-        # 2) 持久化到 SQLite
+        # 2) 持久化到 SQLite（状态机：running -> done）
         try:
-            from .bg_repo import get_repo
-            get_repo().set_result(task_id, result, "done")
+            from .bg_repo import get_repo, STATUS_DONE
+            _repo = get_repo()
+            _repo.set_result(task_id, result, STATUS_DONE)
         except Exception as e:
             logger.warning("[Background] 持久化结果失败 task=%s: %s", task_id[:12], e)
         # 3) 推 SSE 预览事件，前端可见状态
@@ -311,7 +331,7 @@ class BackgroundTaskManager:
         # 4) 唤醒挂起的主循环收尾段，使其 drain_finished 注入结果后正常收尾
         self._wake(_sid)
         # 5) 孤儿回调（兜底）：若主循环已结束，本轮不会再 drain，结果会"飞掉"。
-        #    延迟检查，等主循环的 drain 窗口结束；仍未被 delivered 则主动回调。
+        #    延迟检查，等主循环的 drain 窗口结束；仍未 ready 则主动回调。
         self._schedule_orphan_check(task_id)
 
     def notify_failed(self, task_id: str, error: str) -> None:
@@ -323,10 +343,10 @@ class BackgroundTaskManager:
             t.result = f"[执行失败] {error}"
             _sid = t.session_id
         self._persist_result(task_id, t.tool, "failed", t.result)
-        # 持久化失败状态
+        # 持久化失败状态（状态机：running -> failed）
         try:
-            from .bg_repo import get_repo
-            get_repo().set_result(task_id, t.result, "failed")
+            from .bg_repo import get_repo, STATUS_FAILED
+            get_repo().set_result(task_id, t.result, STATUS_FAILED)
         except Exception as e:
             logger.warning("[Background] 持久化失败状态 task=%s: %s", task_id[:12], e)
         try:
@@ -350,7 +370,7 @@ class BackgroundTaskManager:
         with self._lock:
             return sum(
                 1 for t in self._tasks.values()
-                if t.session_id == session_id and t.status == "running" and not t.delivered
+                if t.session_id == session_id and t.status == "running"
             )
 
     def drain_finished(self, session_id: str, max_chars: int = 8000) -> list[dict]:
@@ -361,7 +381,7 @@ class BackgroundTaskManager:
         "转后台后结果永远回不来，只能靠 TaskStatus 主动轮询"。
 
         主循环每轮迭代调用一次，把结果以 system 消息注入上下文，模型便能
-        在下一轮直接读到。delivered 标记保证同一条结果只注入一次。
+        在下一轮直接读到。状态机推进到 ready 保证同一条结果只注入一次。
 
         @param max_chars 单条结果截断上限，防止超长输出撑爆上下文
         @returns [{"task_id","tool","status","result"}, ...]
@@ -374,9 +394,14 @@ class BackgroundTaskManager:
                     continue
                 if t.status not in ("done", "failed"):
                     continue
-                if t.delivered:
-                    continue
-                t.delivered = True
+                # 检查 DB 状态：已 ready 说明已被消费过
+                try:
+                    from .bg_repo import get_repo, STATUS_READY
+                    row = get_repo().get(t.task_id)
+                    if row and row.status == STATUS_READY:
+                        continue
+                except Exception:
+                    pass
                 result = t.result or ""
                 if len(result) > max_chars:
                     result = result[:max_chars] + f"\n[...结果过长已截断，共 {len(t.result)} 字符，完整结果可用 TaskStatus 查询...]"
@@ -388,14 +413,15 @@ class BackgroundTaskManager:
                     # 后台任务总耗时（秒，保留两位小数）：从注册到完成
                     "duration_s": round(time.time() - t.start_time, 2),
                 })
-        # 持久化 delivered 标记
+        # 状态机：推进到 ready（终态，不会重复消费）
         if out:
             try:
-                from .bg_repo import get_repo
+                from .bg_repo import get_repo, STATUS_READY
+                _repo = get_repo()
                 for item in out:
-                    get_repo().mark_delivered(item["task_id"])
+                    _repo.transition(item["task_id"], STATUS_READY)
             except Exception as e:
-                logger.warning("[Background] 持久化 delivered 标记失败: %s", e)
+                logger.warning("[Background] 推进状态到 ready 失败: %s", e)
         return out
 
 
