@@ -1307,10 +1307,14 @@ def ToolSearch(query: str = "", limit: int = 15) -> str:
         for name, desc in all_candidates:
             name_lower = name.lower()
             hay = (name + " " + desc).lower()
-            # 模糊评分：工具名字序列匹配权重 5，子串匹配权重 3，描述子串 1
+            meta = registry._metadata.get(name) or {}
+            name_cn = (meta.get("name_cn") or "").lower()
+            # 模糊评分：中文名子串 10，工具名字序列 5，英文子串 3，描述子串 1
             score = 0
             for t in terms:
-                if _seq_match(name_lower, t):
+                if t in name_cn:
+                    score += 10
+                elif _seq_match(name_lower, t):
                     score += 5
                 elif t in name_lower:
                     score += 3
