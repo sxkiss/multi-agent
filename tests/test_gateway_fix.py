@@ -307,9 +307,15 @@ class TestRuntimeDepsAndFillback:
         assert "template" not in out
         assert out["accounts"][0]["token"] == "t"
 
-    def test_list_channels_fills_saved_value(self, tmp_path, monkeypatch):
-        """已配置通道的非敏感字段应回填 saved_value，敏感字段不返回明文。"""
+    def test_list_channels_returns_generic_fields(self, tmp_path, monkeypatch):
+        """GET /gateway/channels 返回通用字段定义，不做 saved_value 回填。
+
+        注意：回显已保存配置是 GET /gateway/instances 的职责（对具体实例，
+        敏感字段脱敏、非敏感字段回填真实值）。本接口供「新增实例」表单使用，
+        应保持空字段，不读取/回填任何已有实例数据。
+        """
         import json
+        import os
 
         from platform_ext import gateway
 
@@ -325,12 +331,62 @@ class TestRuntimeDepsAndFillback:
         assert body["status"] is True
         wecom = next(c for c in body["data"]["channels"] if c["kind"] == "wecom")
         fields = {f["name"]: f for f in wecom["config_fields"]}
+        # channels 接口：一律通用字段，不做 saved 标记
+        assert fields["bot_id"]["saved"] is False
+        assert fields["bot_id"]["saved_value"] == ""
+        assert fields["secret"]["saved"] is False
+        assert fields["secret"]["saved_value"] == ""
+
+        # 关键：tmp_path 目录下的 gateway.json 由 save_section 写入，测试结束后清理
+        gateway_json = str(tmp_path / "gateway.json")
+        if os.path.exists(gateway_json):
+            os.remove(gateway_json)
+
+    def test_list_instances_fills_saved_value(self, tmp_path, monkeypatch):
+        """GET /gateway/instances 应对具体实例回填 saved_value。
+
+        非敏感字段回填真实值；敏感字段仅标记 saved=True，不回显明文。
+        这是保存凭证后面板回显的正确接口。
+        """
+        import json
+        import os
+
+        from platform_ext import gateway
+
+        cfg = {
+            "instances": [
+                {
+                    "instance_id": "wecom_001",
+                    "kind": "wecom",
+                    "name": "测试实例",
+                    "bot_id": "real_bot",
+                    "secret": "SECRET",
+                    "configured": True,
+                }
+            ]
+        }
+        monkeypatch.setattr(gateway, "_config_path", lambda: str(tmp_path / "config.json"))
+        with open(tmp_path / "config.json", "w", encoding="utf-8") as fh:
+            json.dump({"platform_ext": {"gateway": cfg}}, fh, ensure_ascii=False)
+
+        import asyncio
+
+        res = asyncio.run(gateway.gateway_list_instances())
+        body = json.loads(res.body.decode("utf-8"))
+        assert body["status"] is True
+        wecom = body["data"]["instances"][0]
+        fields = {f["name"]: f for f in wecom["config_fields"]}
         # 非敏感字段回填
         assert fields["bot_id"]["saved"] is True
         assert fields["bot_id"]["saved_value"] == "real_bot"
-        # 敏感字段不回显明文
+        # 敏感字段不回填明文
         assert fields["secret"]["saved"] is True
         assert fields["secret"]["saved_value"] == ""
+
+        # 关键：tmp_path 目录下的 gateway.json 由 save_section 写入，测试结束后清理
+        gateway_json = str(tmp_path / "gateway.json")
+        if os.path.exists(gateway_json):
+            os.remove(gateway_json)
 
 
 class TestGatewayQrInstanceBinding:
