@@ -11,6 +11,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import threading
 import time
 import traceback
@@ -470,7 +471,33 @@ class Agent:
             prefix = session_id[5:]  # 去掉 "card_" 前缀
             _base = self.config.get("base_dir", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             self._user_workspace = os.path.realpath(os.path.join(_base, "workspace", "users", f"card_{prefix}"))
-            logger.info(f"卡密用户 {session_id}，工作目录限制为: {self._user_workspace}")
+            # 卡密用户 MCP 配置：mcp/users/card_<PREFIX>/config.json
+            _user_mcp_dir = os.path.join(_base, "mcp", "users", f"card_{prefix}")
+            _user_mcp_config = os.path.join(_user_mcp_dir, "config.json")
+            os.makedirs(_user_mcp_dir, exist_ok=True)
+            # 若用户配置不存在，用全局配置做初始模板（保留已有服务器列表）
+            if not os.path.exists(_user_mcp_config):
+                global_mcp = os.path.join(_base, "mcp", "config.json")
+                if os.path.exists(global_mcp):
+                    shutil.copy2(global_mcp, _user_mcp_config)
+                else:
+                    with open(_user_mcp_config, "w") as f:
+                        json.dump({"mcpServers": {}, "imports": []}, f, indent=2)
+            from .mcp_manager import mcp_manager
+            mcp_manager.set_config_path(_user_mcp_config)
+            # 同步切换 mcp_client 配置路径并重载
+            from .mcp_client import get_mcp_client
+            _mc = get_mcp_client()
+            _mc.set_config_path(_user_mcp_config)
+            if _mc.is_loaded():
+                _mc.reload()
+            logger.info(f"卡密用户 {session_id}，MCP 配置路径: {_user_mcp_config}")
+            # 卡密用户技能目录：skills/users/card_<PREFIX>/
+            _user_skills_dir = os.path.join(_base, "skills", "users", f"card_{prefix}")
+            os.makedirs(_user_skills_dir, exist_ok=True)
+            from .skills import skill_manager
+            skill_manager.set_skills_dir(_user_skills_dir)
+            logger.info(f"卡密用户 {session_id}，技能目录: {_user_skills_dir}")
         else:
             self._user_workspace = None
 

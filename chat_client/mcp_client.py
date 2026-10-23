@@ -150,6 +150,15 @@ class MCPClient:
         if path and os.path.exists(path):
             self._config_path = path
 
+    def reload(self):
+        """重载 MCP 配置：关闭现有连接，以新 config_path 重新加载。
+
+        用于 per-user 隔离场景：切换 mcp_manager 的 config_path 后，
+        需要同步让 mcp_client 重新连接对应用户的 MCP server。
+        """
+        self._close()
+        self.load()
+
     # ---------- 后台事件循环管理 ----------
     def _start_loop(self):
         if self._loop is not None:

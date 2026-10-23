@@ -186,6 +186,8 @@
         <button class="tab active" data-tab="info" onclick="switchTab('info')">卡密信息</button>
         <button class="tab" data-tab="channels" onclick="switchTab('channels')">通道管理</button>
         <button class="tab" data-tab="connectors" onclick="switchTab('connectors')">我的连接器</button>
+        <button class="tab" data-tab="mcp" onclick="switchTab('mcp')">MCP 服务器</button>
+        <button class="tab" data-tab="skills" onclick="switchTab('skills')">我的技能</button>
         <button class="tab" data-tab="settings" onclick="switchTab('settings')">个人配置</button>
       </div>
 
@@ -248,6 +250,48 @@
         </div>
         <div id="connTabs" style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap"></div>
         <div id="connList"><div class="empty">加载中…</div></div>
+      </div>
+
+      <!-- Tab: MCP 服务器 -->
+      <div class="tab-panel" id="tab-mcp">
+        <div class="chan-header">
+          <div class="chan-title">🔗 我的 MCP 服务器</div>
+          <button class="btn-sm" onclick="loadCardMcpServers()">↻ 刷新</button>
+        </div>
+        <div id="mcpCardList"><div class="empty">加载中…</div></div>
+        <div class="chan-create" style="margin-top:16px">
+          <div class="chan-create-title">＋ 添加 MCP 服务器</div>
+          <div class="setting-group">
+            <label class="setting-label">服务器名称</label>
+            <input class="setting-input" id="mcpAddName" type="text" placeholder="例如：my-server" />
+          </div>
+          <div class="setting-group">
+            <label class="setting-label">配置 JSON</label>
+            <textarea class="setting-input" id="mcpAddConfig" rows="5"
+              placeholder='{"command":"npx","args":["-y","@example/server"]}'
+              style="font-family:monospace;font-size:12px;resize:vertical"></textarea>
+          </div>
+          <button class="btn-save-settings" onclick="addCardMcpServer()">添加</button>
+          <div class="settings-msg" id="mcpCardMsg"></div>
+        </div>
+      </div>
+
+      <!-- Tab: 我的技能 -->
+      <div class="tab-panel" id="tab-skills">
+        <div class="chan-header">
+          <div class="chan-title">🛠️ 我的技能</div>
+          <button class="btn-sm" onclick="loadCardSkills()">↻ 刷新</button>
+        </div>
+        <div id="skillCardList"><div class="empty">加载中…</div></div>
+        <div class="chan-create" style="margin-top:16px">
+          <div class="chan-create-title">＋ 安装技能（ZIP 包）</div>
+          <div class="setting-group">
+            <label class="setting-label">ZIP 文件</label>
+            <input class="setting-input" id="skillCardZip" type="file" accept=".zip" style="width:100%" />
+          </div>
+          <button class="btn-save-settings" onclick="installCardSkill()">安装</button>
+          <div class="settings-msg" id="skillCardMsg"></div>
+        </div>
       </div>
 
       <!-- Tab: 个人配置 -->
@@ -386,6 +430,8 @@ function switchTab(name) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name))
   if (name === 'channels') loadChannels()
   if (name === 'connectors') loadConnectors()
+  if (name === 'mcp') loadCardMcpServers()
+  if (name === 'skills') loadCardSkills()
 }
 
 // ========== 通道管理 ==========
@@ -997,6 +1043,110 @@ async function _testConnCreds() {
     alert('测试失败：' + e.message)
   }
 }
+
+// ========== MCP 服务器（卡密用户）==========
+async function loadCardMcpServers() {
+  const el = document.getElementById('mcpCardList')
+  try {
+    const r = await fetch('/api/card/mcp/servers', { headers: { 'Authorization': 'Bearer ' + getToken() } })
+    const res = await r.json()
+    if (!res.items) { el.innerHTML = '<div class="empty">加载失败</div>'; return }
+    if (!res.items.length) { el.innerHTML = '<div class="empty">尚未配置 MCP 服务器</div>'; return }
+    el.innerHTML = res.items.map(s =>
+      '<div class="chan-item" style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #2c303a">' +
+        '<div><strong>' + esc(s.name || '') + '</strong> <span style="font-size:11px;color:#888">' + esc(s.type || '') + '</span><br>' +
+        '<span style="font-size:12px;color:#aaa">' + esc((s.command || s.url || '')) + '</span></div>' +
+        '<button class="btn-sm" onclick="removeCardMcpServer(\'' + esc(s.name) + '\')">删除</button>' +
+      '</div>'
+    ).join('')
+  } catch (e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+}
+
+async function addCardMcpServer() {
+  const name = document.getElementById('mcpAddName').value.trim()
+  const configRaw = document.getElementById('mcpAddConfig').value.trim()
+  if (!name) { alert('请填写服务器名称'); return }
+  if (!configRaw) { alert('请填写配置 JSON'); return }
+  try {
+    JSON.parse(configRaw)
+    const r = await fetch('/api/card/mcp/servers/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': 'Bearer ' + getToken() },
+      body: 'name=' + encodeURIComponent(name) + '&config=' + encodeURIComponent(configRaw)
+    })
+    const res = await r.json()
+    const msg = document.getElementById('mcpCardMsg')
+    msg.textContent = res.status ? '✅ 添加成功' : '❌ ' + (res.msg || '失败')
+    msg.style.color = res.status ? '#6c5ce7' : '#e74c3c'
+    if (res.status) loadCardMcpServers()
+  } catch (e) {
+    const msg = document.getElementById('mcpCardMsg')
+    msg.textContent = '❌ ' + e.message
+    msg.style.color = '#e74c3c'
+  }
+}
+
+async function removeCardMcpServer(name) {
+  if (!confirm('确定删除 MCP 服务器 "' + name + '" ?')) return
+  const r = await fetch('/api/card/mcp/servers/remove', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': 'Bearer ' + getToken() },
+    body: 'name=' + encodeURIComponent(name)
+  })
+  const res = await r.json()
+  if (res.status) loadCardMcpServers()
+  else alert('删除失败：' + (res.msg || '未知'))
+}
+
+// ========== 技能（卡密用户）==========
+async function loadCardSkills() {
+  const el = document.getElementById('skillCardList')
+  try {
+    const r = await fetch('/api/card/skills', { headers: { 'Authorization': 'Bearer ' + getToken() } })
+    const res = await r.json()
+    if (!res.skills) { el.innerHTML = '<div class="empty">加载失败</div>'; return }
+    if (!res.skills.length) { el.innerHTML = '<div class="empty">尚未安装技能</div>'; return }
+    el.innerHTML = '<div style="font-size:12px;color:#888;margin-bottom:8px">' + res.total + ' 个技能，' + res.enabled + ' 启用</div>' +
+      res.skills.map(s =>
+        '<div class="chan-item" style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #2c303a">' +
+          '<div style="flex:1;min-width:0"><strong>' + esc(s.name || '') + '</strong> ' +
+            '<span class="badge ' + (s.enabled ? 'ok' : 'no') + '" style="font-size:11px">' + (s.enabled ? '启用' : '禁用') + '</span><br>' +
+            '<span style="font-size:12px;color:#aaa">' + esc((s.description || '').slice(0, 80)) + '</span></div>' +
+          '<button class="btn-sm" onclick="uninstallCardSkill(\'' + esc(s.name || '') + '\')">卸载</button>' +
+        '</div>'
+      ).join('')
+  } catch (e) { el.innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>' }
+}
+
+async function installCardSkill() {
+  const fileInput = document.getElementById('skillCardZip')
+  if (!fileInput.files.length) { alert('请选择 ZIP 文件'); return }
+  const formData = new FormData()
+  formData.append('zip', fileInput.files[0])
+  const r = await fetch('/api/card/skills/install', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + getToken() },
+    body: formData
+  })
+  const res = await r.json()
+  const msg = document.getElementById('skillCardMsg')
+  msg.textContent = res.status ? '✅ 安装成功' : '❌ ' + (res.msg || '失败')
+  msg.style.color = res.status ? '#6c5ce7' : '#e74c3c'
+  if (res.status) loadCardSkills()
+}
+
+async function uninstallCardSkill(name) {
+  if (!confirm('确定卸载技能 "' + name + '" ?')) return
+  const r = await fetch('/api/card/skills/uninstall', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': 'Bearer ' + getToken() },
+    body: 'skill_name=' + encodeURIComponent(name)
+  })
+  const res = await r.json()
+  if (res.status) loadCardSkills()
+  else alert('卸载失败：' + (res.msg || '未知'))
+}
+
 </script>
 </body>
 </html>

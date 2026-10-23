@@ -4739,6 +4739,174 @@ async def api_card_user_config_save(request: Request):
     return JSONResponse({"status": True, "msg": "保存成功"})
 
 
+# ---- 卡密用户 MCP Server 管理 ----
+
+def _card_prefix_from_request(request: Request) -> tuple:
+    """从请求中提取 card token 并返回 (prefix, 403_response_or_None)"""
+    from auth import extract_token, verify_token, is_card_token
+    token = extract_token(request)
+    if not token or not is_card_token(BASE_DIR, token):
+        return None, JSONResponse({"status": False, "msg": "未授权", "code": 403}, status_code=403)
+    payload = verify_token(BASE_DIR, token)
+    sub = str(payload.get("sub") or "")
+    if not sub.startswith("card:"):
+        return None, JSONResponse({"status": False, "msg": "非卡密用户", "code": 403}, status_code=403)
+    prefix = sub[5:]
+    return prefix, None
+
+
+@app.get("/api/card/mcp/servers")
+async def api_card_mcp_servers(request: Request):
+    prefix, err = _card_prefix_from_request(request)
+    if err:
+        return err
+    from chat_client.mcp_manager import mcp_manager
+    path = os.path.join(BASE_DIR, "mcp", "users", f"card_{prefix}", "config.json")
+    # 临时切换配置路径查询
+    orig = mcp_manager.config_path
+    mcp_manager.set_config_path(path)
+    try:
+        return JSONResponse(mcp_manager.list_servers())
+    finally:
+        mcp_manager.set_config_path(orig)
+
+
+@app.post("/api/card/mcp/servers/add")
+async def api_card_mcp_server_add(request: Request):
+    prefix, err = _card_prefix_from_request(request)
+    if err:
+        return err
+    params = await _params(request)
+    from chat_client.mcp_manager import mcp_manager
+    name = str(params.get("name", "") or "").strip()
+    config_raw = params.get("config", "")
+    overwrite = str(params.get("overwrite", "")).lower() in ("1", "true", "yes")
+    if not config_raw:
+        return JSONResponse({"status": False, "msg": "缺少参数 config"})
+    try:
+        config = json.loads(config_raw) if isinstance(config_raw, str) else config_raw
+    except Exception:
+        return JSONResponse({"status": False, "msg": "config 不是合法 JSON"})
+    if not isinstance(config, dict):
+        return JSONResponse({"status": False, "msg": "config 必须是 JSON 对象"})
+    path = os.path.join(BASE_DIR, "mcp", "users", f"card_{prefix}", "config.json")
+    orig = mcp_manager.config_path
+    mcp_manager.set_config_path(path)
+    try:
+        return JSONResponse(mcp_manager.add_server(name, config, overwrite=overwrite))
+    finally:
+        mcp_manager.set_config_path(orig)
+
+
+@app.post("/api/card/mcp/servers/remove")
+async def api_card_mcp_server_remove(request: Request):
+    prefix, err = _card_prefix_from_request(request)
+    if err:
+        return err
+    params = await _params(request)
+    from chat_client.mcp_manager import mcp_manager
+    name = str(params.get('name', '') or '').strip()
+    path = os.path.join(BASE_DIR, "mcp", "users", f"card_{prefix}", "config.json")
+    orig = mcp_manager.config_path
+    mcp_manager.set_config_path(path)
+    try:
+        return JSONResponse(mcp_manager.remove_server(name))
+    finally:
+        mcp_manager.set_config_path(orig)
+
+
+@app.post("/api/card/mcp/servers/install")
+async def api_card_mcp_server_install(request: Request):
+    prefix, err = _card_prefix_from_request(request)
+    if err:
+        return err
+    params = await _params(request)
+    from chat_client.mcp_manager import mcp_manager
+    mcp_id = str(params.get('mcp_id', '') or '').strip()
+    overwrite = str(params.get("overwrite", "")).lower() in ("1", "true", "yes")
+    if not mcp_id:
+        return JSONResponse({"status": False, "msg": "缺少参数 mcp_id"})
+    path = os.path.join(BASE_DIR, "mcp", "users", f"card_{prefix}", "config.json")
+    orig = mcp_manager.config_path
+    mcp_manager.set_config_path(path)
+    try:
+        return JSONResponse(await asyncio.to_thread(
+            mcp_manager.install_from_market, mcp_id, overwrite))
+    finally:
+        mcp_manager.set_config_path(orig)
+
+
+# ---- 卡密用户技能管理 ----
+
+@app.get("/api/card/skills")
+async def api_card_skills(request: Request):
+    prefix, err = _card_prefix_from_request(request)
+    if err:
+        return err
+    from chat_client.skills import skill_manager
+    orig_dir = skill_manager.skills_dir
+    user_dir = os.path.join(BASE_DIR, "skills", "users", f"card_{prefix}")
+    os.makedirs(user_dir, exist_ok=True)
+    skill_manager.set_skills_dir(user_dir)
+    try:
+        all_skills = skill_manager.get_all_skills_info()
+        skills = []
+        for skill in all_skills:
+            location = skill.get("location", "")
+            rel_path = location.replace(skill_manager.skills_dir, "").strip("/")
+            if not rel_path or rel_path == location:
+                pass  # 不排除
+            skills.append(skill)
+        enabled_count = len([s for s in skills if s.get("enabled")])
+        return JSONResponse({
+            "total": len(skills),
+            "enabled": enabled_count,
+            "disabled": len(skills) - enabled_count,
+            "skills": skills,
+        })
+    finally:
+        skill_manager.set_skills_dir(orig_dir)
+
+
+@app.post("/api/card/skills/install")
+async def api_card_skill_install(request: Request):
+    prefix, err = _card_prefix_from_request(request)
+    if err:
+        return err
+    form = await request.form()
+    zip_bytes = form.get("zip").read() if form.get("zip") else b""
+    overwrite = str(form.get("overwrite", "0")).lower() in ("1", "true", "yes")
+    if not zip_bytes:
+        return JSONResponse({"status": False, "msg": "缺少 zip 文件"})
+    from chat_client.skills import skill_manager
+    orig_dir = skill_manager.skills_dir
+    user_dir = os.path.join(BASE_DIR, "skills", "users", f"card_{prefix}")
+    os.makedirs(user_dir, exist_ok=True)
+    skill_manager.set_skills_dir(user_dir)
+    try:
+        return JSONResponse(skill_manager.install_from_zip(zip_bytes, overwrite=overwrite))
+    finally:
+        skill_manager.set_skills_dir(orig_dir)
+
+
+@app.post("/api/card/skills/uninstall")
+async def api_card_skill_uninstall(request: Request):
+    prefix, err = _card_prefix_from_request(request)
+    if err:
+        return err
+    params = await _params(request)
+    from chat_client.skills import skill_manager
+    name = str(params.get("skill_name", "") or "").strip()
+    orig_dir = skill_manager.skills_dir
+    user_dir = os.path.join(BASE_DIR, "skills", "users", f"card_{prefix}")
+    os.makedirs(user_dir, exist_ok=True)
+    skill_manager.set_skills_dir(user_dir)
+    try:
+        return JSONResponse(skill_manager.uninstall(name))
+    finally:
+        skill_manager.set_skills_dir(orig_dir)
+
+
 # ============================================================
 # 微信机器人（clawbot）：每用户独立实例
 # ============================================================

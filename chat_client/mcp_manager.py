@@ -168,26 +168,40 @@ class McpManager:
         self._config: dict | None = None
         self._config_mtime: float = 0.0
         self._market_urls = _PLACEHOLDER_MARKET_URLS
+        self._config_file: str = MCP_CONFIG_FILE
+
+    def set_config_path(self, path: str) -> None:
+        """切换 MCP 配置文件路径（per-user 隔离用）。
+
+        切换后清除 mtime 缓存，下次读写自动从新路径加载。
+        传入空串或 None 则回退到全局默认路径。
+        """
+        if not path:
+            path = MCP_CONFIG_FILE
+        self._config_file = os.path.realpath(path)
+        self._config = None
+        self._config_mtime = 0.0
+        logger.info("[McpManager] MCP 配置路径切换为: %s", self._config_file)
 
     # ---- 配置读写 ----
 
     @property
     def config_path(self) -> str:
-        return MCP_CONFIG_FILE
+        return self._config_file
 
     def _load_config(self) -> dict:
-        """读取 mcp/config.json，带 mtime 缓存"""
+        """读取 MCP 配置文件，带 mtime 缓存"""
         try:
-            mtime = os.path.getmtime(MCP_CONFIG_FILE)
+            mtime = os.path.getmtime(self._config_file)
         except OSError:
             return {"mcpServers": {}, "imports": []}
         if self._config and mtime == self._config_mtime:
             return self._config
         try:
-            with open(MCP_CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(self._config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
-            logger.warning("[McpManager] 读取 mcp/config.json 失败", exc_info=True)
+            logger.warning("[McpManager] 读取 MCP 配置失败", exc_info=True)
             return {"mcpServers": {}, "imports": []}
         if not isinstance(data, dict):
             data = {"mcpServers": {}, "imports": []}
@@ -198,14 +212,14 @@ class McpManager:
         return data
 
     def _save_config(self, data: dict) -> bool:
-        """原子写入 mcp/config.json（保留原文件末尾换行与权限，避免无意义 diff）"""
-        tmp = MCP_CONFIG_FILE + ".tmp"
+        """原子写入 MCP 配置文件（保留原文件末尾换行与权限，避免无意义 diff）"""
+        tmp = self._config_file + ".tmp"
         try:
-            os.makedirs(os.path.dirname(MCP_CONFIG_FILE), exist_ok=True)
+            os.makedirs(os.path.dirname(self._config_file), exist_ok=True)
             # 保留原文件末尾换行（json.dump 不写尾部换行，会造成无意义 diff）
             trailing_newline = False
             try:
-                with open(MCP_CONFIG_FILE, "rb") as f:
+                with open(self._config_file, "rb") as f:
                     trailing_newline = f.read().endswith(b"\n")
             except OSError:
                 pass
@@ -215,16 +229,16 @@ class McpManager:
                     f.write("\n")
             # 保留原文件权限位（若存在）
             try:
-                st = os.stat(MCP_CONFIG_FILE)
+                st = os.stat(self._config_file)
                 os.chmod(tmp, st.st_mode)
             except OSError:
                 pass
-            os.replace(tmp, MCP_CONFIG_FILE)
+            os.replace(tmp, self._config_file)
             self._config = data
-            self._config_mtime = os.path.getmtime(MCP_CONFIG_FILE)
+            self._config_mtime = os.path.getmtime(self._config_file)
             return True
         except Exception:
-            logger.warning("[McpManager] 写入 mcp/config.json 失败", exc_info=True)
+            logger.warning("[McpManager] 写入 MCP 配置失败", exc_info=True)
             try:
                 os.remove(tmp)
             except OSError:
