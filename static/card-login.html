@@ -233,6 +233,7 @@
           </div>
           <div id="chanFields"></div>
           <button class="btn-save-settings" id="chanCreateBtn" onclick="createChannel()">创建通道</button>
+          <button class="btn-save-settings" style="background:#2d4a6a;margin-top:6px" onclick="testChannelFields()">测试连接</button>
           <div class="settings-msg" id="chanMsg"></div>
         </div>
       </div>
@@ -437,17 +438,19 @@ async function loadChannels() {
         ? '<span class="chan-badge on">运行中</span>'
         : '<span class="chan-badge off">已停止</span>'
       const cfgHint = c.configured ? '' : ' · <span style="color:#e5a03a">未配置完整</span>'
-      const actionBtn = c.running
-        ? '<button class="btn-sm" onclick="stopChannel(\'' + esc(c.channel_id) + '\')">停止</button>'
-        : '<button class="btn-sm" onclick="startChannel(\'' + esc(c.channel_id) + '\')">启动</button>'
+      const actionBtns = [
+        '<button class="btn-sm" onclick="testChannel(\'' + esc(c.channel_id) + '\')">测试</button>',
+        c.running
+          ? '<button class="btn-sm" onclick="stopChannel(\'' + esc(c.channel_id) + '\')">停止</button>'
+          : '<button class="btn-sm" onclick="startChannel(\'' + esc(c.channel_id) + '\')">启动</button>',
+        '<button class="btn-sm" onclick="deleteChannel(\'' + esc(c.channel_id) + '\',\'' + esc(c.name) + '\')">删除</button>'
+      ].join('')
       return '<div class="chan-item">' +
         '<div class="chan-item-info">' +
           '<div class="chan-item-name">' + esc(c.name) + badge + '</div>' +
           '<div class="chan-item-meta">' + esc(c.label || c.kind) + cfgHint + '</div>' +
         '</div>' +
-        '<div class="chan-actions">' + actionBtn +
-          '<button class="btn-sm" onclick="deleteChannel(\'' + esc(c.channel_id) + '\',\'' + esc(c.name) + '\')">删除</button>' +
-        '</div>' +
+        '<div class="chan-actions">' + actionBtns + '</div>' +
       '</div>'
     }).join('')
   } catch (e) {
@@ -493,6 +496,56 @@ async function createChannel() {
     msg.className = 'settings-msg err'
   }
   btn.disabled = false
+}
+
+async function testChannel(chid) {
+  try {
+    const r = await fetch('/api/v2/card/channels/' + chid + '/test', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() }
+    })
+    const res = await r.json()
+    if (res.status) {
+      alert('✅ 测试通过：' + (res.data?.message || '凭据格式正确，SDK 可用'))
+    } else {
+      alert('❌ 测试失败：' + (res.msg || '未知错误'))
+    }
+  } catch (e) { alert('网络错误: ' + e.message) }
+}
+
+async function testChannelFields() {
+  const kind = document.getElementById('chanKind').value
+  if (!kind) {
+    const msg = document.getElementById('chanMsg')
+    msg.textContent = '请先选择通道类型'
+    msg.className = 'settings-msg err'
+    return
+  }
+  const config = {}
+  document.querySelectorAll('#chanFields [data-field]').forEach(el => {
+    const v = el.value.trim()
+    if (v) config[el.dataset.field] = el.value
+  })
+  const msg = document.getElementById('chanMsg')
+  msg.textContent = '测试中…'
+  msg.className = 'settings-msg'
+  try {
+    const r = await fetch('/api/v2/card/channels/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ kind, config })
+    })
+    const res = await r.json()
+    if (res.status) {
+      msg.textContent = '✅ ' + (res.data?.message || '测试通过')
+      msg.className = 'settings-msg ok'
+    } else {
+      msg.textContent = '❌ ' + (res.msg || '测试失败')
+      msg.className = 'settings-msg err'
+    }
+  } catch (e) {
+    msg.textContent = '❌ 网络错误'
+    msg.className = 'settings-msg err'
+  }
 }
 
 async function startChannel(chid) {

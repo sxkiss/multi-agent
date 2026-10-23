@@ -48,8 +48,10 @@ _PLATFORM_META: dict[str, dict[str, Any]] = {
     },
     "feishu": {
         "label": "飞书",
-        "config_fields": [{"name": "app_id", "type": "string", "required": True},
-                          {"name": "app_secret", "type": "password", "required": True}],
+        "config_fields": [{"name": "app_id", "type": "string", "required": True, "placeholder": "飞书应用 App ID"},
+                          {"name": "app_secret", "type": "password", "required": True, "placeholder": "飞书应用 App Secret"},
+                          {"name": "verification_token", "type": "string", "required": False, "placeholder": "事件验证 Token（可选）"},
+                          {"name": "encrypt_key", "type": "password", "required": False, "placeholder": "消息加密 Key（可选）"}],
         "note": "需 lark-oapi SDK",
     },
     "telegram": {
@@ -66,14 +68,16 @@ _PLATFORM_META: dict[str, dict[str, Any]] = {
     },
     "dingtalk": {
         "label": "钉钉",
-        "config_fields": [{"name": "app_key", "type": "string", "required": True},
-                          {"name": "app_secret", "type": "password", "required": True}],
+        "config_fields": [{"name": "app_key", "type": "string", "required": True, "placeholder": "钉钉应用 AppKey"},
+                          {"name": "app_secret", "type": "password", "required": True, "placeholder": "钉钉应用 AppSecret"},
+                          {"name": "robot_code", "type": "string", "required": False, "placeholder": "机器人 Code（可选）"}],
         "note": "需 dingtalk-stream SDK",
     },
     "wecom": {
         "label": "企业微信",
         "config_fields": [{"name": "bot_id", "type": "string", "required": True, "placeholder": "企业微信 AI Bot ID"},
-                          {"name": "secret", "type": "password", "required": True}],
+                          {"name": "secret", "type": "password", "required": True, "placeholder": "企业微信 AppSecret"},
+                          {"name": "ws_url", "type": "string", "required": False, "placeholder": "WebSocket 推送地址（可选）"}],
         "note": "需企业微信 AI Bot SDK",
     },
     "discord": {

@@ -329,6 +329,107 @@ async def api_card_channel_start(channel_id: str, request: Request):
     return JSONResponse(public.return_data(True, data={"channel_id": channel_id, "running": True}))
 
 
+@router.post("/card/channels/test")
+async def api_card_channel_test_fields(request: Request):
+    """不依赖已有通道，直接测试一组凭据是否有效（创建表单用）。"""
+    prefix, err = _require_card(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    kind = str(body.get("kind") or "").strip()
+    cfg = body.get("config") or {}
+    if kind not in gw.PLATFORM_KINDS:
+        return JSONResponse(public.returnMsg(False, f"不支持的通道类型: {kind}"), status_code=400)
+    required = [
+        f["name"]
+        for f in gw.PLATFORM_KINDS[kind].get("config_fields", [])
+        if f.get("required")
+    ]
+    missing = [n for n in required if not str(cfg.get(n) or "").strip()]
+    if missing:
+        return JSONResponse(public.returnMsg(False, f"缺少必填字段: {', '.join(missing)}"), status_code=400)
+    if not gw._sdk_available(kind):
+        return JSONResponse(public.returnMsg(False, f"平台 {kind} 的通道 SDK 不可用，请先安装依赖"), status_code=500)
+    try:
+        norm = gw._norm_cfg(kind, cfg)
+        mod = __import__(f"octop_gateway.channels.{kind}", fromlist=["*"])
+        config_cls = next(
+            (getattr(mod, name) for name in dir(mod)
+             if not name.startswith("_") and "config" in name.lower() and hasattr(getattr(mod, name), "__dataclass_fields__")),
+            None
+        )
+        if config_cls is not None:
+            import dataclasses
+            field_names = {f.name for f in dataclasses.fields(config_cls)}
+            safe_cfg = {k: v for k, v in norm.items() if k in field_names}
+            config_cls(**safe_cfg)
+        return JSONResponse(public.return_data(True, data={"kind": kind, "message": "凭据格式正确，SDK 可用"}))
+    except Exception as e:
+        logger.warning("[card-gw] 测试凭据 %s 失败: %s", kind, e, exc_info=True)
+        return JSONResponse(public.returnMsg(False, f"测试失败: {e}"), status_code=500)
+
+
+@router.post("/card/channels/{channel_id}/test")
+async def api_card_channel_test(channel_id: str, request: Request):
+    """测试通道凭据是否可用（不启动实例，仅校验字段和 SDK 连通性）。"""
+    prefix, err = _require_card(request)
+    if err:
+        return err
+    rec = _user_record(prefix)
+    ch = next((c for c in rec.get("channels", []) if c.get("channel_id") == channel_id), None)
+    if not ch:
+        return JSONResponse(public.returnMsg(False, "通道不存在"), status_code=404)
+    kind = ch["kind"]
+    if kind not in gw.PLATFORM_KINDS:
+        return JSONResponse(public.returnMsg(False, f"不支持的通道类型: {kind}"), status_code=400)
+    cfg = ch.get("config", {})
+    # 校验必填字段
+    required = [
+        f["name"]
+        for f in gw.PLATFORM_KINDS[kind].get("config_fields", [])
+        if f.get("required")
+    ]
+    missing = [n for n in required if not str(cfg.get(n) or "").strip()]
+    if missing:
+        return JSONResponse(public.returnMsg(False, f"缺少必填字段: {', '.join(missing)}"), status_code=400)
+    # 检查 SDK 是否可用
+    if not gw._sdk_available(kind):
+        return JSONResponse(public.returnMsg(False, f"平台 {kind} 的通道 SDK 不可用，请先安装依赖"), status_code=500)
+    # 尝试通过 _norm_cfg 归一化，再尝试 import 通道模块做轻量探测
+    try:
+        norm = gw._norm_cfg(kind, cfg)
+        mod = __import__(f"octop_gateway.channels.{kind}", fromlist=["*"])
+        # 找具体平台的 Config 类（跳过基类 ChannelConfig）
+        import dataclasses as _dc
+        config_cls = None
+        for name in dir(mod):
+            if name.startswith("_") or "config" not in name.lower():
+                continue
+            cls = getattr(mod, name)
+            if not (_dc.is_dataclass(cls) and hasattr(cls, "__dataclass_fields__")):
+                continue
+            # 排除基类 ChannelConfig（不含平台特有凭据字段）
+            mro_names = [b.__name__ for b in cls.__mro__[1:]]
+            if name == "ChannelConfig" and "channel_id" not in cls.__dataclass_fields__:
+                continue
+            # 优先选有 app_id/app_secret/bot_token 等凭据字段的类
+            field_names = set(cls.__dataclass_fields__.keys())
+            if field_names & {"app_id", "app_secret", "bot_token", "secret", "token", "app_key", "bot_id"}:
+                config_cls = cls
+                break
+        if config_cls is not None:
+            field_names = {f.name for f in _dc.fields(config_cls)}
+            safe_cfg = {k: v for k, v in norm.items() if k in field_names}
+            config_cls(**safe_cfg)
+        return JSONResponse(public.return_data(True, data={"kind": kind, "message": "凭据格式正确，SDK 可用"}))
+    except Exception as e:
+        logger.warning("[card-gw] 测试通道 %s/%s 失败: %s", prefix, channel_id, e, exc_info=True)
+        return JSONResponse(public.returnMsg(False, f"测试失败: {e}"), status_code=500)
+
+
 @router.post("/card/channels/{channel_id}/stop")
 async def api_card_channel_stop(channel_id: str, request: Request):
     prefix, err = _require_card(request)
