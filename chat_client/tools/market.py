@@ -671,7 +671,7 @@ def SkillPackageMarket(keyword: str = "", category: str = "", limit: int = 20) -
         if cached is not None:
             data = cached
         else:
-            data = _get_json(SKILLHUB_SKILLSETS_BASE)
+            data = _get_json(SKILLHUB_SKILLSETS_BASE + "?pageSize=100")
             _market_cache_save(cache_key, data)
     except Exception as e:
         return _xml_response("error", f"拉取专家包市场失败: {e!s}")
@@ -705,7 +705,7 @@ def SkillPackageMarket(keyword: str = "", category: str = "", limit: int = 20) -
             if kw not in blob:
                 continue
         hits.append(pkg)
-        if len(hits) >= max(1, min(int(limit or 20), 50)):
+        if len(hits) >= max(1, min(int(limit or 20), 100)):
             break
 
     if not hits:
@@ -830,7 +830,7 @@ def McpMarket(keyword: str = "", limit: int = 20) -> str:
     - limit：返回条数上限（默认 20，最大 50）
     """
     try:
-        n = max(1, min(int(limit or 20), 50))
+        n = max(1, min(int(limit or 20), 100))
         cache_key = f"mcp_market_{keyword.strip().lower()[:30]}_{n}"
         cached = _market_cache_load(cache_key)
         if cached is not None:
