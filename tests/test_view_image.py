@@ -50,13 +50,11 @@ class ViewImageTest(unittest.TestCase):
         self.assertIn("<toolcall_status>done</toolcall_status>", result)
         self.assertIn("<size>4x4</size>", result)
         self.assertIn("<format>PNG</format>", result)
-        # 关键：输出必须是标准 Markdown 图片（data URL 形式），前端才能渲染
-        self.assertIn("![图片](data:image/png;base64,", result)
-        # 校验 base64 内容与真实文件一致
-        b64 = result.split("![图片](data:image/png;base64,", 1)[1].split(")", 1)[0]
-        raw = base64.b64decode(b64)
-        with open(self.png, "rb") as f:
-            self.assertEqual(raw, f.read())
+        # 默认 return_base64=False，输出相对路径 Markdown 图片链接
+        self.assertIn("![图片](", result)
+        self.assertIn("sample.png", result)
+        # 不含 data:image，因为默认不嵌入 base64
+        self.assertNotIn("data:image/png;base64,", result)
 
     def test_metadata_includes_path_format_mode(self):
         result = ViewImage(path=self.png, return_base64=False)

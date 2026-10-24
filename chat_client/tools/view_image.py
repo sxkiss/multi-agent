@@ -43,7 +43,7 @@ def _safe_path(path: str) -> str:
 
 
 @register_tool(category="媒体", name_cn="查看图片", risk_level="low")
-def ViewImage(path: str, return_base64: bool = True) -> str:
+def ViewImage(path: str, return_base64: bool = False) -> str:
     """
     View a local image file and return its metadata plus an optional base64 data URL.
 
@@ -54,9 +54,12 @@ def ViewImage(path: str, return_base64: bool = True) -> str:
     Args:
         path: Absolute path to the image file. Relative paths are resolved against
             the project root directory.
-        return_base64: Whether to include the base64 data URL in the result.
-            Default True. Set to False if the model does not support vision or the
-            image is too large, to save context tokens.
+        return_base64: Whether to embed the base64 data URL directly in the text
+            result. Default False: the tool returns compact metadata plus a
+            Markdown image link, and the agent layer converts it into a real
+            image_url content block for the vision model (so the model still
+            "sees" the image without paying 260KB+ of base64 in the transcript).
+            Set True only when you explicitly need the raw data URL inline.
 
     Returns:
         Image metadata (format, size, dimensions, mode) and, when requested,
@@ -120,7 +123,8 @@ def ViewImage(path: str, return_base64: bool = True) -> str:
                 f"<size>{width}x{height}</size>\n"
                 f"<mode>{mode}</mode>\n"
                 f"<file_size>{file_size} bytes</file_size>\n"
-                "Image metadata retrieved. Set return_base64=True to include the data URL."
+                f"![图片]({real})\n"
+                "Image attached (rendered in UI). The model receives the image itself."
             )
             return _xml_response("done", body, metadata=meta)
 

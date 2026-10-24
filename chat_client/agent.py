@@ -146,6 +146,74 @@ def bad_args_hint(func_name: str) -> str:
 #   2) 图片若以 file 块存在，形状也不符合视觉协议（应为 image_url）。
 # 这里统一做形状归一：图片 file 块 → image_url；非图片 file 块仍丢弃。
 
+# ViewImage 结果里的 data:image URL 正则（用于从 tool result 文本中提取图片块）
+_VIEWIMAGE_IMAGE_URL_RE = re.compile(r'(data:image/[\w-]+;base64,[A-Za-z0-9+/=]+)')
+# ViewImage 路径正则：从 tool result 文本中提取 <path>...</path>
+_VIEWIMAGE_PATH_RE = re.compile(r'<path>(.+?)</path>')
+# 图片文件扩展名（用于判定 <path> 指向的是不是图片，避免把普通文本路径误判为 ViewImage）
+_IMAGE_EXT_RE = re.compile(r'\.(?:png|jpe?g|gif|webp|bmp|svg|tiff?|ico)$', re.IGNORECASE)
+
+
+def _viewimage_content_blocks(text: str) -> list | None:
+    """从 ViewImage 结果文本里提取 <path>，读取图片并返回 image_url 内容块列表。
+    若文本里无 path 或图片不可读则返回 None（保持原文本）。"""
+    if not isinstance(text, str):
+        return None
+    _m = _VIEWIMAGE_PATH_RE.search(text)
+    if not _m:
+        return None
+    img_path = _m.group(1).strip()
+    if not os.path.isfile(img_path):
+        return None
+    try:
+        import base64 as _b64
+        import mimetypes as _mime_mod
+        with open(img_path, "rb") as _f:
+            _raw = _f.read()
+        _b64_str = _b64.b64encode(_raw).decode("ascii")
+        _mime = _mime_mod.guess_type(img_path)[0] or "image/jpeg"
+        _data_url = f"data:{_mime};base64,{_b64_str}"
+        return [
+            {"type": "text", "text": "查看图片结果："},
+            {"type": "image_url", "image_url": {"url": _data_url}},
+        ]
+    except Exception as _e:
+        logger.debug("ViewImage 读取图片失败 %s: %s", img_path, _e)
+        return None
+
+
+def _restore_viewimage_markers(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把历史 tool 消息里丢失的 _func_name 标记补回来，使 _coerce_tool_contents 能识别 image_url。
+
+    sessions.journal 归档只存 content 字段，丢失了 run 时注入的 _func_name。
+    这里通过 pattern 启发式恢复：tool result 文本中含 <path> 且格式是图片扩展名
+    的，视为 ViewImage 结果，补上 _func_name 和 image_url 内容块。
+    其他工具的 list content 仍由 _coerce_tool_contents 压平为字符串。
+    """
+    if not messages:
+        return messages
+    out = []
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") != "tool":
+            out.append(m)
+            continue
+        content = m.get("content")
+        if not isinstance(content, list):
+            # 已有 _func_name 则保留，否则补一个（防止后续 _coerce 误判）
+            if "_func_name" not in m:
+                out.append({**m, "_func_name": "unknown"})
+            else:
+                out.append(m)
+            continue
+        # list content：检查是否为 ViewImage 的 image_url 块
+        has_image_url = any(
+            isinstance(b, dict) and b.get("type") == "image_url" for b in content
+        )
+        if has_image_url and "_func_name" not in m:
+            m = {**m, "_func_name": "ViewImage"}
+        out.append(m)
+    return out
+
 
 def _file_block_to_image_url(block: Any):
     """把 file 块里的图片转成标准 image_url 块；非图片返回 None。
@@ -199,6 +267,31 @@ def _drop_image_blocks(content: Any) -> Any:
     if dropped:
         out.append({"type": "text", "text": f"[历史消息中的 {dropped} 张图片已省略]"})
     return out
+
+
+def _is_viewimage_result(msg: dict[str, Any]) -> bool:
+    """判断 tool 消息是否为 ViewImage 结果（含 image_url 内容块）。
+
+    ViewImage 结果的特殊处理：
+    - journal 里存纯文本（保留可检索性）；sessions.json 压缩快照里可能混合格式
+    - _restore_viewimage_markers 在 _build_messages 入口补回 _func_name 和 image_url 块
+    - 但快照加载（MemoryManager.load_session）可能跳过 _restore_viewimage_markers
+      → 这里兜底识别，确保历史里的 ViewImage image_url 不被 _drop_image_blocks 丢弃
+    """
+    if msg.get("role") != "tool":
+        return False
+    if msg.get("_func_name") == "ViewImage":
+        return True
+    # 兜底：content 里有 image_url 块且文本含 <path>/home/.../*.png</path>
+    c = msg.get("content")
+    if isinstance(c, list):
+        if any(b.get("type") == "image_url" for b in c if isinstance(b, dict)):
+            return True
+    if isinstance(c, str):
+        _pm = _VIEWIMAGE_PATH_RE.search(c)
+        if _pm and _IMAGE_EXT_RE.search(_pm.group(1)):
+            return True
+    return False
 
 
 class Agent:
@@ -1375,6 +1468,9 @@ Here is some useful information about the environment you are running in:
                     try:
                         # 防御：清理可能含非法 JSON 的 tool_calls
                         request_messages = self._sanitize_messages_for_api(request_messages)
+                        # 把历史 tool 消息里丢失的 _func_name 标记补回来，
+                        # 这样 _coerce_tool_contents 才能识别 ViewImage 的 image_url 内容块。
+                        request_messages = _restore_viewimage_markers(request_messages)
                         _resp_started = time.monotonic()
                         response_stream = self._create_completion_stream(request_messages, iter_tools)
 
@@ -2009,11 +2105,21 @@ Here is some useful information about the environment you are running in:
                     # 否则 sub2api 转 Responses API 时 agnes 上游拒绝
                     # （did not match any variant of untagged enum ResponseInput → 500）。
                     tool_text = self._tool_content_for_model(result_str)
-                    self.memory.add_message("tool", tool_text, tool_call_id=call_id, id=ai_msg_id)
+                    self.memory.add_message("tool", tool_text, tool_call_id=call_id, id=ai_msg_id,
+                                            _func_name=func_name)
+                    # ViewImage：同轮内也要让视觉模型看到图。memory 里仍存纯文本
+                    # （历史可回放/可检索），但本次请求的 messages 里转成 image_url 块，
+                    # 否则模型要等到下一轮 _build_messages 才能看到图（本轮白调）。
+                    _msg_content = tool_text
+                    if func_name == "ViewImage":
+                        _img_blocks = _viewimage_content_blocks(tool_text)
+                        if _img_blocks is not None:
+                            _msg_content = _img_blocks
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call_id,
-                        "content": tool_text
+                        "content": _msg_content,
+                        "_func_name": func_name,
                     })
 
                 # 【单轮内上下文闸门】工具结果回填后检查一次 messages 体积。
@@ -2268,9 +2374,14 @@ Here is some useful information about the environment you are running in:
         ):
             return messages
         return [
-            ({**m, "content": cls._tool_content_for_model(m.get("content"))}
+            # ViewImage 结果含 image_url 内容块，不能被压平成 str；
+            # 其他 tool 的 list content（历史残留 Anthropic 格式）仍压平。
+            (m
              if isinstance(m, dict) and m.get("role") == "tool"
-             and isinstance(m.get("content"), list) else m)
+             and isinstance(m.get("content"), list) and m.get("_func_name") == "ViewImage"
+             else ({**m, "content": cls._tool_content_for_model(m.get("content"))}
+                   if isinstance(m, dict) and m.get("role") == "tool"
+                   and isinstance(m.get("content"), list) else m))
             for m in messages
         ]
 
@@ -3062,12 +3173,16 @@ Here is some useful information about the environment you are running in:
             # 图片只保留最新一轮 user 的；历史图片降级为占位文本。
             # 注意：必须在 _filter_file_blocks 之后做，因为 file 块要先转成 image_url
             # 才能被识别为图片，否则这里根本看不到图、也就无从降级。
-            if _i_idx != _last_user_idx:
+            # ViewImage 结果的 image_url 例外：即使已在历史轮次中，也要保留给模型看到。
+            _is_vi = _is_viewimage_result(reconstructed)
+            if _i_idx != _last_user_idx and not _is_vi:
                 content = _drop_image_blocks(content)
             content = _truncate_content(content)
             if reconstructed["role"] == "tool":
                 # 兼容旧会话：历史里可能已存有 <tool> XML 结果，发送前统一归一化。
-                content = self._tool_content_for_model(content)
+                # ViewImage 结果含 image_url 内容块，跳过归一化（保持 list 格式发给模型）。
+                if not _is_vi:
+                    content = self._tool_content_for_model(content)
 
             m = {"role": reconstructed["role"], "content": content}
             if "tool_calls" in reconstructed:
