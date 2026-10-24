@@ -3527,7 +3527,7 @@ def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: 
     if done_at is None:
         return False
     elapsed = time.monotonic() - done_at
-    if elapsed > _ORPHAN_APPEND_WINDOW:
+    if done_at is None or elapsed > _ORPHAN_APPEND_WINDOW:
         logger.info(
             "[Background] 孤儿回调跳过追加（窗口过期 %.1fs）task=%s session=%s",
             elapsed, task_id[:12], session_id[:24])
@@ -3555,6 +3555,11 @@ def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: 
         "以上是你之前转入后台的任务执行结果，现已完成。\n"
         "请基于以上结果继续推进任务。"
     )
+    # 清除 _task_done_at，防止 drain_finished 注入后孤儿回调重复触发
+    from chat_client.tools import get_background_manager
+    _bg = get_background_manager()
+    _done_at = getattr(_bg, '_task_done_at', {})
+    _done_at.pop(task_id, None)
     parent_job.append("background_result", {
         "task_id": task_id, "tool": tool, "status": status, "result": result
     })

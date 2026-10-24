@@ -364,7 +364,7 @@ class BackgroundTaskManager:
         #    延迟检查，等主循环的 drain 窗口结束；仍未 ready 则主动回调。
         #    同时记录完成时间，供孤儿回调判断是否在"等待窗口"内追加到父 job。
         self._task_done_at = getattr(self, '_task_done_at', {})
-        self._task_done_at[task_id] = time.time()
+        self._task_done_at[task_id] = time.monotonic()
         self._schedule_orphan_check(task_id)
 
     def notify_failed(self, task_id: str, error: str) -> None:
@@ -395,7 +395,7 @@ class BackgroundTaskManager:
         self._wake(_sid)
         # 孤儿回调同样适用于失败结果
         self._task_done_at = getattr(self, '_task_done_at', {})
-        self._task_done_at[task_id] = time.time()
+        self._task_done_at[task_id] = time.monotonic()
         self._schedule_orphan_check(task_id)
 
     def pending_count(self, session_id: str) -> int:
