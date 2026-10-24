@@ -332,6 +332,9 @@ class BackgroundTaskManager:
         self._wake(_sid)
         # 5) 孤儿回调（兜底）：若主循环已结束，本轮不会再 drain，结果会"飞掉"。
         #    延迟检查，等主循环的 drain 窗口结束；仍未 ready 则主动回调。
+        #    同时记录完成时间，供孤儿回调判断是否在"等待窗口"内追加到父 job。
+        self._task_done_at = getattr(self, '_task_done_at', {})
+        self._task_done_at[task_id] = time.time()
         self._schedule_orphan_check(task_id)
 
     def notify_failed(self, task_id: str, error: str) -> None:
@@ -359,6 +362,8 @@ class BackgroundTaskManager:
             logger.warning("后台任务失败通知失败 task=%s", task_id, exc_info=True)
         self._wake(_sid)
         # 孤儿回调同样适用于失败结果
+        self._task_done_at = getattr(self, '_task_done_at', {})
+        self._task_done_at[task_id] = time.time()
         self._schedule_orphan_check(task_id)
 
     def pending_count(self, session_id: str) -> int:

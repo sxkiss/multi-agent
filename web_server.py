@@ -2365,6 +2365,10 @@ class AgentMain:
         idle_ticks = 0  # 空闲 tick 计数，用于 SSE keepalive，防止客户端 sock_read 超时断开
         max_idle_seconds = 900  # P2-27: 最大空闲 15min，超时向客户端返回结束信号防止无限挂起
         idle_start = asyncio.get_event_loop().time()
+        # P1-75: message_end 后继续挂一小段时间（默认 10s），让后台任务结果
+        # 有机会通过孤儿回调/notify_done 注入到同一个 job，前端能一次性收到。
+        _ORPHAN_APPEND_WINDOW = float(os.environ.get("AI_AGENT_ORPHAN_APPEND_WINDOW", "10"))
+        _post_end_deadline = None
         while True:
             pending, status = job.snapshot_from(last_id, drop)
             for e in pending:
@@ -2372,8 +2376,12 @@ class AgentMain:
                 last_id = e["id"]
                 if e["event"] == "message_end":
                     sent_end = True
+                    # 记录 message_end 到达时间，后续窗口期以此时为基准
+                    _post_end_deadline = asyncio.get_event_loop().time() + _ORPHAN_APPEND_WINDOW
+            # 判断是否退出：job 已结束 且 无新事件 且 过了追加窗口
             if status != "running" and not pending:
-                break
+                if _post_end_deadline is not None and asyncio.get_event_loop().time() >= _post_end_deadline:
+                    break
             await asyncio.sleep(0.15)
             # 空闲 keepalive：任务运行中但暂时无新事件（模型思考/工具执行中），
             # 每 ~10s 发一条 SSE 注释行维持连接，避免客户端 aiohttp sock_read 超时断开
@@ -3478,19 +3486,23 @@ def _register_orphan_callback():
     from chat_client.tools import get_background_manager
     bg = get_background_manager()
 
-    def _handler(session_id: str, task_id: str, tool: str, status: str, result: str):
-        """孤儿回调：父会话已结束，自动开新 job 把结果推给模型。
+    # 等待窗口：父 job 在 notify_done 后 10s 内结束，视为"仍在等待"，
+    # 把结果追加到父 job 而非开孤儿 job（前端 SSE 还会继续收事件）。
+    _ORPHAN_APPEND_WINDOW = float(os.environ.get("AI_AGENT_ORPHAN_APPEND_WINDOW", "10"))
 
-        实现步骤：
-        1. 查该 session 有没有正在跑的 job（还在 drain 窗口的不算孤儿）。
-        2. 没有的话，用 `_dispatch_orphan_job` 派发一轮"系统任务"，
-           把 background_task_done 包成用户消息塞进新 job。
-        3. 失败不抛异常（只打日志），避免影响主服务。
+    def _handler(session_id: str, task_id: str, tool: str, status: str, result: str):
+        """孤儿回调：父会话已结束，尝试把结果追加到父 job 或开新 job。
+
+        优先级：
+        1. 查父 job 是否在 10s 等待窗口内结束 → 追加到父 job（前端还能收到）
+        2. 否则 → 开孤儿 job（兜底，结果可能已过期）
         """
         try:
             if not chat_jobs.count_running(session_id) == 0:
                 return  # 仍在运行，不是孤儿
-            _dispatch_orphan_job(session_id, task_id, tool, status, result)
+            # 尝试追加到父 job（最近 10s 内结束的仍算有效）
+            if not _try_append_to_parent_job(session_id, task_id, tool, status, result):
+                _dispatch_orphan_job(session_id, task_id, tool, status, result)
         except Exception:
             logger.warning(
                 "[Background] 孤儿回调触发失败 session=%s task=%s",
@@ -3499,6 +3511,60 @@ def _register_orphan_callback():
 
     bg.set_orphan_callback(_handler)
     logger.info("[Background] 孤儿回调已注册（AI_AGENT_ORPHAN_DELAY=%ss）", bg._orphan_delay)
+
+
+def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: str, result: str) -> bool:
+    """尝试把后台任务结果追加到父 job（不新开 job）。
+
+    适用场景：父 job 在 10s 等待窗口内结束，前端 SSE 连接可能还活着，
+    直接追加到同一个 job 让前端一次性收到完整结果。
+
+    @return True 表示已成功追加，False 表示跳过（窗口已过期或找不到父 job）。
+    """
+    from chat_client.tools import get_background_manager
+    bg = get_background_manager()
+    done_at = getattr(bg, '_task_done_at', {}).get(task_id)
+    if done_at is None:
+        return False
+    elapsed = time.monotonic() - done_at
+    if elapsed > _ORPHAN_APPEND_WINDOW:
+        logger.info(
+            "[Background] 孤儿回调跳过追加（窗口过期 %.1fs）task=%s session=%s",
+            elapsed, task_id[:12], session_id[:24])
+        return False
+
+    jobs = chat_jobs.active_for_session(session_id)
+    if not jobs:
+        return False
+    # 取最新结束的 job（不是 running 的）
+    parent_job = None
+    for _k, _j in sorted(jobs, key=lambda x: x[1].created_at, reverse=True):
+        if not _j.is_running:
+            parent_job = _j
+            break
+    if parent_job is None:
+        return False
+
+    result_text = (
+        "<background_task_done>\n"
+        f"<task_id>{task_id}</task_id>\n"
+        f"<tool>{tool}</tool>\n"
+        f"<status>{status}</status>\n"
+        "<result>\n" + result + "\n</result>\n"
+        "</background_task_done>\n"
+        "以上是你之前转入后台的任务执行结果，现已完成。\n"
+        "请基于以上结果继续推进任务。"
+    )
+    parent_job.append("background_result", {
+        "task_id": task_id, "tool": tool, "status": status, "result": result
+    })
+    parent_job.append("message", result_text)
+    parent_job.append("message_end", None)
+    parent_job.finish("done")
+    logger.info(
+        "[Background] 孤儿回调追加到父 job task=%s session=%s job=%s elapsed=%.1fs",
+        task_id[:12], session_id[:24], parent_job.key, elapsed)
+    return True
 
 
 def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, result: str):
