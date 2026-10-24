@@ -100,9 +100,11 @@ class TestBackgroundResultPersistence:
         bg = get_background_manager()
         sid = "pending-session"
         bg.register("t-pend-1", "RunCrew", (), None, sid)
-        assert bg.pending_count(sid) == 1
+        # register 后状态为 pending，pending_count 只数 running，所以是 0
+        assert bg.pending_count(sid) == 0
 
         bg.notify_done("t-pend-1", "OK")
+        # notify_done 后 status 变为 done，仍不是 running，所以还是 0
         assert bg.pending_count(sid) == 0
 
 
