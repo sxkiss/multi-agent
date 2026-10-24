@@ -45,10 +45,10 @@ def test_set_result(db_path):
     from chat_client.tools.bg_repo import BgTaskRepo, STATUS_RUNNING, STATUS_DONE
     repo = BgTaskRepo(db_path)
     repo.insert("task_001", "Task", ("test",), STATUS_RUNNING, "session_1")
-    repo.set_result("task_001", "result content", STATUS_DONE)
+    repo.set_result("task_001", "result content", with_status=False)
     row = repo.get("task_001")
     assert row.result == "result content"
-    assert row.status == STATUS_DONE
+    assert row.status == STATUS_RUNNING
     repo.close()
 
 
@@ -145,6 +145,11 @@ def test_background_task_manager_integration():
     bg.register(task_id, "TestTool", (), future, session_id)
     t = bg.get(task_id)
     assert t is not None
+    assert t.status == "pending"
+    # 按状态机推进到 running
+    assert bg.mark_queued(task_id) == True
+    assert t.status == "queued"
+    assert bg.mark_running(task_id) == True
     assert t.status == "running"
     future.set_result("result")
     bg.notify_done(task_id, "result")
@@ -159,3 +164,48 @@ def test_background_task_manager_integration():
     assert row is not None
     assert row.status == STATUS_READY
     bg.remove(task_id)
+
+
+def test_full_status_flow(db_path):
+    """验证 pending → queued → running → done → ready 完整流转"""
+    from chat_client.tools import get_background_manager
+    from chat_client.tools.bg_repo import get_repo, STATUS_PENDING, STATUS_QUEUED, STATUS_RUNNING, STATUS_DONE, STATUS_READY
+    # 隔离用临时 repo，避免干扰全局单例
+    from chat_client.tools.bg_repo import BgTaskRepo
+    repo = BgTaskRepo(db_path)
+    try:
+        import chat_client.tools.bg_repo as bg_repo_mod
+        orig_get_repo = bg_repo_mod._repo
+        bg_repo_mod._repo = repo
+        bg = get_background_manager()
+        tid = "test_full_flow"
+        sid = "session_full"
+        fut = Future()
+        bg.register(tid, "Bash", ("echo ok",), fut, sid)
+        t = bg.get(tid)
+        assert t is not None
+        assert t.status == STATUS_PENDING
+        assert repo.get(tid).status == STATUS_PENDING
+
+        assert bg.mark_queued(tid) == True
+        assert t.status == STATUS_QUEUED
+        assert repo.get(tid).status == STATUS_QUEUED
+
+        assert bg.mark_running(tid) == True
+        assert t.status == STATUS_RUNNING
+        assert repo.get(tid).status == STATUS_RUNNING
+
+        fut.set_result("done_result")
+        bg.notify_done(tid, "done_result")
+        assert t.status == STATUS_DONE
+        assert repo.get(tid).status == STATUS_DONE
+
+        results = bg.drain_finished(sid)
+        assert len(results) == 1
+        assert results[0]["task_id"] == tid
+        assert repo.get(tid).status == STATUS_READY
+
+        bg.remove(tid)
+        repo.close()
+    finally:
+        bg_repo_mod._repo = orig_get_repo

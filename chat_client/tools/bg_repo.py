@@ -175,13 +175,21 @@ class BgTaskRepo:
             )
             conn.commit()
 
-    def set_result(self, task_id: str, result: str, status: str) -> None:
+    def set_result(self, task_id: str, result: str, status: str = "",
+                   with_status: bool = False) -> None:
+        """写入结果；with_status=True 时同时写 status（向后兼容），否则只写 result。"""
         with self._lock:
             conn = self._get_conn()
-            conn.execute(
-                "UPDATE bg_tasks SET result=?, status=?, updated_at=? WHERE task_id=?",
-                (result, status, time.time(), task_id),
-            )
+            if with_status and status:
+                conn.execute(
+                    "UPDATE bg_tasks SET result=?, status=?, updated_at=? WHERE task_id=?",
+                    (result, status, time.time(), task_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE bg_tasks SET result=?, updated_at=? WHERE task_id=?",
+                    (result, time.time(), task_id),
+                )
             conn.commit()
 
     def get(self, task_id: str) -> Optional[BgTaskRow]:
@@ -260,6 +268,14 @@ class BgTaskRepo:
             )
             conn.commit()
             return cur.rowcount
+
+    def mark_queued(self, task_id: str) -> bool:
+        """pending -> queued（通过 transition 校验）。"""
+        return self.transition(task_id, STATUS_QUEUED)
+
+    def mark_running(self, task_id: str) -> bool:
+        """queued -> running（通过 transition 校验）。"""
+        return self.transition(task_id, STATUS_RUNNING)
 
     def close(self) -> None:
         with self._lock:

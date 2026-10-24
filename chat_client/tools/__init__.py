@@ -120,7 +120,7 @@ class _BgTask:
         self.tool = tool
         self.args = args
         self.future = future
-        self.status = "running"      # running | done | failed | stopped
+        self.status = "pending"      # pending | queued | running | done | failed | stopped
         self.result: str = ""
         self.start_time = time.time()
         self.session_id = session_id
@@ -238,9 +238,38 @@ class BackgroundTaskManager:
         # 持久化：确保进程重启后能恢复
         try:
             from .bg_repo import get_repo
-            get_repo().insert(task_id, tool, args, "running", session_id)
+            get_repo().insert(task_id, tool, args, "pending", session_id)
         except Exception as e:
             logger.warning("[Background] 持久化任务失败 task=%s: %s", task_id[:12], e)
+
+    def mark_queued(self, task_id: str) -> bool:
+        """pending -> queued，通过状态机校验。"""
+        from .bg_repo import STATUS_QUEUED
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if t is None:
+                return False
+            t.status = "queued"
+        return self._repo_transition(task_id, STATUS_QUEUED)
+
+    def mark_running(self, task_id: str) -> bool:
+        """queued -> running，通过状态机校验。"""
+        from .bg_repo import STATUS_RUNNING
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if t is None:
+                return False
+            t.status = "running"
+        return self._repo_transition(task_id, STATUS_RUNNING)
+
+    def _repo_transition(self, task_id: str, new_status: str) -> bool:
+        """调用 repo.transition() 校验并推进状态。"""
+        try:
+            from .bg_repo import get_repo
+            return get_repo().transition(task_id, new_status)
+        except Exception as e:
+            logger.warning("[Background] repo_transition 失败 task=%s: %s", task_id[:12], e)
+            return False
 
     def cancel(self, task_id: str, reason: str = "") -> bool:
         """标记任务为 cancelled（不强制杀线程，仅状态层面终止消费）。
@@ -316,7 +345,8 @@ class BackgroundTaskManager:
         try:
             from .bg_repo import get_repo, STATUS_DONE
             _repo = get_repo()
-            _repo.set_result(task_id, result, STATUS_DONE)
+            _repo.transition(task_id, STATUS_DONE)
+            _repo.set_result(task_id, result, with_status=False)
         except Exception as e:
             logger.warning("[Background] 持久化结果失败 task=%s: %s", task_id[:12], e)
         # 3) 推 SSE 预览事件，前端可见状态
@@ -349,7 +379,9 @@ class BackgroundTaskManager:
         # 持久化失败状态（状态机：running -> failed）
         try:
             from .bg_repo import get_repo, STATUS_FAILED
-            get_repo().set_result(task_id, t.result, STATUS_FAILED)
+            _repo = get_repo()
+            _repo.transition(task_id, STATUS_FAILED)
+            _repo.set_result(task_id, t.result, with_status=False)
         except Exception as e:
             logger.warning("[Background] 持久化失败状态 task=%s: %s", task_id[:12], e)
         try:

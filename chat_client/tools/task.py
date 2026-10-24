@@ -380,6 +380,10 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
                 _restore_job_ctx(parent_job)
             except Exception:
                 pass
+        # 驱动状态机：pending → queued → running
+        if bg_manager is not None and bg_task_id:
+            bg_manager.mark_queued(bg_task_id)
+            bg_manager.mark_running(bg_task_id)
         try:
             full_response = ""
             for chunk in agent.chat(full_prompt):
