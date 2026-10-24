@@ -189,40 +189,131 @@ class RAGService:
         self.emb_api_key = embedding_api_key
         self.emb_base_url = embedding_base_url
         self.emb_model_name = embedding_model_name
+        self.default_headers = default_headers or {}
         
         # embedding 未配置时用占位 key 创建（调用层 get_embedding 已有异常降级），
         # 避免初始化阶段直接抛错导致整个 Agent 无法创建
-        self.embedding_client = openai.OpenAI(
-            api_key=self.emb_api_key or "EMPTY",
-            base_url=self.emb_base_url or "https://api.openai.com/v1",
-            default_headers=default_headers
-        )
+        self._client_lock = threading.Lock()
+        self._embed_client: openai.OpenAI | None = None
+        self._inflight: int = 0        # 在途 embedding 调用数，用于把 close 延后到没有活跃请求
+        self._closed: bool = False
+        self._ensure_client()
         # else:
         #     self.embedding_client = self.openai_client
-            
+
         self.small_model_name = small_model_name
-    
+
+    def _ensure_client(self) -> openai.OpenAI:
+        """懒建 / 重建 embedding 客户端（调用方不一定持有锁）。
+
+        httpx2 (openai SDK 3.x 底层) 的连接池会在线程间共享；
+        一旦底层 httpx2.Client 被 close()（agent.close → RAGService.close），
+        再次调 embeddings.create 就会抛
+        ``RuntimeError: Cannot send a request, as the client has been closed.``
+        ——日志里能反复看到这条。
+
+        修复思路：
+        - 用 _embed_client 持有客户端引用，close() 时置 None 而非直接析构；
+        - get_embedding 每次调用前持锁检查，None 则新建（重建后旧连接池丢失，
+          新请求从新的 httpx2 连接池出发，不再踩到 closed 状态）。
+        - 不暴露 embedding_client 给外部，所有访问走本方法。
+        """
+        if self._embed_client is not None:
+            return self._embed_client
+        with self._client_lock:
+            if self._embed_client is not None:
+                return self._embed_client
+            self._embed_client = openai.OpenAI(
+                api_key=self.emb_api_key or "EMPTY",
+                base_url=self.emb_base_url or "https://api.openai.com/v1",
+                default_headers=self.default_headers or {}
+            )
+            return self._embed_client
+
+    def _acquire_client(self) -> openai.OpenAI | None:
+        """加 in-flight 计数并返回当前客户端；服务已关闭时返回 None。"""
+        with self._client_lock:
+            if self._closed:
+                return None
+            self._inflight += 1
+            if self._embed_client is None:
+                self._embed_client = openai.OpenAI(
+                    api_key=self.emb_api_key or "EMPTY",
+                    base_url=self.emb_base_url or "https://api.openai.com/v1",
+                    default_headers=self.default_headers or {},
+                )
+            return self._embed_client
+
+    def _release_client(self) -> None:
+        """in-flight 计数减一，若服务端已关闭且计数归零则真正析构客户端。"""
+        with self._client_lock:
+            self._inflight -= 1
+            if self._closed and self._inflight == 0:
+                client = self._embed_client
+                self._embed_client = None
+            else:
+                client = None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
     def close(self):
-        self.embedding_client.close()
+        with self._client_lock:
+            self._closed = True
+            if self._inflight > 0:
+                return  # 有在途调用，等最后一个 finish 后由 _release_client 收尾
+            if self._embed_client is not None:
+                try:
+                    self._embed_client.close()
+                except Exception:
+                    pass
+                self._embed_client = None
 
     def get_embedding(self, text: str) -> list[float]:
         # P0：embedding 未配置（占位 key "EMPTY"）时短路返回，不发起注定失败的请求
         if not self.emb_api_key or not self.emb_base_url:
             logger.warning("[RAG] embedding 未配置（emb_api_key/emb_base_url 为空），跳过向量化")
             return []
+        client = self._acquire_client()
+        if client is None:
+            logger.debug("[RAG] RAGService 已关闭，跳过本次向量化")
+            return []
         try:
             model = self.emb_model_name or "text-embedding-3-small"
             text = text.replace("\n", " ")
-            
-            response = self.embedding_client.embeddings.create(
+            response = client.embeddings.create(
                 input=[text],
                 model=model
             )
             return response.data[0].embedding
         except Exception as e:
-            # P0：静默丢错误上下文 → 记录日志，避免排障无痕
+            # P0：若当前 client 已坏（httpx2 可能在别的线程被 close），
+            # 丢引用让下次调用重建；避免每次都打 trace。
+            if "closed" in str(e).lower() or isinstance(e, RuntimeError):
+                logger.debug("[RAG] embedding client 已关闭，重置后重试")
+                with self._client_lock:
+                    if self._embed_client is client:
+                        self._embed_client = None
+                client = self._ensure_client()
+                if client is None:
+                    return []
+                try:
+                    model = self.emb_model_name or "text-embedding-3-small"
+                    text = text.replace("\n", " ")
+                    response = client.embeddings.create(
+                        input=[text],
+                        model=model
+                    )
+                    return response.data[0].embedding
+                except Exception as e2:
+                    logger.warning("[RAG] embedding 调用失败（重建后仍失败），向量化降级为空: %s", e2, exc_info=True)
+                    return []
             logger.warning("[RAG] embedding 调用失败，向量化降级为空: %s", e, exc_info=True)
             return []
+        finally:
+            self._release_client()
 
     def generate_context_prefix(self, user_text: str, ai_text: str) -> str:
         # 暂时禁用小模型精简功能
