@@ -464,8 +464,8 @@ def SkillMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
     - 用户问"有没有 XX 技能/插件""技能市场里有什么"
     - 想看看某领域（python/excel/seo...）社区有哪些现成技能
 
-    - keyword：搜索关键词（走 /api/v1/search）
-    - category：分类过滤（走 /api/v1/categories 后本地过滤）
+    - keyword：搜索关键词（走 /api/v1/search，响应无 total）
+    - category：分类过滤（走 /api/skills?page=1&pageSize=N[&category=]，响应 data.total 为在线总数）
     - limit：返回条数上限（默认 20）
     """
     try:
@@ -479,6 +479,7 @@ def SkillMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
                 data = _get_json(f"{SKILLHUB_BASE}/api/v1/search?q={requests.utils.quote(keyword)}&limit={max(1, int(limit))}")
                 _market_cache_save(cache_key, data)
             items = data if isinstance(data, list) else (data.get("skills") or data.get("items") or data.get("results") or [])
+            online_total = 0  # 端点 A 无 total 字段
         else:
             # 分类浏览（缓存 key = "skills_list_{category}_{limit}"）
             cache_key = f"skill_list_{category.strip().lower()[:30]}_{limit}"
@@ -491,14 +492,23 @@ def SkillMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
                     params += f"&category={requests.utils.quote(category)}"
                 data = _get_json(f"{SKILLHUB_BASE}/api/skills?{params}")
                 _market_cache_save(cache_key, data)
-            items = data if isinstance(data, list) else (data.get("skills") or data.get("items") or data.get("data") or [])
+            # 端点 B 返回 {"code":0,"data":{"skills":[...],"total":N}}，嵌套两层 data
+            inner = data.get("data") if isinstance(data, dict) else data
+            total = inner.get("total", 0) if isinstance(inner, dict) else 0
+            items = inner.get("skills") or [] if isinstance(inner, dict) else []
+            online_total = total
     except Exception as e:
         return _xml_response("error", f"技能市场查询失败: {e!s}")
 
-    if not items:
+    if not items and online_total == 0:
         return _xml_response("done", f"未匹配到技能（keyword={keyword!r} category={category!r}）。")
 
-    lines = [f"<!-- 技能市场：{len(items)} 条 -->"]
+    if keyword.strip():
+        lines = [f"<!-- 技能市场：{len(items)} 条 -->"]
+    elif category.strip():
+        lines = [f"<!-- 技能市场[{category}]：{len(items)} 条（该分类在线共 {online_total} 个） -->"]
+    else:
+        lines = [f"<!-- 技能市场：{len(items)} 条（在线共 {online_total} 个技能） -->"]
     for i, it in enumerate(items[: max(1, int(limit))], 1):
         if not isinstance(it, dict):
             continue
