@@ -354,6 +354,9 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
             bg_task_id, "Task", (description,), fut, _reg_sid
         )
         logger.info("[Task] 注册后台任务 bg_task_id=%s parent_session_id=%s", bg_task_id[:12], _reg_sid[:40])
+        # 同步驱动状态机：pending → queued → running（线程启动前完成，避免竞态）
+        bg_manager.mark_queued(bg_task_id)
+        bg_manager.mark_running(bg_task_id)
 
     def _on_subagent_done(f: Future):
         if bg_manager is None:
@@ -380,10 +383,6 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
                 _restore_job_ctx(parent_job)
             except Exception:
                 pass
-        # 驱动状态机：pending → queued → running
-        if bg_manager is not None and bg_task_id:
-            bg_manager.mark_queued(bg_task_id)
-            bg_manager.mark_running(bg_task_id)
         try:
             full_response = ""
             for chunk in agent.chat(full_prompt):

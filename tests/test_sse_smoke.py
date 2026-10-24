@@ -186,8 +186,13 @@ class TestSSEGeneratorSmoke(unittest.TestCase):
 
     @staticmethod
     def _parse_block(block):
-        """解析单个 SSE 块 → {id, event, data}"""
+        """解析单个 SSE 块 → {id, event, data}；SSE 注释行（以 : 开头）忽略"""
         if not block or not block.strip():
+            return None
+        # 过滤掉纯注释块
+        stripped = [line for line in block.splitlines()
+                    if line and not line.startswith(":")]
+        if not stripped:
             return None
         rec = {"id": None, "event": "message", "data": None}
         data_lines = []
