@@ -355,6 +355,10 @@ class ChatJob:
         self.agent = None
         self.cancel_event = threading.Event()  # chat_stop 置位；Agent 循环在检查点据此提前退出
         self.created_at = time.time()
+        # 结束时刻（time.time()）：孤儿回调据此判断父 job 是否已死透。
+        # 不能用"任务完成时刻"当基准——长任务完成时父 job 可能已结束十几分钟，
+        # 那样会误判成"还在窗口内"，把结果追加到一个没人订阅的死 job 上。
+        self.finished_at = None
         self._lock = threading.Lock()
         # 事件持久化（JSONL 追加）
         self.persist = persist
@@ -410,6 +414,8 @@ class ChatJob:
             if self.status in {"done", "stopped", "error"} and self.status != status:
                 return
             self.status = status
+            if status in {"done", "stopped", "error"} and self.finished_at is None:
+                self.finished_at = time.time()
         if self.persist:
             try:
                 with open(self.persist_path, "a", encoding="utf-8") as f:
@@ -2380,7 +2386,12 @@ class AgentMain:
                     _post_end_deadline = asyncio.get_event_loop().time() + _ORPHAN_APPEND_WINDOW
             # 判断是否退出：job 已结束 且 无新事件 且 过了追加窗口
             if status != "running" and not pending:
-                if _post_end_deadline is not None and asyncio.get_event_loop().time() >= _post_end_deadline:
+                if _post_end_deadline is None:
+                    # 续传场景：last_id 已越过 message_end，本轮不会再看到该事件，
+                    # 窗口计时永远无法启动。若不在此直接退出，循环会一直挂到
+                    # max_idle_seconds（900s）才超时——表现为"续传后客户端卡死"。
+                    break
+                if asyncio.get_event_loop().time() >= _post_end_deadline:
                     break
             await asyncio.sleep(0.15)
             # 空闲 keepalive：任务运行中但暂时无新事件（模型思考/工具执行中），
@@ -3499,8 +3510,8 @@ def _register_orphan_callback():
         """
         try:
             if not chat_jobs.count_running(session_id) == 0:
-                return  # 仍在运行，不是孤儿
-            # 尝试追加到父 job（最近 10s 内结束的仍算有效）
+                return  # 仍有运行中 job，不是孤儿（新 job 会正常 drain）
+            # 追加成功则走父 job；失败（父 job 已死透）则新开孤儿 job 挂到同一 session
             if not _try_append_to_parent_job(session_id, task_id, tool, status, result):
                 _dispatch_orphan_job(session_id, task_id, tool, status, result)
         except Exception:
@@ -3523,26 +3534,30 @@ def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: 
     """
     from chat_client.tools import get_background_manager
     bg = get_background_manager()
-    done_at = getattr(bg, '_task_done_at', {}).get(task_id)
-    if done_at is None:
-        return False
-    elapsed = time.monotonic() - done_at
-    if done_at is None or elapsed > _ORPHAN_APPEND_WINDOW:
-        logger.info(
-            "[Background] 孤儿回调跳过追加（窗口过期 %.1fs）task=%s session=%s",
-            elapsed, task_id[:12], session_id[:24])
-        return False
-
     jobs = chat_jobs.active_for_session(session_id)
     if not jobs:
         return False
     # 取最新结束的 job（不是 running 的）
     parent_job = None
+    parent_finished_at = None
     for _k, _j in sorted(jobs, key=lambda x: x[1].created_at, reverse=True):
         if not _j.is_running:
             parent_job = _j
+            parent_finished_at = getattr(_j, 'finished_at', None)
             break
     if parent_job is None:
+        return False
+    # 以父 job 的结束时刻判断窗口：父 job 结束不超过 _ORPHAN_APPEND_WINDOW 才算"刚死"，
+    # 追加还能被前端续传看到；超过则视为已死透，返回 False 让上层开新孤儿 job。
+    # 绝不能拿任务完成时间当基准——长任务完成时父 job 可能早已结束十几分钟，
+    # 仍会误判为"窗口内"而追加到死 job（结果再也无人消费）。
+    _window_age = time.time() - parent_finished_at if parent_finished_at else 9999
+    if _window_age > _ORPHAN_APPEND_WINDOW:
+        logger.info(
+            "[Background] 孤儿回调父 job 已死透（%.1fs），不追加，走新会话回灌 "
+            "session=%s job=%s finished_at=%s",
+            _window_age, session_id[:24], parent_job.key,
+            time.strftime('%H:%M:%S', time.localtime(parent_finished_at)))
         return False
 
     result_text = (
@@ -3567,8 +3582,8 @@ def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: 
     parent_job.append("message_end", None)
     parent_job.finish("done")
     logger.info(
-        "[Background] 孤儿回调追加到父 job task=%s session=%s job=%s elapsed=%.1fs",
-        task_id[:12], session_id[:24], parent_job.key, elapsed)
+        "[Background] 孤儿回调追加到父 job task=%s session=%s job=%s window_age=%.1fs",
+        task_id[:12], session_id[:24], parent_job.key, _window_age)
     return True
 
 
