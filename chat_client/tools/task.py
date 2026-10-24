@@ -436,7 +436,7 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
 
 import openai as _openai
 
-_CREW_MANAGER_PROMPT = """你是多智能体团队的调度经理（Manager）。发话的是老板（Boss，即用户本人）——他只下达目标，不参与过程细节。根据老板的「总体目标」与「可用团队成员」的能力说明，制定一份顺序执行计划，替老板把事办成。
+_CREW_MANAGER_PROMPT = """你是多智能体团队的调度经理（Manager）。发出指令的是会话人——他下达目标——他只下达目标，不参与过程细节。根据会话人的「总体目标」与「可用团队成员」的能力说明，制定一份顺序执行计划，替会话人把事办成。
 
 可用团队成员：
 {roster}
@@ -548,8 +548,8 @@ def _crew_synthesis(parent_config, objective: str, transcript: list[dict[str, st
     resp = client.chat.completions.create(
         model=parent_config.get("model_name"),
         messages=[
-            {"role": "system", "content": "你是团队负责人。老板只关心结果——基于各成员产出整合成面向老板的最终成果汇报：直接给结论与关键信息，简洁、可执行，不复述内部过程。"},
-            {"role": "user", "content": f"老板的目标：{objective}\n\n各步骤产出：\n" + "\n\n".join(lines)},
+            {"role": "system", "content": "你是团队负责人。会话人只关心结果——基于各成员产出整合成面向会话人的最终成果汇报：直接给结论与关键信息，简洁、可执行，不复述内部过程。"},
+            {"role": "user", "content": f"会话人的目标：{objective}\n\n各步骤产出：\n" + "\n\n".join(lines)},
         ],
         temperature=0.4,
         timeout=180,
@@ -560,9 +560,9 @@ def _crew_synthesis(parent_config, objective: str, transcript: list[dict[str, st
 @register_tool(category="Agent", name_cn="集团模式(经理+团队)", risk_level="medium", timeout=1800)
 def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5, parallel: bool = True, **kwargs) -> str:
     """
-    启动内置「一人一集团」层级协作模式：用户是 Boss，只负责下达目标；
+    启动内置「一人一集团」层级协作模式：用户是会话人，只负责下达目标；
     AI 侧自动组成集团——经理拆解计划、专家团队成员并发执行（默认并行，真正提速），
-    最后以面向老板的成果汇报形式返回最终答案。
+    最后以面向会话人的成果汇报形式返回最终答案。
 
     适用：多环节复杂任务（调研→分析→产出）、需要多种专长协作的目标。
 
@@ -937,7 +937,7 @@ def ConsultPeer(target_agent: str, question: str, context: str = "", **kwargs) -
 
 
 # ============================================================
-# 组织自我扩张：经理/Boss 可直接开设部门、招聘成员
+# 组织自我扩张：经理/会话人 可直接开设部门、招聘成员
 # ============================================================
 
 import logging

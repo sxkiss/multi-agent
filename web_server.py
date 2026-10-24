@@ -1352,7 +1352,7 @@ class AgentMain:
         })
 
     def org_chart(self, get=None):
-        """首页集团组织架构：Boss → 经理 → 各部门 → 成员"""
+        """首页集团组织架构：用户 → 经理 → 各部门 → 成员"""
         from chat_client.tools.task import agent_registry
         members = agent_registry.list_agents()
         departments = list(getattr(agent_registry, "departments", []))
@@ -1393,7 +1393,7 @@ class AgentMain:
                 "members": [{"name": m.name, "description": m.description} for m in unassigned],
             })
         return public.return_data(True, data={
-            "boss": {"name": "Boss", "title": "老板（你）"},
+            "boss": {"name": "user", "title": "用户（会话人）"},
             "manager": {"name": "manager", "title": "经理", "description": "接收目标、拆解计划、分派部门与成员、汇总交付"},
             "departments": out_depts,
         })
@@ -1966,7 +1966,7 @@ class AgentMain:
                 org_lines += [f"- {a.name}：{a.description}" for a in ms]
             # 身份/人格部分优先从 SOUL/AGENTS/USER/MEMORY 加载，动态的组织架构与工具列表保留在代码中
             ctx = self._load_agent_context_prompt()
-            base_persona = ctx or "你是「AI 集团」的总经理。对面是老板（Boss，即用户本人）——他只下达目标，不关心内部过程。"
+            base_persona = ctx or "你是「AI 集团」的总经理。对面是用户（会话人）——他下达目标——他只下达目标，不关心内部过程。"
             # 注入技能摘要（与单 Agent 模式同源），让经理在派任务时知道有哪些 skill 可用，
             # 以便在 Task/RunCrew 的 prompt 中指示成员加载对应技能执行
             try:
@@ -2022,6 +2022,21 @@ class AgentMain:
 派任务时，如果某目标需要特定技能，在 Task/RunCrew 的 prompt 中写明「使用 Skills(name='技能名') 加载对应技能」或直接调用对应 MCP 工具。
 若目标匹配上方【本地专家库】中的某位专家，可用 InstallExpert(name='专家id') 落地为团队成员，或指示成员调用 GetExpertPrompt 取人设。
 
+【专家自动派发（强制，优先级高于自行处理）】
+本地高频映射（命中即派，不得自己或普通成员代劳）：
+- 代码审查 / review / 查bug / 安全审查 / 重构评估 → `code-reviewer`
+- 运维 / 部署 / 排障 / 服务器 / systemd / nginx / docker / 日志诊断 / 磁盘网络 → `ops-engineer`
+- 数据分析 / excel / csv / 统计 / 报表 / 透视 / 可视化 / 表格清洗 → `data-analyst`
+- 文案 / 写文章 / 公众号 / 小红书 / 知乎 / SEO 内容 / 标题 / 改写 → `content-writer`
+- 美团 / 领券 / 优惠券 / 团购 / 外卖 / 附近美食 / 点餐 → `meituan-living-assistant`
+
+**本表不是全集。** 任务属于其他专业领域（设计/法务/财务/营销/产品/架构/性能/安全/翻译/医疗/教育…）且本地无对应专家时，
+必须 `ExpertMarket(keyword='领域词')` 检索 → `InstallExpert(name='命中id')` 落地 → `Task` 派发；
+检索为空才可退化用通用成员，并在交付时说明「未找到匹配专家，已用通用成员处理」。
+
+流程：已是团队成员 → 直接 `Task(subagent_type='专家名', ...)`；本地专家库有但未落地 → `InstallExpert` 后派发；本地无 → `ExpertMarket` 搜 → 落地 → 派发。
+非专业领域（闲聊/通用问答/纯状态查询）才允许自行处理。交付前自查：属专业领域却没派专家、或本地无专家却没查市场 = 违规。
+
 【技能使用铁律（必须遵守）】
 1. 拆解任务的第一步，先在上方技能清单中查找匹配技能（比对"遇到以下情况就使用/适用场景/触发词"段落）。
 2. 只要找到匹配技能，Task/RunCrew 的 prompt 中必须写明「先调用 Skills(name='技能名') 加载完整工作流，再按技能流程执行」——禁止让成员用通用手段硬干。
@@ -2043,8 +2058,8 @@ class AgentMain:
 3. 多环节/跨领域目标优先使用 RunCrew——鼓励跨部门流水线：
    调研部搜集 → 研发部实现 → 测试部验证 → 审核部把关。
    成员之间可通过 ConsultPeer 互相咨询，无需经过你中转。
-4. 高风险操作会被安全策略拦截确认：此时向 Boss 说明将要执行的操作与风险，等待明确同意。
-5. 交付时面向 Boss 汇报：结论先行、要点清晰、附关键证据。"""
+4. 高风险操作会被安全策略拦截确认：此时向会话人说明将要执行的操作与风险，等待明确同意。
+5. 交付时面向会话人汇报：结论先行、要点清晰、附关键证据。"""
 
             # 小程序渠道：不向用户暴露网关内部信息。
             # 实测发现经理会把工作目录（/home/sxkiss/bt）、技能数量、部门清单、

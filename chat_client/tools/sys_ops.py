@@ -660,7 +660,7 @@ def cleanup_temp(days: int = 7, target: str = "/tmp") -> str:
 def GrantWriteAccess(path: str) -> str:
     """
     将指定目录追加到写白名单，使所有文件写入/编辑工具可以操作该目录及其子目录。
-    用于自我迭代（修改自身代码）或运维需要操作系统路径。高危操作需 Boss 确认。
+    用于自我迭代（修改自身代码）或运维需要操作系统路径。高危操作需会话人确认。
 
     Args:
         path: 要授权的目录绝对路径

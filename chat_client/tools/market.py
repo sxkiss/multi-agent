@@ -214,12 +214,21 @@ def ExpertMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
     lines = [f"<!-- 专家市场：命中 {len(hits)} 个（共 {len(experts)} 个专家） -->"]
     for i, ex in enumerate(hits, 1):
         name = _expert_field(ex, "displayName", "name", "Name", "title", "profession")
+        # 必须输出**专家标识**：InstallExpert/GetExpertPrompt 只认 slug，
+        # 只给中文显示名会导致「查到却装不上」，链路在此断掉。
+        eid = _expert_id(ex)
         desc = _expert_field(ex, "description", "desc", "summary", "intro")[:120]
         catg = _expert_field(ex, "categoryId", "categoryName", "category", "group", "type")
-        lines.append(f"{i}. **{name}**" + (f" [{catg}]" if catg else ""))
+        head = f"{i}. **{name}**"
+        if eid and eid != name:
+            head += f" `{eid}`"
+        lines.append(head + (f" [{catg}]" if catg else ""))
         if desc:
             lines.append(f"   {desc}")
-    lines.append("\n用 GetExpertPrompt(name=\"专家标识\") 获取该专家的完整提示词。")
+    lines.append(
+        "\n下一步：用 `InstallExpert(name=\"<上面反引号里的标识>\")` 直接落地为团队成员，"
+        "再用 `Task(subagent_type=\"成员名\")` 派发；只需临时人设时用 `GetExpertPrompt(name=\"<标识>\")`。"
+    )
     return _xml_response("done", "\n".join(lines))
 
 

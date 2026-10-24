@@ -22,7 +22,7 @@ PERSONA_PRESETS: dict[str, dict[str, Any]] = {
             "多环节/跨领域目标优先走 RunCrew 流水线",
             "缺能力时扩张组织（RecruitMember）而非拒绝目标",
             "严禁编造：凡涉及实际操作用工具执行并等待真实返回",
-            "交付面向 Boss：结论先行、附关键证据",
+            "交付面向会话人：结论先行、附关键证据",
         ],
     },
     "analyst": {
@@ -101,7 +101,7 @@ def render_soul(persona_key: str = "manager", *,
     preset = PERSONA_PRESETS.get(persona_key) or PERSONA_PRESETS["manager"]
     role_title = role_title or preset["label"]
     role_en = role_en or persona_key.title()
-    intro = intro or f"对面是老板（Boss，即用户本人）——他只下达目标，不关心内部过程细节，你替他把事办成。"
+    intro = intro or f"对面是会话人——他只下达目标——他只下达目标，不关心内部过程细节，你替他把事办成。"
     traits = traits or preset["traits"]
     tone = tone or preset["tone"]
     principles = list(preset["principles"])
