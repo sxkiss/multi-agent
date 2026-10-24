@@ -3477,6 +3477,10 @@ if not _cors_origins:
 _orphan_cb_registered = False
 
 
+# 等待窗口：父 job 在 notify_done 后 N 秒内结束，视为"仍在等待"，
+# 把结果追加到父 job 而非开孤儿 job（前端 SSE 还会继续收事件）。
+_ORPHAN_APPEND_WINDOW = float(os.environ.get("AI_AGENT_ORPHAN_APPEND_WINDOW", "10"))
+
 def _register_orphan_callback():
     """在 agent_main 初始化后注册孤儿回调。由 _setup_lifespan 调用一次。"""
     global _orphan_cb_registered
@@ -3485,10 +3489,6 @@ def _register_orphan_callback():
     _orphan_cb_registered = True
     from chat_client.tools import get_background_manager
     bg = get_background_manager()
-
-    # 等待窗口：父 job 在 notify_done 后 10s 内结束，视为"仍在等待"，
-    # 把结果追加到父 job 而非开孤儿 job（前端 SSE 还会继续收事件）。
-    _ORPHAN_APPEND_WINDOW = float(os.environ.get("AI_AGENT_ORPHAN_APPEND_WINDOW", "10"))
 
     def _handler(session_id: str, task_id: str, tool: str, status: str, result: str):
         """孤儿回调：父会话已结束，尝试把结果追加到父 job 或开新 job。
