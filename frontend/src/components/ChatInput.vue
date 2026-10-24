@@ -191,6 +191,7 @@
 
 <script>
 import { ref, watch, onMounted, nextTick } from 'vue'
+import { getToken } from '../auth.js'
 
 export default {
   name: 'ChatInput',
@@ -476,6 +477,12 @@ export default {
       const xhr = new XMLHttpRequest()
       xhr.open('POST', '/api/files/upload')
 
+      // 鉴权开启时，上传接口要求 Authorization 头（与其它 API 保持一致）
+      const token = getToken()
+      if (token) {
+        xhr.setRequestHeader('Authorization', 'Bearer ' + token)
+      }
+
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
           const p = Math.round((e.loaded / e.total) * 100)
@@ -487,6 +494,12 @@ export default {
         const a = pendingAttachments.value.find(x => x.id === attId)
         if (!a) return
         a.uploading = false
+        // token 过期/失效：与 App.vue「任意接口 401 自动弹登录」行为保持一致
+        if (xhr.status === 401) {
+          a.failed = true
+          if (window.layer) window.layer.msg('登录已失效，请重新登录', { icon: 2 })
+          return
+        }
         try {
           const r = JSON.parse(xhr.responseText)
           if (r.status && r.data) {

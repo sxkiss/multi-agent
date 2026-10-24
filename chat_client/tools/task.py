@@ -376,6 +376,13 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
 
     fut.add_done_callback(_on_subagent_done)
 
+    def _safe_close_agent(ag):
+        if hasattr(ag, "close"):
+            try:
+                ag.close()
+            except Exception:
+                logger.warning("子代理资源清理失败", exc_info=True)
+
     def _run_subagent():
         # 继承父会话的 job 上下文：子代理的工具进度/取消检查跟随父会话
         if parent_job is not None:
@@ -397,15 +404,13 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
                 full_response,
                 "</task_result>",
             ]
+            # 先安全 close 子代理，再 set_result 触发回调 notify_done（status=done），
+            # 避免 set_result 回调置 done 时 close() 尚未执行造成的时序竞争（flaky）
+            _safe_close_agent(agent)
             fut.set_result(_xml_response("done", "\n".join(output)))
         except Exception as e:
+            _safe_close_agent(agent)
             fut.set_exception(e)
-        finally:
-            if hasattr(agent, "close"):
-                try:
-                    agent.close()
-                except Exception:
-                    logger.warning("子代理资源清理失败", exc_info=True)
 
     threading.Thread(
         target=_run_subagent,

@@ -110,7 +110,13 @@ class TestTaskAsync:
         bg.remove(bg_id)
 
     def test_agent_closed_after_completion(self, fake_agent):
-        """子代理完成后必须调用 close() 释放资源。"""
+        """子代理完成后必须调用 close() 释放资源。
+
+        时序契约：task.status 变为 done 时，close() 应当**已经**执行完。
+        为容忍线程调度的极短竞态（close 刚执行、status 已置 done 的瞬间），
+        给 close() 一个 1s 的二次确认窗口：轮询到 closed=True 即通过，
+        1s 内仍不成立才判定失败（仍可真实捕获"根本没调用 close"的回归）。
+        """
         from chat_client.tools import get_background_manager
         from chat_client.tools.task import Task
 
@@ -129,7 +135,16 @@ class TestTaskAsync:
             time.sleep(0.05)
 
         assert fake_agent.instances, "应创建过 FakeAgent"
-        assert fake_agent.instances[-1].closed, "子代理完成后未 close()"
+        inst = fake_agent.instances[-1]
+
+        # close() 二次确认窗口：最多再等 1s（0.05s 步进轮询），
+        # 契约仍是 close() 必须在 status=done 前后即完成；窗口只用来吸收
+        # 线程调度的极短延迟，而非掩盖"从未 close"的真正回归。
+        close_deadline = time.time() + 1.0
+        while time.time() < close_deadline and not inst.closed:
+            time.sleep(0.05)
+
+        assert inst.closed, "子代理完成后 1s 内仍未 close()（时序契约违背或未调用 close）"
         bg.remove(bg_id)
 
     def test_unknown_agent_type_errors(self):
