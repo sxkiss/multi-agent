@@ -352,9 +352,6 @@ def _perform_replace(content: str, old_str: str, new_str: str, replace_all: bool
     if old_str == new_str:
          raise ValueError("No changes to apply: old_str and new_str are identical.")
     
-    # 缩进对齐：把 new_str 的缩进基准对齐到 old_str，
-    # 避免模型给的 new_str 缩进层级错位导致文件语法损坏。
-    aligned_new_str = _align_new_str_indent(new_str, old_str)
 
     replacers = [
         _simple_replacer,
@@ -376,6 +373,10 @@ def _perform_replace(content: str, old_str: str, new_str: str, replace_all: bool
             if index == -1: continue
             
             not_found = False
+            # 基准必须用「实际匹配到的文件原文」search，而不是模型给的 old_str。
+            # 模糊匹配器容忍 old_str 缩进与文件不一致；若拿 old_str 当基准，
+            # 就会把错误的偏移量套到 new_str 上，写出比文件实际缩进少/多几格的代码。
+            aligned_new_str = _align_new_str_indent(new_str, search)
             
             if replace_all:
                 return content.replace(search, aligned_new_str)
