@@ -704,6 +704,41 @@ function createSSEProcessor(handlers) {
       case 'message_end':
         safeComplete()
         break
+      case 'background_done':
+        // 子代理完成通知：推 SSE 预览给前端可见
+        if (isMine()) {
+          try {
+            const d = JSON.parse(eventData)
+            const preview = d.result_preview || ''
+            if (preview) {
+              // 只推送预览，完整结果通过 background_result 事件获取
+              console.log('[Background] 任务完成预览:', preview.slice(0, 100))
+            }
+          } catch (e) {
+            console.error('parse background_done:', e)
+          }
+        }
+        break
+      case 'background_result':
+        // 子代理结果回灌：直接作为 assistant 消息存储
+        if (isMine()) {
+          try {
+            const d = JSON.parse(eventData)
+            const resultText = d.result || ''
+            if (resultText) {
+              currentMessages.value.push({
+                role: 'assistant',
+                content: resultText,
+                time: new Date().toISOString(),
+                contentBlocks: [{ type: 'message', content: resultText }]
+              })
+              saveConversation()
+            }
+          } catch (e) {
+            console.error('parse background_result:', e)
+          }
+        }
+        break
       case 'error':
         handlers.onError?.(unescapeSSEString(eventData))
         break
@@ -732,7 +767,30 @@ function createSSEProcessor(handlers) {
         currentEventType = pendingEvent.event || 'message'
         switch (currentEventType) {
           case 'message_think': handlers.onThink?.(unescapeSSEString(eventData)); break
-          case 'message': handlers.onChunk?.(unescapeSSEString(eventData)); break
+          case 'message':
+            // 检查是否是后台任务结果回灌（以 <background_task_done> 开头）
+            if (eventData.includes('<background_task_done>')) {
+              if (isMine()) {
+                try {
+                  const match = eventData.match(/<result>\n?(.*?)\n?<\/result>/s)
+                  const resultText = match ? match[1].trim() : eventData
+                  if (resultText) {
+                    currentMessages.value.push({
+                      role: 'assistant',
+                      content: resultText,
+                      time: new Date().toISOString(),
+                      contentBlocks: [{ type: 'message', content: resultText }]
+                    })
+                    saveConversation()
+                  }
+                } catch (e) {
+                  console.error('parse background_task_done from message:', e)
+                }
+              }
+            } else {
+              handlers.onChunk?.(unescapeSSEString(eventData)); break
+            }
+            break
           case 'stream_reset': applyStreamReset(); break
           case 'tool_call':
             try {
