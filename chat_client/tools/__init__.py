@@ -459,8 +459,9 @@ class BackgroundTaskManager:
                 to_transition = []
                 for item in out:
                     row = _repo.get(item["task_id"])
-                    if not row or row.status != STATUS_READY:
-                        to_transition.append(item["task_id"])
+                    if row and row.status == STATUS_READY:
+                        continue
+                    to_transition.append(item["task_id"])
                 # 批量推进状态机
                 for task_id in to_transition:
                     _repo.transition(task_id, STATUS_READY)
