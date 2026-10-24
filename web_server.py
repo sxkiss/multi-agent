@@ -3560,27 +3560,76 @@ def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: 
             time.strftime('%H:%M:%S', time.localtime(parent_finished_at)))
         return False
 
-    result_text = (
-        "<background_task_done>\n"
-        f"<task_id>{task_id}</task_id>\n"
-        f"<tool>{tool}</tool>\n"
-        f"<status>{status}</status>\n"
-        "<result>\n" + result + "\n</result>\n"
-        "</background_task_done>\n"
-        "以上是你之前转入后台的任务执行结果，现已完成。\n"
-        "请基于以上结果继续推进任务。"
-    )
     # 清除 _task_done_at，防止 drain_finished 注入后孤儿回调重复触发
     from chat_client.tools import get_background_manager
     _bg = get_background_manager()
     _done_at = getattr(_bg, '_task_done_at', {})
     _done_at.pop(task_id, None)
+    
+    # 推前端事件（user 消息形式展示结果）
     parent_job.append("background_result", {
         "task_id": task_id, "tool": tool, "status": status, "result": result
     })
-    parent_job.append("message", result_text)
+    parent_job.append("message", result)
     parent_job.append("message_end", None)
     parent_job.finish("done")
+    
+    # 派新 job 让模型消费结果并继续回复
+    payload = {
+        "session_id": session_id,
+        "message": (
+            f"<background_task_done>\n"
+            f"<task_id>{task_id}</task_id>\n"
+            f"<tool>{tool}</tool>\n"
+            f"<status>{status}</status>\n"
+            f"<result>\n{result}\n</result>\n"
+            f"</background_task_done>\n"
+            f"以上是之前派发的后台任务执行结果，现已完成。\n"
+            f"请基于以上结果回答用户的问题。如果之前用户在等你完成任务，"
+            f"现在请给出完整答案。"
+        ),
+        "mode": "single",
+    }
+    orphan_job = chat_jobs.create_if_idle(session_id, label=f"bg_orphan_{task_id[:8]}")
+    if orphan_job is None:
+        logger.warning(
+            "[Background] 孤儿回灌跳过（会话并行满）session=%s task=%s",
+            session_id[:24], task_id[:12],
+        )
+    else:
+        agent, user_input, err = agent_main._build_chat_agent(payload)
+        if agent is None or err:
+            logger.warning("[Background] 孤儿回灌 Agent 初始化失败 session=%s task=%s err=%s",
+                          session_id[:24], task_id[:12], err)
+            chat_jobs.discard(orphan_job.key)
+        else:
+            orphan_job.attach_agent(agent)
+            
+            def _run():
+                from chat_client.tools import set_current_job as _set_job
+                _set_job(orphan_job)
+                try:
+                    for chunk in agent.chat(user_input):
+                        for ev, data in _map_agent_chunk(chunk):
+                            orphan_job.append(ev, data)
+                    orphan_job.append("message_end", None)
+                    orphan_job.finish("done")
+                except Exception as e:
+                    orphan_job.append("error", {"msg": f"孤儿回灌异常: {e!s}"})
+                    orphan_job.append("message_end", None)
+                    orphan_job.finish("error")
+                finally:
+                    try:
+                        agent.close()
+                    except Exception:
+                        pass
+            
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            logger.info(
+                "[Background] 孤儿回调派新 job 消费结果 task=%s session=%s parent=%s orphan=%s",
+                task_id[:12], session_id[:24], parent_job.key, orphan_job.key)
+    
     logger.info(
         "[Background] 孤儿回调追加到父 job task=%s session=%s job=%s window_age=%.1fs",
         task_id[:12], session_id[:24], parent_job.key, _window_age)
