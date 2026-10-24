@@ -574,3 +574,320 @@ def ExpertScenes() -> str:
         else:
             lines.append(f"- {s}")
     return _xml_response("done", "\n".join(lines))
+
+
+# ============================================================
+# 专家包市场（SkillHub SkillSets）
+#
+# 数据源：
+# - 列表：https://api.skillhub.cn/api/v1/skillsets
+#   响应 {"skillSets":[{slug,displayName,summary,scene,subScene,skillSlugs,...}], "total":N}
+# - 单包详情：https://api.skillhub.cn/api/v1/skillsets/{slug}
+#   响应含 content（YAML frontmatter，orchestration.children 为 skill slug 列表）
+# - 单技能详情：https://api.skillhub.cn/api/v1/skills/{slug}
+#   响应含 skill.sourceUrl / skill.upstream_url 等链接
+# ============================================================
+
+SKILLHUB_SKILLSETS_BASE = f"{SKILLHUB_BASE}/api/v1/skillsets"
+SKILLHUB_SKILL_BASE = f"{SKILLHUB_BASE}/api/v1/skills"
+
+
+def _parse_yaml_front_matter(text: str) -> Dict[str, Any]:
+    """粗解析 YAML frontmatter（--- 包裹的头部），返回 dict。"""
+    if not text:
+        return {}
+    import re as _re
+    m = _re.match(r"^---\s*\n(.*?)\n---", text, _re.S)
+    if not m:
+        return {}
+    yaml_block = m.group(1)
+    result: Dict[str, Any] = {}
+    # 逐行解析 key: value / key:>-\n  多行 / key:\n  - item
+    current_key = None
+    for raw_line in yaml_block.splitlines():
+        line = raw_line.rstrip()
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # 列表项（属于上一个 key）
+        if stripped.startswith("- ") and current_key:
+            item = stripped[2:].strip()
+            if isinstance(result[current_key], list):
+                result[current_key].append(item)
+            else:
+                result[current_key] = [item]
+            continue
+        # 普通 key: value
+        if ":" in stripped:
+            k, _, v = stripped.partition(":")
+            k = k.strip()
+            v = v.strip()
+            # 跳过嵌套对象（非顶层需求）
+            if indent > 0 and current_key:
+                continue
+            if not v or v.startswith((">", "|")):
+                result[k] = []
+                current_key = k
+            else:
+                result[k] = v.strip()
+                current_key = k
+    return result
+
+
+def _skillset_children(skillset: Dict[str, Any]) -> List[str]:
+    """从 skillset 对象/详情中提取技能 slug 列表。"""
+    # 列表接口直接带 skillSlugs
+    slugs = skillset.get("skillSlugs") or []
+    if slugs:
+        return [str(s) for s in slugs]
+    # 详情接口：从 content 的 YAML frontmatter 提取 orchestration.children
+    content = skillset.get("content") or ""
+    meta = _parse_yaml_front_matter(content)
+    orch = meta.get("orchestration")
+    if isinstance(orch, dict):
+        children = orch.get("children") or []
+        if isinstance(children, list):
+            return [str(c) for c in children]
+    return []
+
+
+@register_tool(category="市场", name_cn="查询专家包市场", risk_level="low")
+def SkillPackageMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
+    """
+    查询专家包市场（SkillHub SkillSets，api.skillhub.cn，公开接口无需认证）。
+
+    **何时使用（主动查询）**：
+    - 用户想要"一整套工作流"而非单个技能（如「自动化测试专家包」「数据分析专家包」）
+    - 需要为任务挑选一个专家包（meta-skill，内含多个子技能的编排流程）
+
+    - keyword：按 displayName/slug/summary 本地模糊过滤
+    - category：按 scene/subScene 本地过滤
+    - limit：返回条数上限（默认 20）
+    """
+    try:
+        cache_key = f"skill_package_{keyword.strip().lower()[:30]}_{category.strip().lower()[:30]}_{limit}"
+        cached = _market_cache_load(cache_key)
+        if cached is not None:
+            data = cached
+        else:
+            data = _get_json(SKILLHUB_SKILLSETS_BASE)
+            _market_cache_save(cache_key, data)
+    except Exception as e:
+        return _xml_response("error", f"拉取专家包市场失败: {e!s}")
+
+    items = data if isinstance(data, list) else (data.get("skillSets") or data.get("items") or data.get("results") or [])
+    if not items:
+        return _xml_response("done", "未取到专家包列表")
+
+    kw = (keyword or "").strip().lower()
+    cat = (category or "").strip().lower()
+    hits: List[Dict[str, Any]] = []
+    for pkg in items:
+        if not isinstance(pkg, dict):
+            continue
+        if cat:
+            scene = " ".join([
+                str(pkg.get("scene") or ""),
+                str(pkg.get("subScene") or ""),
+                str(pkg.get("displayNameEn") or ""),
+            ]).lower()
+            if cat not in scene:
+                continue
+        if kw:
+            blob = " ".join([
+                str(pkg.get("displayName") or ""),
+                str(pkg.get("displayNameEn") or ""),
+                str(pkg.get("slug") or ""),
+                str(pkg.get("summary") or ""),
+                str(pkg.get("summaryEn") or ""),
+            ]).lower()
+            if kw not in blob:
+                continue
+        hits.append(pkg)
+        if len(hits) >= max(1, min(int(limit or 20), 50)):
+            break
+
+    if not hits:
+        return _xml_response("done", f"未匹配到专家包（keyword={keyword!r} category={category!r}）。可留空 keyword 查看全部。")
+
+    lines = [f"<!-- 专家包市场：命中 {len(hits)} 个 -->"]
+    for i, pkg in enumerate(hits, 1):
+        name = pkg.get("displayName") or pkg.get("slug") or f"包{i}"
+        slug = pkg.get("slug") or ""
+        scene = pkg.get("scene") or ""
+        sub = pkg.get("subScene") or ""
+        summary = str(pkg.get("summary") or pkg.get("summaryEn") or "")[:150]
+        child_slugs = _skillset_children(pkg)[:6]
+        lines.append(f"{i}. **{name}** `{slug}`" + (f" [{scene}/{sub}]" if scene else ""))
+        if summary:
+            lines.append(f"   {summary}")
+        if child_slugs:
+            lines.append(f"   技能: {'、'.join(child_slugs)}")
+    lines.append("\n下一步：用 `InstallSkillPackage(package_slug=\"<上面反引号里的 slug>\")` 安装专家包。")
+    return _xml_response("done", "\n".join(lines))
+
+
+@register_tool(category="市场", name_cn="安装专家包", risk_level="medium")
+def InstallSkillPackage(package_slug: str = "") -> str:
+    """
+    安装 SkillHub 专家包（meta-skill）。
+
+    从 /api/v1/skillsets/{slug} 获取包详情（含 skillSlugs），
+    对每个技能调用 /api/v1/skills/{slug} 获取详情并尝试取 zipUrl/downloadUrl 下载链接。
+    若无直接下载链接，输出提示从官网手动下载安装。
+
+    - package_slug：专家包标识（SkillPackageMarket 输出中的 slug）
+    """
+    slug = (package_slug or "").strip().strip("/")
+    if not slug:
+        return _xml_response("error", "需要提供 package_slug（专家包标识，如 tech-test-automation）")
+
+    # 1. 获取包详情（不带缓存，安装需要最新数据）
+    try:
+        detail = _get_json(f"{SKILLHUB_SKILLSETS_BASE}/{slug}")
+    except Exception as e:
+        return _xml_response("error", f"获取专家包详情失败: {e!s}")
+    if not isinstance(detail, dict) or detail.get("error"):
+        return _xml_response("error", f"未找到专家包: {slug}")
+
+    pkg_name = detail.get("displayName") or slug
+    child_slugs = _skillset_children(detail)
+    if not child_slugs:
+        return _xml_response("error", f"专家包 {slug} 未包含任何技能（skillSlugs 为空）。")
+
+    lines = [f"<!-- 安装专家包：{pkg_name}（{slug}） -->"]
+    lines.append(f"专家包包含 {len(child_slugs)} 个技能，逐个获取下载链接：")
+
+    installed = 0
+    no_link = 0
+    for i, skill_slug in enumerate(child_slugs, 1):
+        skill_slug = str(skill_slug).strip()
+        lines.append(f"\n[{i}/{len(child_slugs)}] **{skill_slug}**")
+        try:
+            sdata = _get_json(f"{SKILLHUB_SKILL_BASE}/{skill_slug}")
+        except Exception as e:
+            lines.append(f"   ❌ 获取详情失败: {e!s}")
+            no_link += 1
+            continue
+        if not isinstance(sdata, dict):
+            lines.append("   ❌ 响应格式异常")
+            no_link += 1
+            continue
+
+        # 查找下载链接：zipUrl / downloadUrl / sourceUrl / upstream_url
+        skill = sdata.get("skill") if isinstance(sdata.get("skill"), dict) else sdata
+        url = ""
+        for k in ("zipUrl", "downloadUrl", "download_url", "zip_url"):
+            v = skill.get(k) or sdata.get(k)
+            if isinstance(v, str) and v.startswith(("http://", "https://")):
+                url = v
+                break
+        if not url:
+            for k in ("sourceUrl", "upstream_url", "homepage"):
+                v = skill.get(k) or sdata.get(k)
+                if isinstance(v, str) and v.startswith(("http://", "https://")):
+                    url = v
+                    break
+        if url:
+            display = skill.get("displayName") or sdata.get("displayName") or skill_slug
+            lines.append(f"   - 技能名：{display}")
+            lines.append(f"   - 下载链接：{url}")
+            lines.append("   - 安装：用 `Skills(action=\"install\", source=\"<下载链接>\")` 将技能安装到本地 skills/ 目录。")
+            installed += 1
+        else:
+            no_link += 1
+            lines.append("   - 未找到直接下载链接，请手动安装。")
+
+    lines.append(f"\n完成：{installed} 个技能找到下载链接，{no_link} 个需手动处理。")
+    if no_link:
+        lines.append(f"\n提示：请手动从 https://skillhub.cn/skillspackage/{slug} 下载后安装。")
+    lines.append("\n安装后用 `Skills(action=\"list\")` 确认技能已就绪。")
+    return _xml_response("done", "\n".join(lines))
+
+
+# ============================================================
+# MCP 服务器市场（Smithery）
+#
+# 数据源：https://api.smithery.ai/servers
+# 响应 {"servers":[{qualifiedName, displayName, description, useCount, remote, ...}], ...}
+# 支持 ?q= 搜索；本地也可按 name/description 过滤
+# ============================================================
+
+SMITHERY_BASE = "https://api.smithery.ai"
+
+
+@register_tool(category="市场", name_cn="查询MCP市场", risk_level="low")
+def McpMarket(keyword: str = "", limit: int = 20) -> str:
+    """
+    查询 MCP 服务器市场（Smithery，api.smithery.ai，公开接口无需认证）。
+
+    **何时使用（主动查询）**：
+    - 用户想找一个 MCP 服务器（如 GitHub、Slack、数据库等）
+    - 需要了解当前 MCP 生态有哪些可用的服务器
+
+    - keyword：按 name/description 本地模糊过滤（也走 Smithery ?q= 参数）
+    - limit：返回条数上限（默认 20，最大 50）
+    """
+    try:
+        n = max(1, min(int(limit or 20), 50))
+        cache_key = f"mcp_market_{keyword.strip().lower()[:30]}_{n}"
+        cached = _market_cache_load(cache_key)
+        if cached is not None:
+            data = cached
+        else:
+            url = f"{SMITHERY_BASE}/servers?limit={n}"
+            if keyword.strip():
+                url += f"&q={requests.utils.quote(keyword.strip())}"
+            data = _get_json(url)
+            _market_cache_save(cache_key, data)
+    except Exception as e:
+        return _xml_response("error", f"拉取 MCP 市场失败: {e!s}")
+
+    items = data if isinstance(data, list) else (data.get("servers") or data.get("items") or data.get("results") or [])
+    if not items:
+        return _xml_response("done", "未取到 MCP 服务器列表")
+
+    kw = (keyword or "").strip().lower()
+    hits: List[Dict[str, Any]] = []
+    for s in items:
+        if not isinstance(s, dict):
+            continue
+        if kw:
+            blob = " ".join([
+                str(s.get("qualifiedName") or ""),
+                str(s.get("displayName") or ""),
+                str(s.get("name") or ""),
+                str(s.get("description") or ""),
+            ]).lower()
+            if kw not in blob:
+                continue
+        hits.append(s)
+        if len(hits) >= n:
+            break
+
+    if not hits:
+        return _xml_response("done", f"未匹配到 MCP 服务器（keyword={keyword!r}）。可留空 keyword 查看全部。")
+
+    lines = [f"<!-- MCP 市场：命中 {len(hits)} 个 -->"]
+    for i, s in enumerate(hits, 1):
+        name = s.get("displayName") or s.get("qualifiedName") or s.get("name") or f"服务器{i}"
+        qname = s.get("qualifiedName") or s.get("id") or ""
+        desc = str(s.get("description") or "")[:150]
+        use = s.get("useCount") or s.get("downloads") or 0
+        gh = s.get("githubUrl") or ""
+        if not gh:
+            # 由 qualifiedName 拼出可能存在的 GitHub 仓库链接
+            qn = str(qname or "")
+            if "/" in qn:
+                gh = f"https://github.com/{qn}"
+        head = f"{i}. **{name}**"
+        if qname and qname != name:
+            head += f" `{qname}`"
+        lines.append(head + (f"（下载量 {use}）" if use else ""))
+        if desc:
+            lines.append(f"   {desc}")
+        if gh:
+            lines.append(f"   GitHub: {gh}")
+    lines.append("\n下一步：用 `InstallMcpServer(server_slug=\"<上面反引号里的 qualifiedName>\")` 查看安装步骤。")
+    return _xml_response("done", "\n".join(lines))
