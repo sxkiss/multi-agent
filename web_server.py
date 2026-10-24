@@ -3516,80 +3516,131 @@ def _register_orphan_callback():
     from chat_client.tools import get_background_manager
     bg = get_background_manager()
 
+    # R1/R3 修复：per-session 锁，保证「检查 + 创建 job」是原子操作
+    _session_orphan_locks: dict[str, threading.Lock] = {}
+    _lock_session_orphans = threading.Lock()  # 保护 _session_orphan_locks 字典本身
+    # R4 修复：追踪孤儿派发状态，避免并发重复派发
+    _dispatching_tasks: set[str] = set()
+    _lock_dispatching = threading.Lock()
+
+    def _get_session_lock(session_id: str) -> threading.Lock:
+        with _lock_session_orphans:
+            return _session_orphan_locks.setdefault(session_id, threading.Lock())
+
+    def _try_append_to_parent_job_inner(session_id: str, task_id: str, tool: str, status: str, result: str) -> tuple[bool, str]:
+        """内部实现：返回 (success, reason)。
+        
+        reason: 'appended' | 'parent_running' | 'no_parent' | 'window_expired' | 'already_dispatched'
+        """
+        # R3 修复：用 bg_repo 状态机判断是否已消费（替代不安全的 _task_done_at）
+        try:
+            from .tools.bg_repo import get_repo, STATUS_READY
+            row = get_repo().get(task_id)
+            if row and row.status == STATUS_READY:
+                logger.info("[Background] task %s 已在 bg_repo 中，跳过孤儿回调", task_id[:12])
+                return True, 'already_consumed'
+        except Exception:
+            pass
+
+        jobs = chat_jobs.active_for_session(session_id)
+        if not jobs:
+            return False, 'no_parent'
+        # 取最新结束的 job（不是 running 的）
+        parent_job = None
+        parent_finished_at = None
+        for _k, _j in sorted(jobs, key=lambda x: x[1].created_at, reverse=True):
+            if not _j.is_running:
+                parent_job = _j
+                parent_finished_at = getattr(_j, 'finished_at', None)
+                break
+        if parent_job is None:
+            return False, 'no_parent'
+
+        # R2 修复：父 job 仍 running 时返回 'parent_running'，让调用方决定不做任何事
+        if parent_job.is_running:
+            return False, 'parent_running'
+
+        _window_age = time.time() - parent_finished_at if parent_finished_at else 9999
+        if _window_age > _ORPHAN_APPEND_WINDOW:
+            logger.info(
+                "[Background] 孤儿回调父 job 已死透（%.1fs），不追加，走新会话回灌 "
+                "session=%s job=%s finished_at=%s",
+                _window_age, session_id[:24], parent_job.key,
+                time.strftime('%H:%M:%S', time.localtime(parent_finished_at)))
+            return False, 'window_expired'
+
+        # 推前端事件（user 消息形式展示结果）
+        parent_job.append("background_result", {
+            "task_id": task_id, "tool": tool, "status": status, "result": result
+        })
+        parent_job.append("message", result)
+        parent_job.append("message_end", None)
+        parent_job.finish("done")
+        logger.info(
+            "[Background] 孤儿回调追加到父 job task=%s session=%s job=%s window_age=%.1fs",
+            task_id[:12], session_id[:24], parent_job.key, _window_age)
+        return True, 'appended'
+
     def _handler(session_id: str, task_id: str, tool: str, status: str, result: str):
         """孤儿回调：父会话已结束，尝试把结果追加到父 job 或开新 job。
 
         优先级：
         1. 查父 job 是否在 10s 等待窗口内结束 → 追加到父 job（前端还能收到）
         2. 否则 → 开孤儿 job（兜底，结果可能已过期）
+
+        R1/R4 修复：per-session 锁保证原子性，调度状态防止重复派发。
         """
         try:
-            if not chat_jobs.count_running(session_id) == 0:
-                return  # 仍有运行中 job，不是孤儿（新 job 会正常 drain）
-            # 追加成功则走父 job；失败（父 job 已死透）则新开孤儿 job 挂到同一 session
-            if not _try_append_to_parent_job(session_id, task_id, tool, status, result):
-                _dispatch_orphan_job(session_id, task_id, tool, status, result)
+            # R4 修复：检查是否正在派发中
+            if task_id in _dispatching_tasks:
+                logger.info("[Background] task %s 正在派发中，跳过重复回调", task_id[:12])
+                return
+            _dispatching_tasks.add(task_id)
+
+            session_lock = _get_session_lock(session_id)
+            with session_lock:
+                # R1 修复：在锁内原子检查 + 创建 job
+                running_count = chat_jobs.count_running(session_id)
+                if running_count > 0:
+                    logger.info("[Background] 仍有 %d 个 running job，不触发孤儿回调", running_count)
+                    _dispatching_tasks.discard(task_id)
+                    return
+
+                # 先尝试追加到父 job
+                success, reason = _try_append_to_parent_job_inner(
+                    session_id, task_id, tool, status, result)
+                if success:
+                    if reason == 'appended':
+                        # 追加成功，直接派新 job 让模型消费
+                        _dispatch_orphan_job_after_append(session_id, task_id, tool, status, result)
+                    # 'already_consumed' 或 'parent_running' 都不需要再操作
+                else:
+                    # 父 job 不可用，开孤儿 job
+                    if reason == 'parent_running':
+                        # R2 修复：父 job 仍在运行，什么都不做
+                        logger.info("[Background] 父 job 仍在运行，等 drain 消费 task=%s", task_id[:12])
+                    elif reason == 'window_expired':
+                        _dispatch_orphan_job(session_id, task_id, tool, status, result)
+                    else:
+                        # no_parent 或其他：也走孤儿路径
+                        _dispatch_orphan_job(session_id, task_id, tool, status, result)
         except Exception:
             logger.warning(
                 "[Background] 孤儿回调触发失败 session=%s task=%s",
                 session_id[:24], task_id[:12], exc_info=True,
             )
+        finally:
+            _dispatching_tasks.discard(task_id)
 
     bg.set_orphan_callback(_handler)
     logger.info("[Background] 孤儿回调已注册（AI_AGENT_ORPHAN_DELAY=%ss）", bg._orphan_delay)
 
 
-def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: str, result: str) -> bool:
-    """尝试把后台任务结果追加到父 job（不新开 job）。
-
-    适用场景：父 job 在 10s 等待窗口内结束，前端 SSE 连接可能还活着，
-    直接追加到同一个 job 让前端一次性收到完整结果。
-
-    @return True 表示已成功追加，False 表示跳过（窗口已过期或找不到父 job）。
+def _dispatch_orphan_job_after_append(session_id: str, task_id: str, tool: str, status: str, result: str):
+    """追加到父 job 后，派发新 job 让模型消费结果。
+    
+    R4 修复：调用前已由 _handler 持有 session_lock，保证原子性。
     """
-    from chat_client.tools import get_background_manager
-    bg = get_background_manager()
-    jobs = chat_jobs.active_for_session(session_id)
-    if not jobs:
-        return False
-    # 取最新结束的 job（不是 running 的）
-    parent_job = None
-    parent_finished_at = None
-    for _k, _j in sorted(jobs, key=lambda x: x[1].created_at, reverse=True):
-        if not _j.is_running:
-            parent_job = _j
-            parent_finished_at = getattr(_j, 'finished_at', None)
-            break
-    if parent_job is None:
-        return False
-    # 以父 job 的结束时刻判断窗口：父 job 结束不超过 _ORPHAN_APPEND_WINDOW 才算"刚死"，
-    # 追加还能被前端续传看到；超过则视为已死透，返回 False 让上层开新孤儿 job。
-    # 绝不能拿任务完成时间当基准——长任务完成时父 job 可能早已结束十几分钟，
-    # 仍会误判为"窗口内"而追加到死 job（结果再也无人消费）。
-    _window_age = time.time() - parent_finished_at if parent_finished_at else 9999
-    if _window_age > _ORPHAN_APPEND_WINDOW:
-        logger.info(
-            "[Background] 孤儿回调父 job 已死透（%.1fs），不追加，走新会话回灌 "
-            "session=%s job=%s finished_at=%s",
-            _window_age, session_id[:24], parent_job.key,
-            time.strftime('%H:%M:%S', time.localtime(parent_finished_at)))
-        return False
-
-    # 清除 _task_done_at，防止 drain_finished 注入后孤儿回调重复触发
-    from chat_client.tools import get_background_manager
-    _bg = get_background_manager()
-    _done_at = getattr(_bg, '_task_done_at', {})
-    _done_at.pop(task_id, None)
-    
-    # 推前端事件（user 消息形式展示结果）
-    parent_job.append("background_result", {
-        "task_id": task_id, "tool": tool, "status": status, "result": result
-    })
-    parent_job.append("message", result)
-    parent_job.append("message_end", None)
-    parent_job.finish("done")
-    
-    # 派新 job 让模型消费结果并继续回复
     payload = {
         "session_id": session_id,
         "message": (
@@ -3619,7 +3670,7 @@ def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: 
             chat_jobs.discard(orphan_job.key)
         else:
             orphan_job.attach_agent(agent)
-            
+
             def _run():
                 from chat_client.tools import set_current_job as _set_job
                 _set_job(orphan_job)
@@ -3638,13 +3689,65 @@ def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: 
                         agent.close()
                     except Exception:
                         pass
-            
+
             t = threading.Thread(target=_run, daemon=True)
             t.start()
             logger.info(
-                "[Background] 孤儿回调派新 job 消费结果 task=%s session=%s parent=%s orphan=%s",
-                task_id[:12], session_id[:24], parent_job.key, orphan_job.key)
+                "[Background] 孤儿回调派新 job 消费结果 task=%s session=%s orphan=%s",
+                task_id[:12], session_id[:24], orphan_job.key)
+
+
+def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: str, result: str) -> bool:
+    """尝试把后台任务结果追加到父 job（不新开 job）。
+
+    适用场景：父 job 在 10s 等待窗口内结束，前端 SSE 连接可能还活着，
+    直接追加到同一个 job 让前端一次性收到完整结果。
+
+    @return True 表示已成功追加，False 表示跳过（窗口已过期或找不到父 job）。
     
+    R3 修复：使用 bg_repo 状态机代替不安全的 _task_done_at 字典。
+    """
+    # R3 修复：检查是否已通过 drain_finished 消费
+    try:
+        from .tools.bg_repo import get_repo, STATUS_READY
+        row = get_repo().get(task_id)
+        if row and row.status == STATUS_READY:
+            logger.info("[Background] task %s 已被 drain_finished 消费，跳过", task_id[:12])
+            return True
+    except Exception:
+        pass
+
+    jobs = chat_jobs.active_for_session(session_id)
+    if not jobs:
+        return False
+    # 取最新结束的 job（不是 running 的）
+    parent_job = None
+    parent_finished_at = None
+    for _k, _j in sorted(jobs, key=lambda x: x[1].created_at, reverse=True):
+        if not _j.is_running:
+            parent_job = _j
+            parent_finished_at = getattr(_j, 'finished_at', None)
+            break
+    if parent_job is None:
+        return False
+    # 以父 job 的结束时刻判断窗口：父 job 结束不超过 _ORPHAN_APPEND_WINDOW 才算"刚死"，
+    # 追加还能被前端续传看到；超过则视为已死透，返回 False 让上层开新孤儿 job。
+    _window_age = time.time() - parent_finished_at if parent_finished_at else 9999
+    if _window_age > _ORPHAN_APPEND_WINDOW:
+        logger.info(
+            "[Background] 孤儿回调父 job 已死透（%.1fs），不追加，走新会话回灌 "
+            "session=%s job=%s finished_at=%s",
+            _window_age, session_id[:24], parent_job.key,
+            time.strftime('%H:%M:%S', time.localtime(parent_finished_at)))
+        return False
+
+    # 推前端事件（user 消息形式展示结果）
+    parent_job.append("background_result", {
+        "task_id": task_id, "tool": tool, "status": status, "result": result
+    })
+    parent_job.append("message", result)
+    parent_job.append("message_end", None)
+    parent_job.finish("done")
     logger.info(
         "[Background] 孤儿回调追加到父 job task=%s session=%s job=%s window_age=%.1fs",
         task_id[:12], session_id[:24], parent_job.key, _window_age)

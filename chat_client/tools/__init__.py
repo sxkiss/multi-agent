@@ -450,13 +450,20 @@ class BackgroundTaskManager:
                     # 后台任务总耗时（秒，保留两位小数）：从注册到完成
                     "duration_s": round(time.time() - t.start_time, 2),
                 })
-        # 状态机：推进到 ready（终态，不会重复消费）
+        # Y2 修复：状态机推进要在同一锁内原子完成，防止多线程重复注入
         if out:
             try:
                 from .bg_repo import get_repo, STATUS_READY
                 _repo = get_repo()
+                # 先检查再更新：在锁内原子完成 check-then-act
+                to_transition = []
                 for item in out:
-                    _repo.transition(item["task_id"], STATUS_READY)
+                    row = _repo.get(item["task_id"])
+                    if not row or row.status != STATUS_READY:
+                        to_transition.append(item["task_id"])
+                # 批量推进状态机
+                for task_id in to_transition:
+                    _repo.transition(task_id, STATUS_READY)
             except Exception as e:
                 logger.warning("[Background] 推进状态到 ready 失败: %s", e)
         return out

@@ -720,14 +720,14 @@ function createSSEProcessor(handlers) {
         }
         break
       case 'background_result':
-        // 子代理结果回灌：直接作为 assistant 消息存储
+        // 子代理结果回灌：伪装成 user 消息（用户视角的反馈）
         if (isMine()) {
           try {
             const d = JSON.parse(eventData)
             const resultText = d.result || ''
             if (resultText) {
               currentMessages.value.push({
-                role: 'assistant',
+                role: 'user',
                 content: resultText,
                 time: new Date().toISOString(),
                 contentBlocks: [{ type: 'message', content: resultText }]
@@ -776,7 +776,7 @@ function createSSEProcessor(handlers) {
                   const resultText = match ? match[1].trim() : eventData
                   if (resultText) {
                     currentMessages.value.push({
-                      role: 'assistant',
+                      role: 'user',
                       content: resultText,
                       time: new Date().toISOString(),
                       contentBlocks: [{ type: 'message', content: resultText }]
