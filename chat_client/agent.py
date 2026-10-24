@@ -1915,7 +1915,7 @@ Here is some useful information about the environment you are running in:
                                     "call_id": call_id, "func_name": func_name, "args_str": args_str,
                                     "yield_call": True, "yield_result": True, "write_memory": False,
                                     "immediate": inject_tool_name(
-                                        _xml_response("error", f"安全限制：卡密用户只能在隔离工作目录内操作文件（{_user_workspace}）"),
+                                        _xml_response("error", f"安全限制：卡密用户只能在隔离工作目录内操作文件（{self._user_workspace}）"),
                                         func_name),
                                 })
                                 continue
@@ -2056,6 +2056,7 @@ Here is some useful information about the environment you are running in:
                         # P1-75: budget 和 hard cap 兜底；与 session-level wait 共用配置。
                         _budget2 = float(self.config.get("background_wait_seconds", 0))
                         _hard_cap2 = float(self.config.get("background_wait_hard_cap", 300))
+                        _t0_2 = time.monotonic()
                         logger.info(
                             "[Background] 工具执行后静默等待 pending=%d session=%s",
                             _bg2.pending_count(self.session_id), self.session_id[:20],
