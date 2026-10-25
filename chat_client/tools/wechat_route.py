@@ -241,7 +241,17 @@ def WeChatRoute(
                 return _xml_response("error", "image 消息需要 path 参数")
             if not os.path.exists(path):
                 return _xml_response("error", f"文件不存在: {path}")
-            res = _run([py, str(send_media), "send-image", "--to", uk, "--path", path])
+            # 直接调用 SendImageNewMessage（已知可用接口），绕过 send-image 脚本的软失败问题
+            import base64 as _b64
+            import sys as _sys
+            _sys.path.insert(0, str(send_media.parent))
+            from send_869_media import request_869, load_config
+            _cfg = load_config(send_media.parent.parent / "config" / "wechat-869.json" if (send_media.parent.parent / "config" / "wechat-869.json").exists() else Path.home() / ".openclaw" / "credentials" / "wechat-869.json")
+            with open(path, "rb") as _f:
+                img_b64 = _b64.b64encode(_f.read()).decode()
+            res = request_869(_cfg, method="POST", path="/message/SendImageNewMessage", body={
+                "MsgItem": [{"ToUserName": uk, "MsgType": 2, "ImageContent": img_b64}]
+            })
 
         elif mt == "video":
             if not path:
