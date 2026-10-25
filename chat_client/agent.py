@@ -917,7 +917,9 @@ Here is some useful information about the environment you are running in:
                 return ""
             else:
                 cwd = self.current_dir if hasattr(self, 'current_dir') else os.getcwd()
-                return agents_md_manager.load(cwd, load_global=False)
+                # 单AG/codex_x模式：仅从cwd搜索，避免爬上父git项目加载错误AGENTS.md
+                is_single = self.config.get("mode", "group") in ("single", "codex_x")
+                return agents_md_manager.load(cwd, load_global=False, local_only=is_single)
         except Exception as e:
             logger.debug(f"加载 AGENTS.md 失败: {e}")
             return ""
