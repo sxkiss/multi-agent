@@ -149,13 +149,51 @@
       .settings-msg { font-size: 12px; margin-top: 8px; min-height: 18px; }
       .settings-msg.ok { color: #16a34a; }
       .settings-msg.err { color: var(--bt-danger); }
+      /* Tab 导航 */
+      .tabs {
+        display: flex; gap: 4px; margin: 20px 0 18px;
+        border-bottom: 1px solid var(--bt-border);
+        flex-wrap: wrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+      }
+      .tab {
+        padding: 10px 16px; font-size: 14px; font-weight: 500; cursor: pointer;
+        background: transparent; border: none; border-bottom: 2px solid transparent;
+        color: var(--bt-text-2); white-space: nowrap; margin-bottom: -1px;
+        transition: color var(--bt-transition), border-color var(--bt-transition);
+      }
       .tab:hover { color: var(--bt-text); }
       .tab.active { color: var(--bt-primary); border-bottom-color: var(--bt-primary); font-weight: 600; }
       .tab-panel { display: none; }
       .tab-panel.active { display: block; }
+
+      /* 各 Tab 顶部小标题栏 */
+      .chan-header {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        margin-bottom: 14px;
+      }
+      .chan-title { font-size: 15px; font-weight: 600; color: var(--bt-text); margin-right: auto; }
+
+      /* 卡片网格 + 卡片内部结构 */
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+      .card .hd { display: flex; align-items: center; gap: 10px; min-width: 0; }
+      .card .nm { font-weight: 600; font-size: 14px; color: var(--bt-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .card .kind { font-size: 11px; color: var(--bt-text-3); font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .card .ft { display: flex; gap: 6px; flex-wrap: wrap; }
+      .badge.ok { background: var(--bt-primary-soft); color: var(--bt-primary-dark); }
+      .badge.no { background: rgba(239,68,68,.12); color: var(--bt-danger); }
+      .field label .req, .form-label .req { color: var(--bt-danger); }
+      .btn-sm {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 6px 12px; font-size: 12px; font-weight: 500; line-height: 1.4;
+        color: var(--bt-text-2); background: var(--bt-surface);
+        border: 1px solid var(--bt-border); border-radius: var(--bt-radius-sm);
+        cursor: pointer; white-space: nowrap;
+        transition: all var(--bt-transition);
+      }
       .btn-sm:hover { border-color: var(--bt-primary); color: var(--bt-primary); }
+      .btn-sm.active { background: var(--bt-primary-soft); color: var(--bt-primary); border-color: var(--bt-primary); }
       .btn-sm.primary { background: var(--bt-primary); border-color: var(--bt-primary); color: #fff; font-weight: 600; }
-      .btn-sm.primary:hover { background: var(--bt-primary-dark); }
+      .btn-sm.primary:hover { background: var(--bt-primary-dark); color: #fff; }
       .chan-list { margin-bottom: 20px; }
       .chan-item {
         display: flex; align-items: center; gap: 10px; padding: 12px 14px;
