@@ -1071,12 +1071,16 @@ Here is some useful information about the environment you are running in:
             logger.warning("[KB] 文档知识库初始化失败，已降级", exc_info=True)
             return None
 
-    def search_document_kb(self, query: str, top_k: int = 5, score: float = 0.35) -> list[dict]:
+    def search_document_kb(self, query: str, top_k: int = 5, score: float = 0.55, min_chars: int = 4) -> list[dict]:
         """检索文档知识库，返回带引用的命中列表（失败返回空）。
 
-        阈值 0.35 高于交互式默认的 0.2：自动注入是"顺带"增强，
-        宁可漏一点也不要把无关段落塞进上下文干扰回答。
+        自动注入是"顺带"增强，宁可漏一点也不要把无关段落塞进上下文干扰回答：
+        - 阈值 0.55（高于交互式默认的 0.2 和旧值 0.35）：
+          过滤泛泛 query（如"你好"）在短文本上余弦虚高的问题。
+        - query 太短（< min_chars 有效字符）直接跳过：无信息量，检索结果多为噪声。
         """
+        if not query or len(query.strip()) < min_chars:
+            return []
         kb = self._get_doc_kb()
         if kb is None:
             return []
