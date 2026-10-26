@@ -5765,6 +5765,48 @@ async def api_knowledge_delete(request: Request):
         return JSONResponse(public.returnMsg(False, "知识库删除失败"))
 
 
+@app.post("/api/knowledge/add_mem0")
+async def api_knowledge_add_mem0():
+    """从 mem0 导入全部记忆到知识库（幂等，已入库的跳过）。"""
+    try:
+        import requests as _req
+        from chat_client.knowledge_base import KnowledgeBase, build_embed_fn
+        import json as _json
+        cfg = {}
+        cfg_path = os.path.join(BASE_DIR, "config.json")
+        if os.path.exists(cfg_path):
+            with open(cfg_path, encoding="utf-8") as _f:
+                cfg = _json.load(_f)
+        emb = cfg.get("embedding") or {}
+        embed = build_embed_fn(
+            emb.get("embedding_api_key") or "",
+            emb.get("embedding_base_url") or "",
+            emb.get("embedding_model_name") or "text-embedding-3-small",
+        )
+        kb = KnowledgeBase(os.path.join(BASE_DIR, "knowledge"), embed)
+        r = _req.get("http://127.0.0.1:8000/memories", params={"limit": 1000}, timeout=15)
+        memos = r.json().get("results") or []
+        existing = {d["name"] for d in kb.list_documents()}
+        imported = 0
+        for m in memos:
+            text = str(m.get("memory") or "").strip()
+            if not text:
+                continue
+            mid = str(m.get("id") or "")
+            agent = str(m.get("agent_id") or m.get("user_id") or "unknown")
+            name = f"mem0-{agent}-{mid[:8]}"
+            if name in existing:
+                continue
+            res = kb.add_document(text=text, name=name)
+            if res.get("status"):
+                imported += 1
+                existing.add(name)
+        return JSONResponse(public.return_data(True, data={"imported": imported, "total": len(memos)}))
+    except Exception:
+        logger.warning("mem0→知识库同步失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "同步失败"))
+
+
 @app.get("/api/agent/run")
 async def api_agent_run_get(request: Request):
     params = dict(request.query_params)
@@ -5816,11 +5858,9 @@ try:
     app.include_router(_usage_router, prefix="/api/v2")
     from platform_ext.gateway import router as _gateway_router
     app.include_router(_gateway_router, prefix="/api/v2")
-    from platform_ext.memory_octop import router as _memory_router
-    app.include_router(_memory_router, prefix="/api/v2")
     from platform_ext.card_gateway import router as _card_gateway_router
     app.include_router(_card_gateway_router, prefix="/api/v2")
-    logger.info("[platform-ext] 平台扩展路由已挂载: /api/v2/{teams,channels,storage,usage,gateway,memory,card}/*")
+    logger.info("[platform-ext] 平台扩展路由已挂载: /api/v2/{teams,channels,storage,usage,gateway,card}/*")
 except Exception:  # noqa: BLE001
     logger.exception("[platform-ext] 平台扩展路由挂载失败（主服务继续运行）")
 

@@ -1,0 +1,17 @@
+[Unit]
+Description=Multi-agent Standalone Web Server (port 9876)
+After=network.target
+
+[Service]
+Type=simple
+User=sxkiss
+Group=sxkiss
+WorkingDirectory=/home/sxkiss/bt
+ExecStart=/home/sxkiss/bt/.venv/bin/python -m uvicorn web_server:app --host 0.0.0.0 --port 9876
+Restart=always
+RestartSec=5
+Environment=PATH=/home/sxkiss/bt/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/sxkiss
+
+[Install]
+WantedBy=multi-user.target

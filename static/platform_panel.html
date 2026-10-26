@@ -1129,115 +1129,103 @@
     $('qrModal').classList.remove('show')
   }
 
-  // ── Memory 记忆 ─────────────────────────
-  var memData = { nodes: [], topics: {} }
+    // ── Knowledge Base 知识库 ────────────────
+  var kbData = { documents: [] }
   async function loadMemory() {
     var el = $('tab-memory')
     try {
-      // status 只含统计（total_nodes/topics），列表需另调 /memory/list
-      var [st, ls] = await Promise.all([
-        api('/memory/status'),
-        api('/memory/list?limit=100')
-      ])
+      var st = await api('/knowledge/list')
       if (!st.status) throw new Error(st.msg || '加载失败')
-      if (!ls.status) throw new Error(ls.msg || '列表加载失败')
-      memData = Object.assign({}, st.data, { nodes: ls.data.nodes || [] })
+      kbData = { stats: st.data.stats, documents: st.data.documents || [] }
       el.innerHTML =
         '<div class="card">' +
           '<h3>📝 新增记忆</h3>' +
-          '<label>内容</label><textarea id="memContent" placeholder="要记住的内容..."></textarea>' +
-          '<div class="row"><label style="flex:1">主题 <input id="memTopic" placeholder="如 project / address / user"></label>' +
-          '<button class="btn pri" onclick="memStore()">存储</button></div>' +
+          '<label>名称</label><input id="kbName" placeholder="如 memo-2026-10-26">' +
+          '<label>内容</label><textarea id="kbContent" placeholder="要记住的内容..."></textarea>' +
+          '<div class="row"><button class="btn pri" onclick="kbStore()">入库</button>' +
+          '<button class="btn" onclick="kbLoadMem0()">同步 mem0</button></div>' +
         '</div>' +
-        '<div class="card"><h3>🔍 召回记忆</h3>' +
-          '<div class="row"><input id="memQuery" placeholder="输入关键词召回" style="flex:1">' +
-          '<button class="btn" onclick="memRecall()">召回</button></div>' +
-          '<div id="memRecallResult" class="empty">输入关键词查询</div>' +
+        '<div class="card"><h3>🔍 语义检索</h3>' +
+          '<div class="row"><input id="kbQuery" placeholder="输入关键词检索" style="flex:1">' +
+          '<button class="btn" onclick="kbSearch()">检索</button></div>' +
+          '<div id="kbSearchResult" class="empty">输入关键词查询</div>' +
         '</div>' +
-        '<div class="card"><h3>🗂 记忆库（' + (memData.total_nodes || 0) + ' 条）</h3>' +
-          '<div class="row"><button class="btn" onclick="memExport()">导出</button>' +
-          '<button class="btn" onclick="memImport()">导入</button>' +
-          '<input type="file" id="memImportFile" style="display:none" accept=".json" onchange="memDoImport(event)"></div>' +
-          '<div id="memList" class="empty">加载中...</div>' +
+        '<div class="card"><h3>🗂 知识库（' + (kbData.stats.documents || 0) + ' 篇 / ' + (kbData.stats.chars || 0) + ' 字）</h3>' +
+          '<div class="row"><button class="btn" onclick="kbExport()">导出 JSON</button></div>' +
+          '<div id="kbList" class="empty">加载中...</div>' +
         '</div>'
-      renderMemList()
+      renderKbList()
     } catch (e) {
       el.innerHTML = '<div class="card"><div class="empty">⚠️ ' + esc(e.message) + '</div></div>'
     }
   }
-  function renderMemList() {
-    var box = $('memList')
+  function renderKbList() {
+    var box = $('kbList')
     if (!box) return
-    if (!memData.nodes || !memData.nodes.length) { box.innerHTML = '<div class="empty">暂无记忆</div>'; return }
-    box.innerHTML = '<table><tr><th>内容</th><th>主题</th><th>操作</th></tr>' + memData.nodes.slice(0, 50).map(function (n) {
-      return '<tr><td>' + esc(n.content) + '</td><td>' + esc(n.topic || '-') + '</td>' +
-        '<td><button class="btn danger" onclick="memDelete(\'' + esc(n.id) + '\')">删</button></td></tr>'
+    var docs = kbData.documents || []
+    if (!docs.length) { box.innerHTML = '<div class="empty">暂无记忆</div>'; return }
+    box.innerHTML = '<table><tr><th>名称</th><th>块数</th><th>入库时间</th><th>操作</th></tr>' + docs.slice(0, 50).map(function (d) {
+      return '<tr><td>' + esc(d.name || d.doc_id) + '</td><td>' + esc(d.chunks || '-') + '</td>' +
+        '<td>' + esc((d.added_at || '').slice(0,10)) + '</td>' +
+        '<td><button class="btn danger" onclick="kbDelete(\'' + esc(d.doc_id) + '\')">删</button></td></tr>'
     }).join('') + '</table>'
   }
-  window.memStore = async function () {
-    var content = $('memContent').value.trim()
-    var topic = $('memTopic').value.trim()
-    if (!content) { toast('请输入内容', 'err'); return }
+  window.kbStore = async function () {
+    var text = $('kbContent').value.trim()
+    var name = $('kbName').value.trim()
+    if (!text) { toast('请输入内容', 'err'); return }
     try {
-      var res = await api('/memory/store', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: content, topic: topic || undefined }) })
-      if (!res.status) throw new Error(res.msg || '存储失败')
-      toast('已存储')
+      var res = await api('/knowledge/add_text', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text, name: name || undefined }) })
+      if (!res.status) throw new Error(res.msg || '入库失败')
+      toast('已入库')
       loadMemory()
     } catch (e) { toast(e.message, 'err') }
   }
-  window.memRecall = async function () {
-    var q = $('memQuery').value.trim()
-    var box = $('memRecallResult')
+  window.kbLoadMem0 = async function () {
+    try {
+      var res = await api('/knowledge/add_mem0', { method: 'POST' })
+      if (!res.status) throw new Error(res.msg || '同步失败')
+      toast('同步 ' + (res.data.imported || 0) + ' 条')
+      loadMemory()
+    } catch (e) { toast(e.message, 'err') }
+  }
+  window.kbSearch = async function () {
+    var q = $('kbQuery').value.trim()
+    var box = $('kbSearchResult')
     if (!q) { box.className = 'empty'; box.textContent = '输入关键词查询'; return }
     try {
-      var res = await api('/memory/recall?query=' + encodeURIComponent(q) + '&limit=5')
-      if (!res.status) throw new Error(res.msg || '召回失败')
-      var nodes = res.data.nodes || []
+      var res = await api('/knowledge/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: q, top_k: 5, score: 0.35 }) })
+      if (!res.status) throw new Error(res.msg || '检索失败')
+      var hits = res.data.results || []
       box.className = ''
-      box.innerHTML = nodes.length
-        ? '<table><tr><th>内容</th><th>主题</th></tr>' + nodes.map(function (n) {
-            return '<tr><td>' + esc(n.content) + '</td><td>' + esc(n.topic || '-') + '</td></tr>'
+      box.innerHTML = hits.length
+        ? '<table><tr><th>来源</th><th>内容</th></tr>' + hits.map(function (h) {
+            return '<tr><td>' + esc(h.citation || '-') + '</td><td>' + esc(h.text || '').replace(/\n/g,'<br>') + '</td></tr>'
           }).join('') + '</table>'
         : '<div class="empty">无结果</div>'
     } catch (e) { toast(e.message, 'err') }
   }
-  window.memDelete = async function (id) {
+  window.kbDelete = async function (doc_id) {
     try {
-      var res = await api('/memory/delete/' + encodeURIComponent(id), { method: 'DELETE' })
+      var res = await api('/knowledge/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ doc_id: doc_id }) })
       if (!res.status) throw new Error(res.msg || '删除失败')
       toast('已删除')
       loadMemory()
     } catch (e) { toast(e.message, 'err') }
   }
-  window.memExport = async function () {
+  window.kbExport = async function () {
     try {
-      var res = await api('/memory/export')
+      var res = await api('/knowledge/list')
       if (!res.status) throw new Error(res.msg || '导出失败')
       var blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
       var a = document.createElement('a')
       a.href = URL.createObjectURL(blob)
-      a.download = 'memory-export.json'
+      a.download = 'knowledge-export.json'
       a.click()
       URL.revokeObjectURL(a.href)
     } catch (e) { toast(e.message, 'err') }
   }
-  window.memImport = function () { $('memImportFile').click() }
-  window.memDoImport = async function (ev) {
-    var f = ev.target.files && ev.target.files[0]
-    if (!f) return
-    try {
-      var data = JSON.parse(await f.text())
-      var nodes = data.nodes || data
-      if (!Array.isArray(nodes)) throw new Error('格式错误')
-      var res = await api('/memory/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodes: nodes }) })
-      if (!res.status) throw new Error(res.msg || '导入失败')
-      toast('导入 ' + (res.data.imported || 0) + ' 条')
-      ev.target.value = ''
-      loadMemory()
-    } catch (e) { toast(e.message, 'err') }
-  }
-
-  // ── Usage 用量 ─────────────────────────
+// ── Usage 用量 ─────────────────────────
   var usageWin = 'last_7d'
   async function loadUsage() {
     var el = $('tab-usage')

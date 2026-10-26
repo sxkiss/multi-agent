@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 import sys
 
-__all__ = ["teams", "channels", "storage", "cli", "api", "usage", "gateway", "memory_octop"]
+__all__ = ["teams", "channels", "storage", "cli", "api", "usage", "gateway", ]
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
