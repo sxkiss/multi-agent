@@ -198,8 +198,24 @@
     <div class="mb" id="mBody"></div>
     <div class="mf">
       <button class="btn ghost" id="mCancel">取消</button>
+      <button class="btn" id="mCliAuth" style="display:none">🔐 登录授权</button>
       <button class="btn" id="mTest">测试凭据</button>
       <button class="btn primary" id="mSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- CLI 设备码登录授权弹窗 -->
+<div class="modal-bg" id="cliAuthBg">
+  <div class="modal" style="max-width:420px">
+    <div class="mh">
+      <div class="icon" style="width:34px;height:34px;border-radius:9px;background:#3370ff;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700">🔐</div>
+      <h3 id="cliAuthTitle">登录授权</h3>
+      <button class="btn ghost" id="cliAuthClose">✕</button>
+    </div>
+    <div class="mb" id="cliAuthBody" style="text-align:center;min-height:240px"></div>
+    <div class="mf" style="justify-content:center">
+      <div id="cliAuthStatus" style="font-size:13px;color:var(--bt-text-2);min-height:20px"></div>
     </div>
   </div>
 </div>
@@ -268,6 +284,10 @@
         if (hasManualField) {
           actions += '<button class="btn" data-manual-oauth2="' + esc(e.kind) + '">手动粘贴 Token</button>';
         }
+      } else if (e.login_url) {
+        // CLI 设备码登录授权（飞书 CLI 等）：扫码即可，无需手填 App 凭据
+        actions += '<button class="btn primary" data-cli-auth="' + esc(e.kind) + '">🔐 登录授权</button>';
+        if (supported) actions += '<button class="btn" data-add="' + esc(e.kind) + '">+ 手动配置</button>';
       } else if (supported) {
         actions += '<button class="btn primary" data-add="' + esc(e.kind) + '">+ 添加</button>';
       }
@@ -292,7 +312,106 @@
   document.querySelectorAll('[data-manual-oauth2]').forEach(function (b) {
     b.onclick = function () { openModal(b.getAttribute('data-manual-oauth2'), null, true); };
   });
+  document.querySelectorAll('[data-cli-auth]').forEach(function (b) {
+    b.onclick = function () { startCliAuth(b.getAttribute('data-cli-auth')); };
+  });
 }
+
+  // ── CLI 设备码登录授权 ──────────────────────────────────────
+  var cliAuthSession = null, cliAuthTimer = null;
+
+  async function startCliAuth(kind, overrideCreds) {
+    var e = catalog.find(function (c) { return c.kind === kind; }) || { name: kind };
+
+    // 没有实例也没带 app_id/app_secret：先引导去配置，避免后端直接报错
+    var instId = '';
+    var inst = (window._connInstances || []).find(function (i) { return i.kind === kind; });
+    if (inst) instId = inst.instance_id;
+    if (!instId && !(overrideCreds && overrideCreds.app_id && overrideCreds.app_secret)) {
+      toast('请先点「+ 手动配置」填写 App ID 与 App Secret', 'err');
+      openModal(kind, null);
+      return;
+    }
+
+    $('#cliAuthBg').classList.add('show');
+    $('#cliAuthTitle').textContent = e.name + ' 登录授权';
+    $('#cliAuthBody').innerHTML = '<div class="loading" style="padding:40px"><div class="spin"></div>正在生成二维码…</div>';
+    $('#cliAuthStatus').textContent = '';
+
+    try {
+      var payload = overrideCreds
+        ? { instance_id: instId, app_id: overrideCreds.app_id, app_secret: overrideCreds.app_secret }
+        : { instance_id: instId };
+      var r = await api('/cli/' + encodeURIComponent(kind) + '/auth/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      if (!r.status) throw new Error(r.msg || '启动失败');
+      var d = r.data;
+      var deviceCode = d.device_code || (d.raw && d.raw.device_code) || '';
+      cliAuthSession = { kind: kind, instanceId: instId, deviceCode: deviceCode, done: false };
+      renderCliAuthBody(d);
+      if (cliAuthTimer) clearInterval(cliAuthTimer);
+      cliAuthTimer = setInterval(cliAuthPollOnce, 5000);
+    } catch (err) {
+      $('#cliAuthBody').innerHTML = '<div style="color:#e5636a;padding:30px">⚠️ ' + esc(err.message) + '</div>';
+    }
+  }
+
+  function renderCliAuthBody(d) {
+    var body = $('#cliAuthBody');
+    if (d.qrcode_image && d.qrcode_image.indexOf('data:image/') === 0) {
+      var uri = d.verification_uri_complete || d.verification_uri || '#';
+      var linkHint = /^https?:\/\//.test(uri)
+        ? '<div class="hint" style="margin-top:12px"><a href="' + esc(uri) + '" target="_blank">打不开二维码？点击打开</a></div>' : '';
+      body.innerHTML = '<img src="' + esc(d.qrcode_image) + '" style="max-width:220px;border-radius:8px;border:1px solid var(--bt-border)">' +
+        (d.user_code ? '<div class="hint" style="margin-top:12px">或输入验证码：<b style="font-size:16px;letter-spacing:2px">' + esc(d.user_code) + '</b></div>' : '') +
+        '<div class="hint" style="margin-top:10px">请用飞书手机 App 扫码授权</div>' + linkHint;
+    } else {
+      var url = d.verification_uri_complete || d.verification_uri || '';
+      if (url) {
+        body.innerHTML = '<div class="hint"><a href="' + esc(url) + '" target="_blank">点击打开授权页</a></div>' +
+          (d.user_code ? '<div style="font-size:24px;font-weight:700;letter-spacing:4px;margin:14px 0">' + esc(d.user_code) + '</div>' : '') +
+          '<div class="hint">在浏览器中完成授权</div>';
+      } else {
+        body.innerHTML = '<div style="padding:30px;color:var(--bt-text-2)">等待授权…</div>';
+      }
+    }
+  }
+
+  function cliAuthPollOnce() {
+    if (!cliAuthSession || cliAuthSession.done) return;
+    var s = cliAuthSession;
+    api('/cli/' + encodeURIComponent(s.kind) + '/auth/poll', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instance_id: s.instanceId || '', device_code: s.deviceCode || '' })
+    }).then(function (r) {
+      if (!r.status) throw new Error(r.msg || '轮询失败');
+      var d = r.data;
+      if (d.status === 'success') {
+        s.done = true;
+        if (cliAuthTimer) { clearInterval(cliAuthTimer); cliAuthTimer = null; }
+        $('#cliAuthStatus').innerHTML = '<span style="color:#16a34a">✓ 授权成功！</span>';
+        setTimeout(function () {
+          closeCliAuth();
+          loadInstances();
+          switchTab('instances');
+          toast('🎉 飞书用户授权成功，文档搜索已就绪', 'ok');
+        }, 900);
+      } else if (d.status === 'expired' || d.status === 'error') {
+        s.done = true;
+        if (cliAuthTimer) { clearInterval(cliAuthTimer); cliAuthTimer = null; }
+        $('#cliAuthStatus').textContent = '✗ ' + (d.message || '授权失败');
+      } else {
+        $('#cliAuthStatus').textContent = '等待手机扫码…';
+      }
+    }).catch(function (err) { $('#cliAuthStatus').textContent = '轮询出错: ' + err.message; });
+  }
+
+  function closeCliAuth() {
+    $('#cliAuthBg').classList.remove('show');
+    if (cliAuthTimer) { clearInterval(cliAuthTimer); cliAuthTimer = null; }
+    cliAuthSession = null;
+  }
 
   // ── OAuth2 一键授权 ────────────────────────────────────────
   async function startOAuth2(kind) {
@@ -329,6 +448,7 @@
   async function loadInstances() {
     var res = await api('/instances');
     var list = (res.data && res.data.instances) || [];
+    window._connInstances = list;
     $('#instCount').textContent = list.length;
     if (!list.length) {
       $('#instList').innerHTML = '<div class="empty"><div class="big">📦</div>还没有连接器<br><span style="font-size:13px">去「连接器市场」添加一个吧</span></div>';
@@ -461,6 +581,24 @@
     }
     $('#mBody').innerHTML = body;
     $('#modalBg').classList.add('show');
+
+    // CLI 类连接器（飞书 CLI 等）：弹窗底部显示「登录授权」按钮
+    var mCli = $('#mCliAuth');
+    if (e.login_url) {
+      mCli.style.display = '';
+      mCli.onclick = function () {
+        var creds = collectCreds();
+        if (!creds.app_id || !creds.app_secret) {
+          toast('请先填写 App ID 与 App Secret 再登录授权', 'err');
+          return;
+        }
+        closeModal();
+        startCliAuth(kind, creds);
+      };
+    } else {
+      mCli.style.display = 'none';
+      mCli.onclick = null;
+    }
   }
   function closeModal() { $('#modalBg').classList.remove('show'); currentKind = null; editingId = null; currentManualOAuth2 = false; }
 
@@ -610,6 +748,8 @@
   $('#mClose').onclick = closeModal; $('#mCancel').onclick = closeModal;
   $('#mSave').onclick = saveInstance; $('#mTest').onclick = testCreds;
   $('#modalBg').onclick = function (e) { if (e.target === $('#modalBg')) closeModal(); };
+  $('#cliAuthClose').onclick = closeCliAuth;
+  $('#cliAuthBg').onclick = function (e) { if (e.target === $('#cliAuthBg')) closeCliAuth(); };
   $('#themeBtn').onclick = function () {
     var cur = document.documentElement.getAttribute('data-theme');
     var next = cur === 'dark' ? 'light' : 'dark';
