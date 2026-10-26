@@ -1325,17 +1325,20 @@ async function _renderConnModal() {
   // CLI 连接器（飞书等）：显示「登录授权」按钮
   const mAuth = document.getElementById('connModalAuth')
   if (mAuth) {
-    if (entry.login_url && !(inst && inst.creds_decoded)) {
+    if (entry.login_url) {
       mAuth.style.display = ''
+      mAuth.textContent = inst ? '🔐 重新登录授权' : '🔐 登录授权'
       mAuth.onclick = function () {
-        // 弹窗内：用当前表单里填的 App ID / Secret 直接启动授权
-        const creds = _collectConnCreds()
-        if (!creds.app_id || !creds.app_secret) {
+        // 弹窗内：优先用表单里填的 App ID / Secret，缺则用已存的
+        const formCreds = _collectConnCreds()
+        const appId = formCreds.app_id || existingCreds.app_id || ''
+        const appSecret = formCreds.app_secret || existingCreds.app_secret || ''
+        if (!appId || !appSecret) {
           alert('请先填写 App ID 与 App Secret')
           return
         }
         closeConnModal()
-        startCliAuth(kind, { app_id: creds.app_id, app_secret: creds.app_secret })
+        startCliAuth(kind, { app_id: appId, app_secret: appSecret })
       }
     } else {
       mAuth.style.display = 'none'

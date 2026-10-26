@@ -606,14 +606,17 @@
     var mCli = $('#mCliAuth');
     if (e.login_url) {
       mCli.style.display = '';
+      mCli.textContent = editingId ? '🔐 重新登录授权' : '🔐 登录授权';
       mCli.onclick = function () {
-        var creds = collectCreds();
-        if (!creds.app_id || !creds.app_secret) {
+        var formCreds = collectCreds();
+        var appId = formCreds.app_id || existingCreds.app_id || '';
+        var appSecret = formCreds.app_secret || existingCreds.app_secret || '';
+        if (!appId || !appSecret) {
           toast('请先填写 App ID 与 App Secret 再登录授权', 'err');
           return;
         }
         closeModal();
-        startCliAuth(kind, creds);
+        startCliAuth(kind, { app_id: appId, app_secret: appSecret });
       };
     } else {
       mCli.style.display = 'none';
