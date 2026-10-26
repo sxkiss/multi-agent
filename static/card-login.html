@@ -33,7 +33,8 @@
         transition: background var(--bt-transition), color var(--bt-transition);
       }
       .wrap { max-width:1200px; margin:0 auto; padding:24px 20px 60px; }
-      .container { width: 100%; max-width: 900px; margin: 0 auto; padding: 32px 20px; }
+      /* 未登录时收窄居中，登录后展开为面板宽度 */
+      .wrap.login-mode { max-width:460px; padding-top:60px; }
       /* 面板头部（与全局面板一致） */
       header.top { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
       header.top .logo {
@@ -188,7 +189,7 @@
     </style>
 </head>
 <body>
-<div class="wrap">
+<div class="wrap login-mode">
   <div class="box">
     <!-- Login Form -->
     <div id="loginForm">
@@ -391,7 +392,6 @@
               <p style="color:var(--bt-text-2);font-size:13px;margin:12px 0">以下链接需要管理员权限，仅供内部使用。</p>
               <div style="display:flex;flex-direction:column;gap:8px;margin-top:16px">
                 <a class="link" href="/static/card-admin.html" target="_blank" style="font-size:14px">🔐 卡密管理后台 →</a>
-                <a class="link" onclick="doLogout()" style="font-size:14px;cursor:pointer">🚪 退出登录</a>
               </div>
             </div>
           </div>
@@ -434,7 +434,7 @@ async function login() {
     currentOwner = owner || ''
     // Show success view
     document.getElementById('loginForm').style.display = 'none'
-    document.querySelector('.container').classList.remove('login-mode')
+    document.querySelector('.wrap').classList.remove('login-mode')
     document.getElementById('welcomeBadge').textContent = '👤 ' + prefix
     document.getElementById('infoPrefix').textContent = prefix
     document.getElementById('infoOwner').textContent = currentOwner || '未设置'
@@ -863,7 +863,7 @@ window.addEventListener('DOMContentLoaded', () => {
   if (token) {
     currentPrefix = localStorage.getItem('ai_card_prefix') || ''
     document.getElementById('loginForm').style.display = 'none'
-    document.querySelector('.container').classList.remove('login-mode')
+    document.querySelector('.wrap').classList.remove('login-mode')
     document.getElementById('welcomeBadge').textContent = '👤 ' + currentPrefix
     document.getElementById('infoPrefix').textContent = currentPrefix
     document.getElementById('infoOwner').textContent = localStorage.getItem('ai_card_owner') || '未设置'
