@@ -579,7 +579,7 @@ async def api_cli_auth_start(kind: str, request: Request):
         inst = svc.get_instance(instance_id, include_secrets=True)
         if not inst:
             return _err("实例不存在")
-        creds = inst.get("creds_decoded") or {}
+        creds = inst.get("creds") or inst.get("creds_decoded") or {}
     else:
         creds = {k: body.get(k) for k in ("app_id", "app_secret") if body.get(k)}
     if not creds.get("app_id") or not creds.get("app_secret"):
