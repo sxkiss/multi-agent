@@ -619,7 +619,7 @@ async def api_cli_auth_poll(kind: str, request: Request):
     inst = svc.get_instance(instance_id, include_secrets=True)
     if not inst:
         return _err("实例不存在")
-    creds = inst.get("creds_decoded") or {}
+    creds = inst.get("creds") or inst.get("creds_decoded") or {}
     try:
         data = await asyncio.to_thread(_cli_device_poll, kind, creds, device_code)
     except Exception as exc:  # noqa: BLE001
@@ -634,7 +634,7 @@ async def api_cli_auth_status(kind: str, instance_id: str = Query(...)):
     inst = svc.get_instance(instance_id, include_secrets=True)
     if not inst:
         return _err("实例不存在")
-    creds = inst.get("creds_decoded") or {}
+    creds = inst.get("creds") or inst.get("creds_decoded") or {}
     try:
         from connector_hub.gateway_adapters.local_shims import resolve_binary, run_cli
         from connector_hub.gateway_adapters import feishu_cli as fc
