@@ -323,11 +323,22 @@
   async function startCliAuth(kind, overrideCreds) {
     var e = catalog.find(function (c) { return c.kind === kind; }) || { name: kind };
 
-    // 没有实例也没带 app_id/app_secret：先引导去配置，避免后端直接报错
+    // 没有实例或凭据不全：先引导去配置，避免后端直接报错
     var instId = '';
     var inst = (window._connInstances || []).find(function (i) { return i.kind === kind; });
     if (inst) instId = inst.instance_id;
-    if (!instId && !(overrideCreds && overrideCreds.app_id && overrideCreds.app_secret)) {
+    var hasCreds = !!(overrideCreds && overrideCreds.app_id && overrideCreds.app_secret);
+    if (instId && !hasCreds) {
+      // 实例已存在：用它的 configured_fields 判断 App ID / Secret 是否齐全
+      var cf = inst.configured_fields || [];
+      var need = (e.credential_fields || []).filter(function (f) { return f.required !== false; }).map(function (f) { return f.key; });
+      var missing = need.filter(function (k) { return cf.indexOf(k) < 0; });
+      if (missing.length) {
+        toast('请先补全配置：' + missing.join('、'), 'err');
+        openModal(kind, instId);
+        return;
+      }
+    } else if (!instId && !hasCreds) {
       toast('请先点「+ 手动配置」填写 App ID 与 App Secret', 'err');
       openModal(kind, null);
       return;
