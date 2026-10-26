@@ -126,10 +126,24 @@ async def api_create_instance(request: Request):
 
 @router.get("/instances/{instance_id}")
 async def api_get_instance(instance_id: str, request: Request):
+    """实例详情。
+
+    返回 ``creds`` 供前端编辑时回填，但 **secret 字段一律脱敏**（返回
+    "***"），只有非 secret 字段（app_id / name / email 等）返回明文。
+    这样既能「回填已有凭证」，又不会把密钥明文下发到浏览器。
+    """
     prefix = _card_prefix(request)
-    inst = svc.get_instance(instance_id, owner=prefix or "")
+    inst = svc.get_instance(instance_id, owner=prefix or "", include_secrets=True)
     if not inst:
         return _err(f"实例不存在: {instance_id}")
+    # 按 catalog 的 secret 标记脱敏
+    entry = cat.get_catalog_entry(inst.get("kind", ""))
+    if entry is not None and isinstance(inst.get("creds"), dict):
+        secret_keys = {f.key for f in entry.credential_fields if getattr(f, "secret", False)}
+        inst["creds"] = {
+            k: ("***" if k in secret_keys and v else v)
+            for k, v in inst["creds"].items()
+        }
     return _ok(inst)
 
 
@@ -455,3 +469,190 @@ async def api_internal_mcp_get(kind: str, instance_id: str, token: str = Query(.
         media_type="text/event-stream",
         headers={"cache-control": "no-cache", "connection": "keep-alive"},
     )
+
+
+# ── CLI 类连接器的设备码授权（飞书 lark-cli）─────────────────
+def _cli_device_login(kind: str, creds: dict[str, Any], *, domain: str = "") -> dict[str, Any]:
+    """调用 CLI 的设备码授权，返回 verification URL + device_code。
+
+    只支持 feishu-cli（lark-cli auth login --no-wait --json）。
+    """
+    import subprocess
+
+    from connector_hub.gateway_adapters.local_shims import resolve_binary
+
+    if kind != "feishu-cli":
+        raise ValueError(f"连接器 {kind} 不支持设备码授权")
+
+    # 复用 feishu_cli 的 env 准备逻辑（内含 config init，用 app_id/app_secret 初始化）
+    from connector_hub.gateway_adapters import feishu_cli as fc
+
+    binary = resolve_binary("lark-cli")
+    env = fc._prepare_env(creds)
+
+    argv = [binary, "auth", "login", "--no-wait", "--json"]
+    if domain:
+        argv.extend(["--domain", domain])
+
+    proc = subprocess.run(
+        argv, capture_output=True, text=True, env=env, timeout=60.0
+    )
+    raw = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    try:
+        payload = json.loads(raw) if raw.startswith("{") else {}
+    except json.JSONDecodeError:
+        payload = {}
+    if not payload:
+        raise ValueError(f"lark-cli 输出无法解析: {raw[:300]}")
+    if payload.get("ok") is False:
+        err = payload.get("error") or {}
+        raise ValueError(f"启动授权失败: {err.get('message') or raw[:200]}")
+    # 兼容不同版本的字段名
+    url = (
+        payload.get("verification_uri_complete")
+        or payload.get("verification_uri")
+        or payload.get("verification_url")
+        or payload.get("auth_url")
+        or ""
+    )
+    device_code = payload.get("device_code") or ""
+    user_code = payload.get("user_code") or ""
+    if not url and not device_code:
+        raise ValueError(f"未获取到授权链接: {raw[:300]}")
+    return {
+        "verification_uri": url,
+        "verification_uri_complete": url,
+        "user_code": user_code,
+        "device_code": device_code,
+        "expires_in": payload.get("expires_in"),
+        "interval": payload.get("interval") or 5,
+        "raw": payload,
+    }
+
+
+def _cli_device_poll(kind: str, creds: dict[str, Any], device_code: str) -> dict[str, Any]:
+    """用 device_code 轮询并完成授权（阻塞到用户完成或超时）。"""
+    import subprocess
+
+    from connector_hub.gateway_adapters.local_shims import resolve_binary
+
+    if kind != "feishu-cli":
+        raise ValueError(f"连接器 {kind} 不支持设备码授权")
+    if not device_code:
+        raise ValueError("缺少 device_code")
+
+    from connector_hub.gateway_adapters import feishu_cli as fc
+
+    binary = resolve_binary("lark-cli")
+    env = fc._prepare_env(creds)
+
+    proc = subprocess.run(
+        [binary, "auth", "login", "--device-code", device_code, "--json"],
+        capture_output=True, text=True, env=env, timeout=180.0,
+    )
+    raw = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    try:
+        payload = json.loads(raw) if raw.startswith("{") else {}
+    except json.JSONDecodeError:
+        payload = {}
+    ok = proc.returncode == 0 and payload.get("ok") is not False
+    if not ok:
+        err = payload.get("error") or {}
+        return {
+            "status": "pending",
+            "message": err.get("message") or raw[:200] or "等待授权中",
+        }
+    return {"status": "success", "message": "授权成功"}
+
+
+@router.post("/cli/{kind}/auth/start")
+async def api_cli_auth_start(kind: str, request: Request):
+    """启动 CLI 设备码授权，返回验证链接与二维码。
+
+    请求: {"instance_id": "xxx"} 或 {"app_id": "...", "app_secret": "..."}
+    响应: {"verification_uri": "...", "qrcode_image": "data:image/png;base64,...", "device_code": "..."}
+    """
+    body = await _body(request)
+    instance_id = str(body.get("instance_id") or "").strip()
+    creds: dict[str, Any] = {}
+    if instance_id:
+        inst = svc.get_instance(instance_id, include_secrets=True)
+        if not inst:
+            return _err("实例不存在")
+        creds = inst.get("creds_decoded") or {}
+    else:
+        creds = {k: body.get(k) for k in ("app_id", "app_secret") if body.get(k)}
+    if not creds.get("app_id") or not creds.get("app_secret"):
+        return _err("请先保存 App ID 与 App Secret")
+
+    domain = str(body.get("domain") or "").strip()
+    try:
+        data = await asyncio.to_thread(_cli_device_login, kind, creds, domain=domain)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cli auth start failed for %s: %s", kind, exc)
+        return _err(str(exc))
+
+    # 生成二维码 PNG（复用 qr_login 的渲染工具）
+    url = data.get("verification_uri") or ""
+    if url:
+        try:
+            from platform_ext import qr_login
+            data["qrcode_image"] = qr_login._qr_png_data_uri(url)
+        except Exception:  # noqa: BLE001
+            pass
+    return _ok(data)
+
+
+@router.post("/cli/{kind}/auth/poll")
+async def api_cli_auth_poll(kind: str, request: Request):
+    """轮询 CLI 设备码授权结果。
+
+    请求: {"instance_id": "xxx", "device_code": "..."}
+    响应: {"status": "pending|success", "message": "..."}
+    """
+    body = await _body(request)
+    instance_id = str(body.get("instance_id") or "").strip()
+    device_code = str(body.get("device_code") or "").strip()
+    if not instance_id:
+        return _err("缺少 instance_id")
+    inst = svc.get_instance(instance_id, include_secrets=True)
+    if not inst:
+        return _err("实例不存在")
+    creds = inst.get("creds_decoded") or {}
+    try:
+        data = await asyncio.to_thread(_cli_device_poll, kind, creds, device_code)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cli auth poll failed for %s: %s", kind, exc)
+        return _err(str(exc))
+    return _ok(data)
+
+
+@router.get("/cli/{kind}/auth/status")
+async def api_cli_auth_status(kind: str, instance_id: str = Query(...)):
+    """查询 CLI 授权状态（bot / user 身份是否就绪）。"""
+    inst = svc.get_instance(instance_id, include_secrets=True)
+    if not inst:
+        return _err("实例不存在")
+    creds = inst.get("creds_decoded") or {}
+    try:
+        from connector_hub.gateway_adapters.local_shims import resolve_binary, run_cli
+        from connector_hub.gateway_adapters import feishu_cli as fc
+
+        binary = resolve_binary("lark-cli")
+        env = fc._prepare_env(creds)
+        out = await asyncio.to_thread(
+            run_cli, [binary, "auth", "status", "--json"], env=env, timeout_s=60.0
+        )
+        payload: dict[str, Any] = {}
+        if out.lstrip().startswith("{"):
+            payload = json.loads(out)
+        elif "{" in out:
+            payload = json.loads(out[out.find("{"):])
+        idents = payload.get("identities") or {}
+        return _ok({
+            "bot": (idents.get("bot") or {}).get("available", False),
+            "user": (idents.get("user") or {}).get("available", False),
+            "identity": payload.get("identity", ""),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return _err(f"查询授权状态失败: {exc}")
