@@ -1227,7 +1227,9 @@ async function _renderConnModal() {
       if (res.status && res.data) {
         existingCreds = res.data.creds || res.data.creds_decoded || res.data.credentials || {}
       }
-    } catch (e) { /* 拉取失败则不回填 */ }
+    } catch (e) {
+      console.warn('card-login: 拉实例详情失败', e)
+    }
   }
 
   let body = ''
@@ -1336,10 +1338,11 @@ async function _renderConnModal() {
         const appId = formCreds.app_id || existingCreds.app_id || ''
         const appSecret = formCreds.app_secret || existingCreds.app_secret || ''
         if (!appId || !appSecret) {
-          alert('请先填写 App ID 与 App Secret')
+          toast('请先填写 App ID 与 App Secret', 'err')
           return
         }
         closeConnModal()
+        // 直接把凭据传过去，不用 _connInstances（列表接口没有 creds）
         startCliAuth(kind, { app_id: appId, app_secret: appSecret })
       }
     } else {

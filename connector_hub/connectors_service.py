@@ -581,13 +581,15 @@ def _redact(inst: dict[str, Any], include_secrets: bool = False) -> dict[str, An
             except Exception:  # noqa: BLE001
                 creds = {}
     d.pop("creds_enc", None)
-    # 计算已配置的 secret 字段名
+    # 计算已配置的字段名（含 secret 与非 secret：前端用它判断「哪些字段已填」）
     configured: list[str] = []
     entry = get_catalog_entry(inst.get("kind", ""))
     if entry is not None:
         for f in entry.credential_fields:
-            if getattr(f, "secret", False) and creds.get(f.key):
+            if creds.get(f.key):
                 configured.append(f.key)
+    else:
+        configured = [k for k, v in creds.items() if v]
     d["configured_fields"] = configured
     return d
 
