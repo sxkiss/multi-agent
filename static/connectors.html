@@ -514,7 +514,7 @@
   }
 
   // ── 弹窗 ─────────────────────────────────────────────────
-  function openModal(kind, instanceId, manualOAuth2) {
+  async function openModal(kind, instanceId, manualOAuth2) {
     var e = catalog.find(function (c) { return c.kind === kind; });
     if (!e) return;
     currentKind = kind; editingId = instanceId || null; currentManualOAuth2 = !!manualOAuth2;
@@ -522,9 +522,17 @@
     $('#mIcon').style.background = colorOf(e);
     $('#mIcon').textContent = initial(e);
     var fields = e.credential_fields || [];
+    // 加载已有实例详情（含明文凭据回填非 secret 字段）
+    var existingCreds = {};
+    if (editingId) {
+      try {
+        var _instRes = await api('/instances/' + encodeURIComponent(editingId));
+        if (_instRes.status && _instRes.data) existingCreds = _instRes.data.creds || _instRes.data.credentials || {};
+      } catch (_) {}
+    }
     var body = '';
     if (e.auth_hint) body += '<div class="hint" style="margin-bottom:14px;padding:10px;background:var(--bt-surface-2);border-radius:8px">💡 ' + esc(e.auth_hint) + '</div>';
-    body += '<div class="field"><label>实例名称</label><input id="f_name" placeholder="' + esc(e.name) + '" value="' + (instanceId ? '' : esc(e.name)) + '"></div>';
+    body += '<div class="field"><label>实例名称</label><input id="f_name" placeholder="' + esc(e.name) + '" value="' + (instanceId ? esc(e.name || currentKind) : esc(e.name)) + '"></div>';
 
     function fieldHtml(key, label, opts) {
       opts = opts || {};
@@ -533,7 +541,8 @@
       var isUrl = opts.fieldType === 'url';
       var isTags = opts.fieldType === 'tags';
       var isTextarea = isTags || (opts.fieldType === 'textarea');
-      var hasStored = editingId && isSecret && (configuredMap[editingId] || []).indexOf(key) !== -1;
+      var stored = existingCreds[key] !== undefined && existingCreds[key] !== null && existingCreds[key] !== '';
+      var hasStored = stored && isSecret;
       var req = opts.required !== false;
       var h = '<div class="field"><label>' + esc(label) + (req ? ' <span class="req">*</span>' : '') + '</label>';
       if (isTextarea) {

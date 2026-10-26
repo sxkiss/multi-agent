@@ -1216,10 +1216,16 @@ async function _renderConnModal() {
   const inst = _connModalEditId ? (_connInstances.find(i => i.instance_id === _connModalEditId) || null) : null
   const fields = entry.credential_fields || []
 
-  // 找已有的凭据（编辑时解密回填）
+  // 找已有的凭据（编辑时回填非 secret 字段；secret 字段标记为「已配置」避免暴露）
   let existingCreds = {}
-  if (inst && inst.creds_decoded) {
-    existingCreds = inst.creds_decoded
+  if (inst) {
+    if (inst.creds_decoded) {
+      existingCreds = inst.creds_decoded
+    } else if (inst.creds) {
+      existingCreds = inst.creds
+    } else if (inst.credentials) {
+      existingCreds = inst.credentials
+    }
   }
 
   let body = ''
@@ -1238,7 +1244,7 @@ async function _renderConnModal() {
     const ph = opts.placeholder || ''
     const help = opts.help || ''
     const req = opts.required !== false
-    const stored = inst && isSecret && existingCreds[key]
+    const stored = inst && existingCreds[key] !== undefined && existingCreds[key] !== null && existingCreds[key] !== ''
     let h = '<div class="field"><label>' + esc(label) + (req ? ' <span class="req">*</span>' : '') + '</label>'
     const phText = stored ? '已配置，留空不修改' : ph
     if (isTextarea) {
@@ -1300,6 +1306,16 @@ async function _renderConnModal() {
   document.getElementById('connModalIcon').style.background = _colorOf(entry)
   document.getElementById('connModalIcon').textContent = _initial(entry)
   document.getElementById('connModalBody').innerHTML = body
+
+  // 回填非 secret 字段（已配置的不回填避免覆盖用户输入）
+  if (inst && Object.keys(existingCreds).length) {
+    Object.keys(existingCreds).forEach(k => {
+      const el = document.getElementById('c_' + k)
+      if (el && el.type !== 'password') {
+        el.value = existingCreds[k] || ''
+      }
+    })
+  }
 
   const mSave = document.getElementById('connModalSave')
   const mTest = document.getElementById('connModalTest')
