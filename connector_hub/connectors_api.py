@@ -532,38 +532,62 @@ def _cli_device_login(kind: str, creds: dict[str, Any], *, domain: str = "") -> 
 
 
 def _cli_device_poll(kind: str, creds: dict[str, Any], device_code: str) -> dict[str, Any]:
-    """用 device_code 轮询并完成授权（阻塞到用户完成或超时）。"""
+    """轮询 CLI 设备码授权结果。
+
+    策略：先用 --device-code 尝试快速完成；失败时（包含 code 已被浏览器消费的场景）
+    降级查询 auth status，确认 user identity 已就绪即视为授权成功。
+    """
     import subprocess
 
-    from connector_hub.gateway_adapters.local_shims import resolve_binary
+    from connector_hub.gateway_adapters.local_shims import resolve_binary, run_cli
+    from connector_hub.gateway_adapters import feishu_cli as fc
 
     if kind != "feishu-cli":
         raise ValueError(f"连接器 {kind} 不支持设备码授权")
-    if not device_code:
-        raise ValueError("缺少 device_code")
-
-    from connector_hub.gateway_adapters import feishu_cli as fc
 
     binary = resolve_binary("lark-cli")
     env = fc._prepare_env(creds)
 
-    proc = subprocess.run(
-        [binary, "auth", "login", "--device-code", device_code, "--json"],
-        capture_output=True, text=True, env=env, timeout=180.0,
-    )
-    raw = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    # 1) 尝试用 device_code 直接完成（code 未被消费时走此路径）
+    if device_code:
+        try:
+            proc = subprocess.run(
+                [binary, "auth", "login", "--device-code", device_code, "--json"],
+                capture_output=True, text=True, env=env, timeout=180.0,
+            )
+            raw = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+            try:
+                payload = json.loads(raw) if raw.startswith("{") else {}
+            except json.JSONDecodeError:
+                payload = {}
+            ok = proc.returncode == 0 and payload.get("ok") is not False
+            if ok:
+                return {"status": "success", "message": "授权成功"}
+            # 走到这里说明 code 已过期/被消费/无效，继续走 status 兜底
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 2) 兜底：查 auth status，看 user identity 是否已就绪
     try:
-        payload = json.loads(raw) if raw.startswith("{") else {}
-    except json.JSONDecodeError:
-        payload = {}
-    ok = proc.returncode == 0 and payload.get("ok") is not False
-    if not ok:
-        err = payload.get("error") or {}
+        out = run_cli([binary, "auth", "status", "--json"], env=env, timeout_s=30.0)
+        payload: dict[str, Any] = {}
+        if out.lstrip().startswith("{"):
+            payload = json.loads(out)
+        elif "{" in out:
+            payload = json.loads(out[out.find("{"):])
+        idents = payload.get("identities") or {}
+        user = idents.get("user") or {}
+        if isinstance(user, dict) and user.get("available"):
+            return {"status": "success", "message": "授权成功"}
         return {
             "status": "pending",
-            "message": err.get("message") or raw[:200] or "等待授权中",
+            "message": user.get("message")
+            or user.get("status")
+            or payload.get("status")
+            or "等待手机扫码",
         }
-    return {"status": "success", "message": "授权成功"}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "message": str(exc)}
 
 
 @router.post("/cli/{kind}/auth/start")
