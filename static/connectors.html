@@ -146,6 +146,12 @@
   .a-link { color: var(--bt-accent); text-decoration: none; font-size: 12px; }
   .a-link:hover { text-decoration: underline; }
   .cli-warn { font-size: 12px; color: var(--bt-warn); }
+  /* CLI 授权轮询状态指示 */
+  .cli-spin {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    border: 2px solid var(--bt-border); border-top-color: var(--bt-primary);
+    animation: rot .8s linear infinite; vertical-align: -1px; margin-right: 2px;
+  }
 </style>
 </head>
 <body>
@@ -359,12 +365,32 @@
       if (!r.status) throw new Error(r.msg || '启动失败');
       var d = r.data;
       var deviceCode = d.device_code || (d.raw && d.raw.device_code) || '';
-      cliAuthSession = { kind: kind, instanceId: instId, deviceCode: deviceCode, done: false };
+      cliAuthSession = { kind: kind, instanceId: instId, deviceCode: deviceCode, done: false, startedAt: Date.now(), polls: 0 };
       renderCliAuthBody(d);
+      setCliAuthStatus('pending', '等待手机扫码…');
       if (cliAuthTimer) clearInterval(cliAuthTimer);
       cliAuthTimer = setInterval(cliAuthPollOnce, 5000);
     } catch (err) {
       $('#cliAuthBody').innerHTML = '<div style="color:#e5636a;padding:30px">⚠️ ' + esc(err.message) + '</div>';
+      setCliAuthStatus('error', '启动失败');
+    }
+  }
+
+  // 统一状态渲染：pending / success / error
+  function setCliAuthStatus(state, text) {
+    var el = $('#cliAuthStatus');
+    if (!el) return;
+    if (state === 'success') {
+      el.innerHTML = '<span style="color:#16a34a;font-weight:600">✓ ' + esc(text) + '</span>';
+    } else if (state === 'error') {
+      el.innerHTML = '<span style="color:#e5636a">✗ ' + esc(text) + '</span>';
+    } else if (state === 'pending') {
+      var secs = cliAuthSession && cliAuthSession.startedAt
+        ? Math.floor((Date.now() - cliAuthSession.startedAt) / 1000) : 0;
+      el.innerHTML = '<span class="cli-spin"></span> ' + esc(text) +
+        '<span style="color:var(--bt-text-3);margin-left:6px">' + secs + 's</span>';
+    } else {
+      el.textContent = text || '';
     }
   }
 
@@ -392,6 +418,7 @@
   function cliAuthPollOnce() {
     if (!cliAuthSession || cliAuthSession.done) return;
     var s = cliAuthSession;
+    s.polls = (s.polls || 0) + 1;
     api('/cli/' + encodeURIComponent(s.kind) + '/auth/poll', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ instance_id: s.instanceId || '', device_code: s.deviceCode || '' })
@@ -401,21 +428,29 @@
       if (d.status === 'success') {
         s.done = true;
         if (cliAuthTimer) { clearInterval(cliAuthTimer); cliAuthTimer = null; }
-        $('#cliAuthStatus').innerHTML = '<span style="color:#16a34a">✓ 授权成功！</span>';
+        setCliAuthStatus('success', '授权成功！已更新本地凭证。');
         setTimeout(function () {
           closeCliAuth();
           loadInstances();
           switchTab('instances');
-          toast('🎉 飞书用户授权成功，文档搜索已就绪', 'ok');
+          toast('🎉 ' + s.kind.replace('-cli','') + ' 授权成功，相关功能已就绪', 'ok');
         }, 900);
       } else if (d.status === 'expired' || d.status === 'error') {
         s.done = true;
         if (cliAuthTimer) { clearInterval(cliAuthTimer); cliAuthTimer = null; }
-        $('#cliAuthStatus').textContent = '✗ ' + (d.message || '授权失败');
+        setCliAuthStatus('error', d.message || '授权失败（设备码已过期或无效）');
       } else {
-        $('#cliAuthStatus').textContent = '等待手机扫码…';
+        var hint = d.message || '等待手机扫码';
+        setCliAuthStatus('pending', hint);
+        // 每 60s 提醒一次"码仍在有效期"，避免用户以为卡死
+        if ((s.polls || 0) > 0 && (s.polls % 12) === 0) {
+          setCliAuthStatus('pending', '请在 3 分钟内用飞书 App 扫码完成授权');
+        }
       }
-    }).catch(function (err) { $('#cliAuthStatus').textContent = '轮询出错: ' + err.message; });
+    }).catch(function (err) {
+      // 网络/接口层错误也继续轮询，避免用户端误报
+      setCliAuthStatus('pending', err.message || '连接中…');
+    });
   }
 
   function closeCliAuth() {
