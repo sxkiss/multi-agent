@@ -1216,16 +1216,18 @@ async function _renderConnModal() {
   const inst = _connModalEditId ? (_connInstances.find(i => i.instance_id === _connModalEditId) || null) : null
   const fields = entry.credential_fields || []
 
-  // 找已有的凭据（编辑时回填非 secret 字段；secret 字段标记为「已配置」避免暴露）
+  // 编辑时拉实例详情拿 creds（列表接口不含凭据），secret 字段后端已脱敏为 ***
   let existingCreds = {}
   if (inst) {
-    if (inst.creds_decoded) {
-      existingCreds = inst.creds_decoded
-    } else if (inst.creds) {
-      existingCreds = inst.creds
-    } else if (inst.credentials) {
-      existingCreds = inst.credentials
-    }
+    try {
+      const r = await fetch('/api/v2/connectors/instances/' + encodeURIComponent(inst.instance_id), {
+        headers: { 'Authorization': 'Bearer ' + getToken() }
+      })
+      const res = await r.json()
+      if (res.status && res.data) {
+        existingCreds = res.data.creds || res.data.creds_decoded || res.data.credentials || {}
+      }
+    } catch (e) { /* 拉取失败则不回填 */ }
   }
 
   let body = ''

@@ -545,7 +545,11 @@
       var hasStored = stored && isSecret;
       var req = opts.required !== false;
       var h = '<div class="field"><label>' + esc(label) + (req ? ' <span class="req">*</span>' : '') + '</label>';
-      if (isTextarea) {
+      if (stored && !isSecret && isTextarea) {
+        h += '<textarea id="cf_' + esc(key) + '" rows="2" placeholder="' + esc(ph) + '">' + esc(existingCreds[key]) + '</textarea>';
+      } else if (stored && !isSecret) {
+        h += '<input id="cf_' + esc(key) + '" type="' + (isUrl ? 'url' : 'text') + '" value="' + esc(existingCreds[key]) + '" placeholder="' + esc(ph) + '">';
+      } else if (isTextarea) {
         h += '<textarea id="cf_' + esc(key) + '" rows="2" placeholder="' + esc(ph) + '"></textarea>';
       } else {
         h += '<input id="cf_' + esc(key) + '" type="' + (isSecret ? 'password' : isUrl ? 'url' : 'text') + '" placeholder="' +
