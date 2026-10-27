@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-# 触发 vendor 加入 sys.path（octop_gateway / octop_memory 随仓库携带在 vendor/ 下）
+# 触发 vendor 加入 sys.path（octop_gateway 随仓库携带在 vendor/ 下）
 import platform_ext  # noqa: E402
 
 

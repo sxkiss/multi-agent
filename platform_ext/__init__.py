@@ -7,9 +7,8 @@
 - cli      ：薄 CLI 入口（复用现有 HTTP API）
 - usage    ：用量统计（JSONL ledger）
 - gateway  ：多平台 IM 通道桥（封装 octop-gateway 官方包）
-- memory   ：增强分层记忆（封装 octop-memory 官方包）
 
-vendor 包（octop-gateway / octop-memory）随仓库携带在 vendor/ 下，
+vendor 包（octop-gateway）随仓库携带在 vendor/ 下，
 这里把 vendor 加入 sys.path 供懒加载。
 
 设计约束（不破坏现有 API）：
@@ -27,13 +26,13 @@ __all__ = ["teams", "channels", "storage", "cli", "api", "usage", "gateway", ]
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 把随仓库携带的 vendor 包加入 sys.path（octop-gateway / octop-memory 官方包）
+# 把随仓库携带的 vendor 包加入 sys.path（octop-gateway 官方包）
 _VENDOR_DIR = os.path.join(PROJECT_ROOT, "vendor")
 # 优先把 vendor 根目录加入 sys.path，使自动安装到 vendor/ 的第三方依赖
 # （如 paho-mqtt、discord.py、lark-oapi 等）也能被 import。
 if os.path.isdir(_VENDOR_DIR) and _VENDOR_DIR not in sys.path:
     sys.path.insert(0, _VENDOR_DIR)
-for _v in ("octop-gateway", "octop-memory"):
+for _v in ("octop-gateway",):
     _p = os.path.join(_VENDOR_DIR, _v)
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
