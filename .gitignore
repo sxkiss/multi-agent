@@ -171,3 +171,10 @@ usage_ledger.jsonl
 memory_octop.sqlite
 metrics/
 market_cache/
+
+# 过程性计划文档和媒体素材（不纳入版本控制）
+docs/plan-*.md
+docs/IMPLEMENTATION_SUMMARY.md
+docs/bt-extension-architecture-summary.md
+docs/report-ds-tool-mismatch.md
+docs/media/
