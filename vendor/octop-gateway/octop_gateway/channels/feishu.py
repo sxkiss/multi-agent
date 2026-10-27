@@ -21,6 +21,7 @@ from urllib.parse import quote
 import aiohttp
 
 from octop_gateway.channel import BaseChannel, ChannelConfig, MessageProcessor
+from octop_gateway.constraints import ChannelConstraints
 from octop_gateway.models import (
     AudioContent,
     ChannelSubject,
@@ -42,6 +43,13 @@ _DEDUP_MAX_SIZE = 2000
 
 # Token refresh interval (1.5 hours, token valid for 2 hours)
 _TOKEN_REFRESH_INTERVAL = 5400
+
+# Typing reaction keepalive: refresh every N seconds to keep the indicator
+# visible in Feishu (no native typing API — reaction is the proxy).
+_TYPING_KEEPALIVE_INTERVAL = 5.0
+
+# Max tracking entries for _typing_reactions; evict oldest when full.
+_TYPING_REACTION_MAX_SIZE = 200
 
 # WebSocket health: detect dead threads / stuck reconnects and hard-restart.
 _WS_WATCHDOG_INTERVAL = 30.0
@@ -122,6 +130,19 @@ class FeishuChannel(BaseChannel):
         self._bot_open_id: str | None = None
         # Deduplication: ordered dict acting as bounded LRU set
         self._seen_message_ids: OrderedDict[str, float] = OrderedDict()
+        # Typing reaction tracking: message_id -> reaction_id (bounded LRU).
+        # Feishu has no native typing API; a "Typing" emoji reaction is used as
+        # the indicator and removed once the reply has been delivered.
+        self._typing_reactions: OrderedDict[str, str] = OrderedDict()
+
+    def _default_constraints(self) -> ChannelConstraints:
+        """Feishu defaults: no native typing API, so the reaction keepalive
+        only needs to refresh occasionally rather than every few seconds."""
+        return ChannelConstraints(
+            typing_keepalive_interval=_TYPING_KEEPALIVE_INTERVAL,
+            show_thinking=False,
+            show_tool_hints=True,
+        )
 
     # =========================================================================
     # Lifecycle
@@ -911,6 +932,32 @@ class FeishuChannel(BaseChannel):
     # Reactions (typing acknowledgement)
     # =========================================================================
 
+    async def _send_typing_indicator(self, subject: ChannelSubject) -> None:
+        """Send / refresh the typing indicator for a subject.
+
+        Feishu has no native typing API, so we maintain a "Typing" emoji
+        reaction on the most recent inbound message for this subject.
+        Each call re-adds the reaction (which refreshes the timestamp shown
+        to the user). Completing the reply calls :meth:`_clear_typing_indicator`
+        to clear the indicator.
+        """
+        meta = subject.metadata or {}
+        message_id = str(meta.get("message_id") or "")
+        if not message_id:
+            logger.debug("Feishu: no message_id in subject metadata, skipping typing")
+            return
+        self._add_reaction_async(message_id, "Typing")
+        self._prune_typing_reactions()
+
+    async def _clear_typing_indicator(self, subject: ChannelSubject) -> None:
+        """Remove the typing reactions tracked for this channel turn."""
+        await self._remove_typing_reactions(subject)
+
+    def _prune_typing_reactions(self) -> None:
+        """Evict oldest entries from ``_typing_reactions`` when over capacity."""
+        while len(self._typing_reactions) > _TYPING_REACTION_MAX_SIZE:
+            self._typing_reactions.popitem(last=False)
+
     def _add_reaction_async(self, message_id: str, emoji_type: str = "Typing") -> None:
         """Add emoji reaction to a message (fire-and-forget from lark-oapi thread).
 
@@ -924,12 +971,17 @@ class FeishuChannel(BaseChannel):
         else:
             logger.debug("Feishu: main loop not available, skipping reaction")
 
-    async def _add_reaction(self, message_id: str, emoji_type: str = "Typing") -> None:
+    async def _add_reaction(
+        self, message_id: str, emoji_type: str = "Typing"
+    ) -> str | None:
         """Add an emoji reaction to a Feishu message via API.
 
         Runs in the main event loop (dispatched by _add_reaction_async).
         Uses a fresh aiohttp session for the actual POST to avoid holding
         the shared session during a fire-and-forget operation.
+
+        Returns the new reaction's ID on success, or ``None`` on failure.
+        The ID is tracked in ``_typing_reactions`` so it can later be removed.
 
         Args:
             message_id: The message to react to.
@@ -946,12 +998,88 @@ class FeishuChannel(BaseChannel):
 
             async with aiohttp.ClientSession() as session, session.post(url, headers=headers, json=payload) as resp:
                 if resp.status == 200:
-                    logger.debug("Feishu reaction added: %s on %s", emoji_type, message_id[:16])
+                    body_text = await resp.text()
+                    reaction_id: str | None = None
+                    with contextlib.suppress(json.JSONDecodeError):
+                        data = json.loads(body_text) if body_text else {}
+                        reaction_id = (
+                            str(data.get("data", {}).get("id") or "") or None
+                        )
+                    if reaction_id:
+                        self._typing_reactions[message_id] = reaction_id
+                        self._prune_typing_reactions()
+                        logger.debug(
+                            "Feishu reaction added: %s on %s (rid=%s)",
+                            emoji_type,
+                            message_id[:16],
+                            reaction_id[:8],
+                        )
+                    else:
+                        logger.debug(
+                            "Feishu reaction added: %s on %s (no id in response: %s)",
+                            emoji_type,
+                            message_id[:16],
+                            body_text[:100],
+                        )
+                    return reaction_id
                 else:
                     body = await resp.text()
                     logger.debug("Feishu reaction failed: %d %s", resp.status, body[:100])
+                    return None
         except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError):
             logger.debug("Feishu _add_reaction error for %s", message_id[:16], exc_info=True)
+            return None
+
+    async def _remove_typing_reactions(self, subject: ChannelSubject) -> None:
+        """Remove all typing reactions belonging to the given subject.
+
+        Iterates ``_typing_reactions`` and DELETEs each one; entries that
+        fail are silently dropped (the API may have already garbage-collected
+        the reaction or the message may have been recalled).
+        """
+        meta = subject.metadata or {}
+        # Match entries whose message_id is referenced by this subject.
+        # In Feishu a subject is keyed by thread_id (if present) or to_handle;
+        # reactions are tracked by the originating message_id, so we remove all
+        # tracked typing reactions — the mapping is per-turn anyway.
+        ids_to_remove = list(self._typing_reactions.items())
+        self._typing_reactions.clear()
+
+        if not ids_to_remove:
+            return
+
+        try:
+            token = await self._refresh_token()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
+            async with aiohttp.ClientSession() as session:
+                for message_id, reaction_id in ids_to_remove:
+                    url = f"{_API_BASE}/im/v1/messages/{quote(message_id, safe='')}/reactions/{quote(reaction_id, safe='')}"
+                    try:
+                        async with session.delete(url, headers=headers) as resp:
+                            if resp.status in (200, 204):
+                                logger.debug(
+                                    "Feishu typing reaction removed: rid=%s on %s",
+                                    reaction_id[:8],
+                                    message_id[:16],
+                                )
+                            else:
+                                body = await resp.text()
+                                logger.debug(
+                                    "Feishu reaction delete failed: %d %s",
+                                    resp.status,
+                                    body[:80],
+                                )
+                    except (aiohttp.ClientError, TimeoutError):
+                        logger.debug(
+                            "Feishu _remove_typing_reaction error for %s",
+                            message_id[:16],
+                            exc_info=True,
+                        )
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("Feishu _remove_typing_reactions error", exc_info=True)
 
     # =========================================================================
     # Inbound Parsing

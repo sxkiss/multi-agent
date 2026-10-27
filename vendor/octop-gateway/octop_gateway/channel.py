@@ -928,6 +928,9 @@ class BaseChannel(ABC):
                 typing_keepalive.stop()
             if events is not None:
                 await close_event_stream(events)
+            # Clear any platform-specific typing indicators so the user
+            # no longer sees the "typing…" hint after a turn is done.
+            await self._clear_typing_indicator(subject)
         return processing_succeeded
 
     async def _rate_limited_send(self, subject: ChannelSubject, text: str) -> None:
@@ -1006,6 +1009,14 @@ class BaseChannel(ABC):
 
         Default: no-op. Platforms that support typing indicators (WeChat, Discord)
         should override this to call their platform API.
+        """
+
+    async def _clear_typing_indicator(self, subject: ChannelSubject) -> None:
+        """Clear any active typing indicator for the subject.
+
+        Called at the end of every turn, after the reply has been delivered.
+        Default: no-op. Channels whose typing indicator is a persistent
+        artifact (e.g. a Feishu emoji reaction) must override this to remove it.
         """
 
     async def _deliver_event(
