@@ -1321,37 +1321,6 @@
       "remote_transport": "streamable_http"
     },
     {
-      "kind": "workbuddy-expert-marketplace",
-      "name": {
-        "en": "WorkBuddy Expert Marketplace",
-        "zh": "WorkBuddy 专家市场"
-      },
-      "description": {
-        "en": "Browse and install 429 AI experts from the WorkBuddy Expert Marketplace. Covers content creation, engineering, data & AI, finance, marketing, and more.",
-        "zh": "浏览并安装 WorkBuddy 专家市场的 429 位 AI 专家。覆盖内容创作、技术工程、数据智能、金融投资、营销增长等 15 个领域。"
-      },
-      "auth_kind": "none",
-      "doc_url": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace",
-      "icon": "sparkles",
-      "color": "#7c3aed",
-      "phase": "available",
-      "mcp_mode": "gateway",
-      "category": "professional",
-      "quick_auth_url": "",
-      "guide_url": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace",
-      "manual_url": "",
-      "auth_hint": {
-        "en": "No external auth required. Browse the marketplace and install experts directly from the agent.",
-        "zh": "无需外部鉴权。直接在对话中让 AI 从专家市场浏览并安装专家。"
-      },
-      "allowed_tools": [
-        "ExpertMarket",
-        "GetExpertPrompt",
-        "InstallExpert"
-      ],
-      "credential_fields": []
-    },
-    {
       "kind": "tdx-connector",
       "name": {
         "en": "Tongdaxin Finance",

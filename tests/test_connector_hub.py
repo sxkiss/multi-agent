@@ -30,7 +30,7 @@ class TestCatalog:
         entries = cat.list_catalog_entries()
         # 含 WorkBuddy 443 个连接器（原 27/28 个）
         assert len(entries) >= 400
-        assert len(entries) == 466
+        assert len(entries) == 465
 
     def test_known_kind_present(self):
         from connector_hub import connectors_catalog as cat
