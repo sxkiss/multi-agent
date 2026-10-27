@@ -891,3 +891,210 @@ def McpMarket(keyword: str = "", limit: int = 20) -> str:
             lines.append(f"   GitHub: {gh}")
     lines.append("\n下一步：用 `InstallMcpServer(server_slug=\"<上面反引号里的 qualifiedName>\")` 查看安装步骤。")
     return _xml_response("done", "\n".join(lines))
+
+
+# ============================================================
+# WorkBuddy 连接器市场（443 个连接器，已集成进 BT connector_hub）
+#
+# 数据源：https://static.workbuddy.cn/connectors-config-v2/connectors-config.zip
+# 已导入 BT catalog（connector_hub/catalog.json），本组工具直接读本地 catalog：
+# - WBConnectorMarket：搜索/分类浏览
+# - WBConnectorDetail：查看单个连接器详情（含 mcp.json 与凭据要求）
+# - WBConnectorInstall：在 BT catalog 中创建实例（无凭据直接安装，需凭据提示用户）
+# ============================================================
+
+_CATALOG_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "connector_hub",
+    "catalog.json",
+)
+
+
+def _load_wb_catalog() -> List[Dict[str, Any]]:
+    """读取本地 BT connector_hub catalog.json。"""
+    try:
+        with open(_CATALOG_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data.get("connectors", [])
+    except Exception:
+        return []
+
+
+def _wb_field(entry: Dict[str, Any], *keys: str) -> str:
+    """从连接器条目中提取字段，支持 name/description 的本地化 dict 形态。"""
+    for k in keys:
+        v = entry.get(k)
+        if isinstance(v, dict):
+            return str(v.get("zh") or v.get("en") or "")
+        if v is not None:
+            return str(v)
+    return ""
+
+
+@register_tool(category="市场", name_cn="查询WB连接器市场", risk_level="low")
+def WBConnectorMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
+    """
+    浏览 WorkBuddy 连接器市场（443 个连接器，已集成进 BT connector_hub）。
+
+    **何时使用（主动查询）**：
+    - 用户想找某个外部服务/API 的 MCP 连接器（如企业数据、地图、文档、财经等）
+    - 需要了解 BT connector_hub 里有哪些可用连接器
+
+    - keyword：按 id/名称/描述模糊匹配（支持中英文）
+    - category：按分类过滤（office|knowledge|media|productivity|travel|professional|self_hosted）
+    - limit：返回条数上限（默认 20）
+
+    找到目标后用 `WBConnectorDetail(connector_id="<id>")` 查看详情，
+    用 `WBConnectorInstall(connector_id="<id>")` 安装。
+    """
+    entries = _load_wb_catalog()
+    if not entries:
+        return _xml_response("error", "读取本地连接器目录失败（connector_hub/catalog.json）")
+
+    kw = (keyword or "").strip().lower()
+    cat = (category or "").strip().lower()
+    hits: List[Dict[str, Any]] = []
+    for e in entries:
+        if cat and str(e.get("category", "")).lower() != cat:
+            continue
+        if kw:
+            blob = " ".join([
+                str(e.get("kind", "")),
+                _wb_field(e, "name"),
+                _wb_field(e, "description"),
+            ]).lower()
+            if kw not in blob:
+                continue
+        hits.append(e)
+        if len(hits) >= max(1, int(limit or 20)):
+            break
+
+    if not hits:
+        return _xml_response("done", f"未匹配到连接器（keyword={keyword!r} category={category!r}）。可留空 keyword 查看全部。")
+
+    lines = [f"<!-- WB 连接器市场：命中 {len(hits)} 个（共 {len(entries)} 个） -->"]
+    for i, e in enumerate(hits, 1):
+        kind = str(e.get("kind", ""))
+        name = _wb_field(e, "name") or kind
+        desc = _wb_field(e, "description")[:120]
+        auth = str(e.get("auth_kind", ""))
+        catg = str(e.get("category", ""))
+        mode = str(e.get("mcp_mode", ""))
+        head = f"{i}. **{name}** `{kind}`"
+        lines.append(head + f" [{catg}/{auth}/{mode}]")
+        if desc:
+            lines.append(f"   {desc}")
+    lines.append("\n下一步：用 `WBConnectorDetail(connector_id=\"<上面反引号里的 id>\")` 查看详情，"
+                 "用 `WBConnectorInstall(connector_id=\"<id>\")` 安装。")
+    return _xml_response("done", "\n".join(lines))
+
+
+@register_tool(category="市场", name_cn="查看WB连接器详情", risk_level="low")
+def WBConnectorDetail(connector_id: str) -> str:
+    """
+    查看 WorkBuddy 连接器的详细信息（含凭据要求与 MCP 配置）。
+
+    **何时使用**：
+    - 用户想了解某个连接器的认证方式、凭据字段、MCP 端点
+    - 安装前需要确认是否需要 API Key / OAuth
+
+    - connector_id：连接器 id（来自 `WBConnectorMarket` 输出）
+    """
+    if not connector_id.strip():
+        return _xml_response("error", "参数 connector_id 不能为空")
+    entries = _load_wb_catalog()
+    entry = next((e for e in entries if e.get("kind") == connector_id.strip()), None)
+    if entry is None:
+        return _xml_response("done", f"未找到连接器 {connector_id!r}，可用 `WBConnectorMarket` 浏览全部。")
+
+    lines = [f"<!-- WB 连接器详情：{connector_id} -->"]
+    lines.append(f"**{_wb_field(entry, 'name')}** `{entry.get('kind')}`")
+    desc = _wb_field(entry, "description")
+    if desc:
+        lines.append(f"\n{desc}")
+    lines.append(f"\n- 分类：{entry.get('category', '')}")
+    lines.append(f"- 认证：{entry.get('auth_kind', '')}")
+    lines.append(f"- MCP 模式：{entry.get('mcp_mode', '')}")
+    lines.append(f"- 文档：{entry.get('doc_url', '')}")
+    hint = entry.get("auth_hint")
+    if hint:
+        lines.append(f"- 认证提示：{_wb_field(entry, 'auth_hint')}")
+    fields = entry.get("credential_fields") or []
+    if fields:
+        lines.append("\n需要以下凭据：")
+        for f in fields:
+            label = f.get("label")
+            if isinstance(label, dict):
+                label = label.get("zh") or label.get("en")
+            key = f.get("key", "")
+            req = "必填" if f.get("required", True) else "选填"
+            lines.append(f"  - `{key}` {label}（{req}）")
+    else:
+        lines.append("\n无需额外凭据，可直接安装。")
+    lines.append(f"\n下一步：用 `WBConnectorInstall(connector_id=\"{connector_id}\")` 安装。")
+    return _xml_response("done", "\n".join(lines))
+
+
+@register_tool(category="市场", name_cn="安装WB连接器", risk_level="medium")
+def WBConnectorInstall(connector_id: str) -> str:
+    """
+    在 BT connector_hub 中安装（创建实例）一个 WorkBuddy 连接器。
+
+    **何时使用**：
+    - 用户确认要接入某个连接器
+    - 无需凭据的连接器可直接安装；需要凭据的会提示用户先配置
+
+    - connector_id：连接器 id（来自 `WBConnectorMarket` / `WBConnectorDetail`）
+    """
+    if not connector_id.strip():
+        return _xml_response("error", "参数 connector_id 不能为空")
+    try:
+        from connector_hub import connectors_service as svc
+        from connector_hub.connectors_catalog import get_catalog_entry
+    except Exception as e:
+        return _xml_response("error", f"加载 connector_hub 失败: {e!s}")
+
+    kind = connector_id.strip()
+    entry = get_catalog_entry(kind)
+    if entry is None:
+        return _xml_response("done", f"未找到连接器 {kind!r}，可用 `WBConnectorMarket` 浏览全部。")
+
+    # 检查是否已存在同 kind 实例
+    existing = [i for i in svc.list_instances() if i.get("kind") == kind]
+    if existing:
+        return _xml_response("done", f"连接器 {kind} 已安装（实例 {existing[0]['instance_id']}），无需重复创建。")
+
+    auth = entry.auth_kind
+    if auth == "oauth2":
+        return _xml_response(
+            "done",
+            f"连接器 {kind} 使用 OAuth2 授权。请用 `WBConnectorDetail(connector_id=\"{kind}\")` 查看，"
+            "并在管理面板中完成 OAuth 授权。",
+        )
+    if auth in ("personal_token", "api_key", "custom_fields", "imap_app_password"):
+        fields = entry.credential_fields
+        if fields:
+            names = ", ".join(f.key for f in fields)
+            return _xml_response(
+                "done",
+                f"连接器 {kind} 需要凭据（{names}）。请先用 `WBConnectorDetail(connector_id=\"{kind}\")` 查看字段，"
+                "再到连接器管理面板中配置并安装。",
+            )
+        # 无字段的 api_key 兜底：提示需要 token
+        return _xml_response(
+            "done",
+            f"连接器 {kind} 需要 API Token。请用 `WBConnectorDetail(connector_id=\"{kind}\")` 查看获取方式，"
+            "再到管理面板配置。",
+        )
+
+    # 无需凭据：直接创建实例
+    try:
+        inst_name = entry.name.resolve("zh") or kind
+        inst = svc.create_instance(kind, inst_name, {})
+        return _xml_response(
+            "done",
+            f"连接器 {kind} 已安装成功（实例 {inst['instance_id']}）。\n"
+            "下一步：在 /connectors 面板中确认启用，或用 `MCP(action=\"list\")` 查看生成的 MCP 配置。",
+        )
+    except Exception as e:
+        return _xml_response("error", f"安装连接器 {kind} 失败: {e!s}")

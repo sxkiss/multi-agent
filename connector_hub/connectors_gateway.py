@@ -24,6 +24,7 @@ from connector_hub.gateway_adapters import (
     wechat_reading,
     wecom_cli,
     weknora,
+    workbuddy_experts,
     yuandian,
 )
 
@@ -52,6 +53,7 @@ _ADAPTERS: dict[str, GatewayAdapter] = {
     "wecom-cli": wecom_cli,
     "obsidian-cli": obsidian_cli,
     "weknora": weknora,
+    "workbuddy-expert-marketplace": workbuddy_experts,
 }
 
 # 需要主机安装外部 CLI 二进制的 kind（无二进制时 list_tools 仍可用，call 才报错）
