@@ -1586,13 +1586,17 @@ function buildStreamHandlers(sessionId) {
     },
     onCompactSummary: (data) => {
       if (!isMine()) return
-      // 将压缩摘要作为 assistant 消息插入对话窗口
+      // 剥离 XML/Markdown 代码块包装，保留纯文本
+      let plain = (data.content || '').trim()
+      plain = plain.replace(/```[a-z]*\n?/g, '').replace(/```\n?/g, '').replace(/^<summary>\s*/i, '').replace(/\s*<\/summary>$/i, '')
+      // 展示「历史已压缩」提示卡（纯文本，不渲染 Markdown）
+      const noticeText = `历史已压缩（合并后的最新摘要，上下文已折叠）：${plain.slice(0, 260)}${plain.length > 260 ? '…' : ''}`
       currentMessages.value.push({
-        id: data.msg_id,
+        id: data.msg_id || `cs_${Date.now()}`,
         role: 'assistant',
-        content: data.content,
+        content: noticeText,
         time: data.timestamp ? new Date(data.timestamp * 1000).toISOString() : new Date().toISOString(),
-        contentBlocks: [{ type: 'compact_summary', content: data.content }]
+        contentBlocks: [{ type: 'compact_summary', content: noticeText }]
       })
       scrollToBottom()
     },

@@ -2847,10 +2847,32 @@ Here is some useful information about the environment you are running in:
                                     "- 下一步计划\n"
                                     "- 已确认的事实和决策\n"
                                     "- 未完成的任务\n\n"
-                                    "注意：只需返回合并后的最新摘要内容，不要任何寒暄或前缀；若没有上轮摘要就只概括本轮对话。\n\n"
+                                    "严格输出要求：只返回纯文本摘要正文。不要复述本指令、不要使用任何 XML/HTML/Markdown 标签、不要加前缀或总结句。"
                                     f"{('【上轮摘要】\n' + prev_summary_text + '\n\n') if prev_summary_text else ''}"
                                     f"【本轮新增对话】\n{src_text}"
                                 )
+
+                            def _strip_summary_echo_and_xml(text: str) -> str:
+                                """剥离模型可能回显的指令、XML 标签、markdown 代码块。"""
+                                import re
+                                s = text.strip()
+                                # 去掉 ```xml / ```code 代码块包装
+                                s = re.sub(r'```xml\s*', '', s, flags=re.IGNORECASE)
+                                s = re.sub(r'```[a-z]*\s*', '', s, flags=re.IGNORECASE)
+                                s = re.sub(r'```', '', s)
+                                # 去掉可能套一层 <summary>...</summary>
+                                s = re.sub(r'<summary>\s*', '', s, flags=re.IGNORECASE)
+                                s = re.sub(r'\s*</summary>', '', s, flags=re.IGNORECASE)
+                                # 只剥离开头的固定指令回显片段（非贪婪，不吞掉正文）
+                                s = re.sub(
+                                    r'^(?:请基于【上一轮摘要】与【本轮新增对话】.*?(?:让我梳理一下。|以下是|我重新|OK|好的)[:：]?\s*)',
+                                    '', s, flags=re.IGNORECASE | re.DOTALL
+                                )
+                                s = re.sub(r'^用户要求.*?返回合并后的最新摘要内容。[：:。]?\s*', '', s, flags=re.IGNORECASE | re.DOTALL)
+                                s = re.sub(r'^不要任何寒暄或前缀。?\s*', '', s, flags=re.IGNORECASE | re.DOTALL)
+                                s = re.sub(r'^注意：.*?\n\s*', '', s, flags=re.IGNORECASE | re.DOTALL)
+                                s = re.sub(r'^让我梳理一下。\s*', '', s, flags=re.IGNORECASE | re.DOTALL)
+                                return s.strip()
 
                             def _request_summary(src_text: str):
                                 return self.client.chat.completions.create(
@@ -2922,6 +2944,9 @@ Here is some useful information about the environment you are running in:
                             else:
                                 self._compress_fail_streak = 0
                                 try:
+                                    summary_content = _strip_summary_echo_and_xml(summary_content)
+                                    if not summary_content.strip():
+                                        raise ValueError("清理后摘要为空")
                                     summary_msg_id = self.memory.insert_compressed_summary(summary_content, after_ids=early_ids)
                                     self._pending_summary = {
                                         "type": "compact_summary",
