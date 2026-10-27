@@ -632,6 +632,11 @@
     var r = await AF(API + path, AOPTS(opts || {}))
     return r.json()
   }
+  // knowledge API 注册在 /api/*（非 /api/v2），单独封装避免路径错误
+  async function kbApi(path, opts) {
+    var r = await AF('/api' + path, AOPTS(opts || {}))
+    return r.json()
+  }
 
   // ── Tab 切换 ─────────────────────────────
   window.switchTab = function (name) {
@@ -1134,7 +1139,7 @@
   async function loadMemory() {
     var el = $('tab-memory')
     try {
-      var st = await api('/knowledge/list')
+      var st = await kbApi('/knowledge/list')
       if (!st.status) throw new Error(st.msg || '加载失败')
       kbData = { stats: st.data.stats, documents: st.data.documents || [] }
       el.innerHTML =
@@ -1175,7 +1180,7 @@
     var name = $('kbName').value.trim()
     if (!text) { toast('请输入内容', 'err'); return }
     try {
-      var res = await api('/knowledge/add_text', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text, name: name || undefined }) })
+      var res = await kbApi('/knowledge/add_text', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text, name: name || undefined }) })
       if (!res.status) throw new Error(res.msg || '入库失败')
       toast('已入库')
       loadMemory()
@@ -1183,7 +1188,7 @@
   }
   window.kbLoadMem0 = async function () {
     try {
-      var res = await api('/knowledge/add_mem0', { method: 'POST' })
+      var res = await kbApi('/knowledge/add_mem0', { method: 'POST' })
       if (!res.status) throw new Error(res.msg || '同步失败')
       toast('同步 ' + (res.data.imported || 0) + ' 条')
       loadMemory()
@@ -1194,7 +1199,7 @@
     var box = $('kbSearchResult')
     if (!q) { box.className = 'empty'; box.textContent = '输入关键词查询'; return }
     try {
-      var res = await api('/knowledge/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: q, top_k: 5, score: 0.35 }) })
+      var res = await kbApi('/knowledge/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: q, top_k: 5, score: 0.35 }) })
       if (!res.status) throw new Error(res.msg || '检索失败')
       var hits = res.data.results || []
       box.className = ''
@@ -1207,7 +1212,7 @@
   }
   window.kbDelete = async function (doc_id) {
     try {
-      var res = await api('/knowledge/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ doc_id: doc_id }) })
+      var res = await kbApi('/knowledge/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ doc_id: doc_id }) })
       if (!res.status) throw new Error(res.msg || '删除失败')
       toast('已删除')
       loadMemory()
@@ -1215,7 +1220,7 @@
   }
   window.kbExport = async function () {
     try {
-      var res = await api('/knowledge/list')
+      var res = await kbApi('/knowledge/list')
       if (!res.status) throw new Error(res.msg || '导出失败')
       var blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
       var a = document.createElement('a')
