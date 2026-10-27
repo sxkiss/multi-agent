@@ -278,6 +278,7 @@
     var html = '<div class="grid">' + list.map(function (e) {
       var supported = e.supported;
       var isOAuth2 = (e.auth_kind === 'oauth2');
+      var isOAuth = (e.auth_kind === 'oauth');
       var badges = '<span class="badge mode-' + esc(e.mcp_mode) + '">' + esc(e.mcp_mode) + '</span>' +
         '<span class="badge">' + esc(e.category) + '</span>' +
         '<span class="badge">' + esc(e.auth_kind) + '</span>' +
@@ -291,17 +292,23 @@
         if (hasManualField) {
           actions += '<button class="btn" data-manual-oauth2="' + esc(e.kind) + '">手动粘贴 Token</button>';
         }
+      } else if (isOAuth) {
+        // WorkBuddy 导入的 oauth 连接器：无标准 OAuth 发现，走手动粘贴 access_token 兜底
+        actions += '<button class="btn primary" data-manual-oauth2="' + esc(e.kind) + '">+ 添加（粘贴 Token）</button>';
       } else if (e.login_url) {
         // CLI 设备码登录授权（飞书 CLI 等）：扫码即可，无需手填 App 凭据
         actions += '<button class="btn primary" data-cli-auth="' + esc(e.kind) + '">🔐 登录授权</button>';
         if (supported) actions += '<button class="btn" data-add="' + esc(e.kind) + '">+ 手动配置</button>';
-      } else if (e.auth_kind === 'none' && e.mcp_mode === 'remote') {
-        // 无需凭据的 remote MCP：直接添加即可（251 个开箱即用的连接器）
+      } else if (e.auth_kind === 'none' && supported) {
+        // 无需凭据的连接器（remote / gateway 均已注册适配器）：直接添加即可
         actions += '<button class="btn primary" data-add="' + esc(e.kind) + '">+ 添加</button>';
       } else if (supported) {
         actions += '<button class="btn primary" data-add="' + esc(e.kind) + '">+ 添加</button>';
       }
-      if (e.manual_url) {
+      // 仅当 manual_url 是真实可用的获取凭证页面时显示「获取凭据」链接；
+      // WorkBuddy CDN 目录（static.workbuddy.cn/connectors-config-v2/...）实际 404，
+      // 不显示，避免用户点开死链（此时靠弹窗内 auth_hint 文本指引）。
+      if (e.manual_url && !/static\.workbuddy\.cn\/connectors-config-v2\//.test(e.manual_url)) {
         actions += '<a class="a-link" href="' + esc(e.manual_url) + '" target="_blank" rel="noopener" style="align-self:center">获取凭据 ↗</a>';
       }
       return '<div class="card">' +
@@ -634,9 +641,25 @@
           });
         }
       }
+    } else if (e.auth_kind === 'oauth') {
+      // WorkBuddy 导入的 oauth 连接器：无标准 OAuth 发现，手动粘贴 access_token 兜底接入
+      body += '<div class="hint" style="padding:12px;background:var(--bt-surface-2);border-radius:8px">' +
+        '该连接器使用 OAuth 授权。请先获取 access_token，再手动粘贴到下方保存即可接入。' +
+        '</div>';
+      if (currentManualOAuth2) {
+        body += fieldHtml('manual_token', 'Access Token', {
+          placeholder: '粘贴 Access Token', secret: true, required: true,
+          help: '粘贴 OAuth access_token（可带 Bearer 前缀）',
+        });
+      }
     } else if (fields.length) {
       // credential_fields 已定义：统一走循环，auth_hint 提示也一并保留
       fields.forEach(renderField);
+    } else if (e.auth_kind === 'none') {
+      // 免凭证连接器：无需输入任何凭据，直接添加即可
+      body += '<div class="hint" style="padding:12px;background:var(--bt-surface-2);border-radius:8px">' +
+        '该连接器无需凭据，开箱即用，直接保存即可。' +
+        '</div>';
     } else {
       // 兜底：通用 Token 输入
       body += '<div class="field"><label>凭据 <span class="req">*</span></label><textarea id="f_creds" rows="2" placeholder="粘贴 Token / API Key"></textarea>' +

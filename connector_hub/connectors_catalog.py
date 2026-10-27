@@ -16,12 +16,12 @@ AuthKind = Literal[
     "personal_token", "oauth2", "auth_code", "api_key",
     "imap_app_password", "session_cookie", "api_credentials", "custom_fields",
 ]
-McpMode = Literal["remote", "gateway", "internal"]
+McpMode = Literal["remote", "gateway", "internal", "stdio", "cli"]
 CredentialFieldType = Literal["text", "password", "url", "tags"]
 
-# BT 实际支持录入的凭据类型（OAuth2 全流暂不实现，仅展示）
+# BT 实际支持录入的凭据类型（oauth 类型走手动粘贴 access_token 兜底，同样可接入）
 SUPPORTED_AUTH_KINDS = frozenset({
-    "personal_token", "api_key", "imap_app_password", "custom_fields",
+    "none", "personal_token", "api_key", "imap_app_password", "custom_fields", "oauth",
 })
 
 # gateway 模式连接器（in-process Python 适配器），这些需要 connectors_gateway 注册
@@ -80,6 +80,12 @@ class CatalogEntry:
     mcp_user_agent: str | None = None
     credential_fields: tuple[CredentialField, ...] = ()
     remote_transport: str = "raw_http"
+    # MCP headers 模板（值可能含 ${VAR} 占位符，由 service 层用用户凭据替换）
+    headers_template: dict[str, str] | None = None
+    # 本地 stdio MCP 的启动命令（npx/uvx 等），用于 generate_mcp_spec 直接生成 stdio 配置
+    stdio_command: str | None = None
+    stdio_args: list[str] | None = None
+    stdio_env: dict[str, str] | None = None
 
     # ── 展示感知 ──────────────────────────────────────────
     @property
@@ -88,7 +94,19 @@ class CatalogEntry:
         if self.auth_kind == "oauth2":
             from connector_hub.oauth_providers import get_provider
             return get_provider(self.kind) is not None
-        return self.auth_kind in SUPPORTED_AUTH_KINDS
+        if self.auth_kind not in SUPPORTED_AUTH_KINDS:
+            return False
+        # stdio 本地 MCP：BT mcp_client 原生支持，只要有启动命令即可接入
+        if self.mcp_mode == "stdio":
+            return bool(self.stdio_command)
+        # gateway 模式需要已注册的进程内适配器才能真正调用
+        if self.mcp_mode == "gateway":
+            from connector_hub.connectors_gateway import get_gateway_adapter
+            return get_gateway_adapter(self.kind) is not None
+        # internal 模式（qcc 自托管）走 oauth2 手动 token 兜底，同样可接入
+        if self.mcp_mode == "internal":
+            return True
+        return True
 
     def to_api(self, locale: str = "en") -> dict[str, Any]:
         return {
@@ -180,6 +198,10 @@ def _load() -> dict[str, CatalogEntry]:
             mcp_user_agent=c.get("mcp_user_agent"),
             credential_fields=_fields(c.get("credential_fields", [])),
             remote_transport=c.get("remote_transport", "raw_http"),
+            headers_template=c.get("headers_template"),
+            stdio_command=c.get("stdio_command"),
+            stdio_args=c.get("stdio_args"),
+            stdio_env=c.get("stdio_env"),
         )
     _ENTRIES = entries
     return _ENTRIES

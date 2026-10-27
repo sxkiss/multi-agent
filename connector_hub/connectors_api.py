@@ -213,6 +213,9 @@ async def api_test_credentials(request: Request):
             # 在线程池里执行，避免 asyncio.run 与 uvicorn 事件循环冲突
             tool_count = await asyncio.to_thread(_probe_remote)
             return _ok({"ok": True, "tool_count": tool_count})
+        if entry.mcp_mode == "stdio":
+            # 本地 stdio CLI 连接器：无法远程探测工具数，返回已就绪提示
+            return _ok({"ok": True, "tool_count": 0, "note": "本地 stdio 连接器，保存后即可使用"})
         if cat.is_gateway_kind(kind):
             gw.probe_gateway_credentials(kind, creds)
             return _ok({"ok": True})

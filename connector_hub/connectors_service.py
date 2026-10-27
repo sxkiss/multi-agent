@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import uuid
 from typing import Any
@@ -220,6 +221,51 @@ def _remote_spec_for(
         transport = _normalize_transport(getattr(entry, "remote_transport", None))
         return (custom_url, headers, transport)
 
+    # 通用 remote MCP（WorkBuddy 导入的连接器）：catalog 存了 mcp_url + headers_template。
+    # 把 mcp_url 与 headers_template 中的 ${VAR} 替换为用户填写的凭据值。
+    if getattr(entry, "mcp_url", ""):
+        mcp_url = str(entry.mcp_url).strip()
+
+        def _resolve_var(var: str) -> str:
+            """从 creds 中解析 ${VAR} 对应的值；找不到返回空串。"""
+            v = creds.get(var)
+            if v is None:
+                lower_map = {str(k).lower(): v for k, v in creds.items()}
+                v = lower_map.get(var.lower())
+            if v is None:
+                v = creds.get("token") or creds.get("api_key") or ""
+            return "" if v is None else str(v)
+
+        # URL 里的 ${VAR} 占位符
+        if "${" in mcp_url:
+            mcp_url = re.sub(
+                r"\$\{([^}]+)\}",
+                lambda m: _resolve_var(m.group(1).strip()),
+                mcp_url,
+            )
+
+        headers = dict(_mcp_http_headers())
+        tmpl = getattr(entry, "headers_template", None) or {}
+        if isinstance(tmpl, dict):
+            for hk, hv in tmpl.items():
+                match = re.search(r"\$\{([^}]+)\}", str(hv))
+                if match:
+                    var = match.group(1).strip()
+                    val = _resolve_var(var)
+                    if val:
+                        hv = str(hv).replace(match.group(0), val)
+                headers[str(hk)] = hv
+        # oauth 类型（WorkBuddy 导入，手动粘贴 access_token 兜底）：
+        # 自动附加 Authorization: Bearer，供远程 MCP 鉴权。
+        if getattr(entry, "auth_kind", "") == "oauth":
+            access_token = str(
+                creds.get("access_token") or creds.get("manual_token") or creds.get("token") or ""
+            ).strip()
+            if access_token:
+                headers["Authorization"] = f"Bearer {access_token}"
+        transport = _normalize_transport(getattr(entry, "remote_transport", None))
+        return (mcp_url, headers, transport)
+
     return None
 
 
@@ -254,6 +300,34 @@ def generate_mcp_spec(instance: dict[str, Any]) -> dict[str, Any] | None:
             spec["transport"] = "streamable_http"
         elif transport == "sse":
             spec["transport"] = "sse"
+        return spec
+    if entry.mcp_mode == "stdio":
+        # 本地 stdio MCP：直接把 command/args/env 写入 mcp/config.json，
+        # BT mcp_client 原生支持 stdio 连接。
+        command = getattr(entry, "stdio_command", "") or ""
+        if not command:
+            return None
+        spec: dict[str, Any] = {"type": "stdio", "command": command}
+        args = getattr(entry, "stdio_args", None) or []
+        if args:
+            spec["args"] = list(args)
+        env = dict(getattr(entry, "stdio_env", None) or {})
+        if env:
+            # 把 ${VAR} 占位符替换为用户已填写的凭据值
+            resolved_env: dict[str, str] = {}
+            for k, v in env.items():
+                import re as _re
+                def _res(var: str) -> str:
+                    val = creds.get(var)
+                    if val is None:
+                        val = creds.get("token") or creds.get("api_key") or ""
+                    return "" if val is None else str(val)
+                nv = _re.sub(r"\$\{([^}]+)\}", lambda m: _res(m.group(1).strip()), str(v))
+                if "${" in str(v) and not _re.search(r"\$\{", nv):
+                    # 如果模板值里的占位符全部被替换为空，保留空字符串（服务端只传非空）
+                    pass
+                resolved_env[k] = nv
+            spec["env"] = resolved_env
         return spec
     if entry.mcp_mode == "gateway" or kind in GATEWAY_KINDS:
         internal_token = creds.get("internal_token") or ""
@@ -348,6 +422,25 @@ def normalize_credentials(kind: str, entry: Any, creds: dict[str, Any]) -> dict[
         # CLI 类连接器用专用字段（app_id/app_secret、bot_id/bot_secret），
         # 不需要通用 api_key；其余连接器兼容前端兜底提交的 token 字段。
         is_cli_kind = kind in ("feishu-cli", "wecom-cli")
+
+        # 若该连接器有明确定义的 credential_fields（如 WB 导入的 TUSHARE_TOKEN /
+        # DNB_ACCESS_TOKEN 等），按字段原样校验并保留，不强制要求 key 为 api_key/token。
+        field_keys = [f.key for f in getattr(entry, "credential_fields", ())]
+        if field_keys:
+            missing = [
+                f.key for f in getattr(entry, "credential_fields", ())
+                if f.required and not str(creds.get(f.key) or "").strip()
+            ]
+            # 若实际提交了任意定义字段，则按字段校验；否则回退到通用 api_key/token
+            if any(str(creds.get(k) or "").strip() for k in field_keys):
+                if missing:
+                    labels = {
+                        f.key: f.label.resolve("zh") if f.label else f.key
+                        for f in getattr(entry, "credential_fields", ())
+                    }
+                    raise ValueError("请填写 " + "、".join(labels[k] for k in missing))
+                return dict(creds)
+
         api_key = str(creds.get("api_key") or creds.get("token") or "").strip()
         if not api_key and not is_cli_kind:
             raise ValueError("请填写 API Key")
@@ -393,6 +486,19 @@ def normalize_credentials(kind: str, entry: Any, creds: dict[str, Any]) -> dict[
         if provider:
             out["mail_provider"] = provider
         return out
+
+    if auth == "oauth":
+        # WorkBuddy 导入的 oauth 连接器：未在本地注册标准 OAuth 发现流程，
+        # 走「手动粘贴 access_token」兜底即可接入其远程 MCP。
+        access_token = str(
+            creds.get("access_token") or creds.get("token") or creds.get("manual_token") or ""
+        ).strip()
+        if not access_token:
+            raise ValueError("该 OAuth 连接器需先获取 access_token，或手动粘贴 Token")
+        return {
+            "access_token": access_token,
+            "manual_token": access_token if creds.get("manual_token") else None,
+        }
 
     if auth == "oauth2":
         # 支持两种来源：1) 已完成 OAuth 流程自动带 access_token；

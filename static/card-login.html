@@ -1166,6 +1166,11 @@ function _renderConnList() {
         html += '<button class="btn-sm primary" onclick="event.stopPropagation();startConnOAuth2(\'' + esc(c.kind) + '\')">⚡ 一键授权</button>'
         if (supportsManual) html += '<button class="btn-sm" onclick="event.stopPropagation();openConnectorModal(\'' + esc(c.kind) + '\',null,true)">手动粘贴 Token</button>'
         html += '</div>'
+      } else if (c.auth_kind === 'oauth') {
+        // WorkBuddy 导入的 oauth 连接器：无标准 OAuth 发现，走手动粘贴 access_token 兜底
+        html += '<div class="ft" style="padding:6px 8px;display:flex;gap:6px;flex-wrap:wrap">'
+        html += '<button class="btn-sm primary" onclick="event.stopPropagation();openConnectorModal(\'' + esc(c.kind) + '\',null,true)">+ 添加（粘贴 Token）</button>'
+        html += '</div>'
       } else {
         const authUrl = c.quick_auth_url || c.manual_url || c.guide_url || ''
         const btns = []
@@ -1290,6 +1295,15 @@ async function _renderConnModal() {
         })
       }
     }
+  } else if (entry.auth_kind === 'oauth') {
+    // WorkBuddy 导入的 oauth 连接器：无标准 OAuth 发现，手动粘贴 access_token 兜底接入
+    body += '<div class="hint" style="padding:12px;background:var(--bt-surface-2);border-radius:8px">' +
+      '该连接器使用 OAuth 授权。请先获取 access_token，再手动粘贴到下方保存即可接入。' +
+      '</div>'
+    body += fieldHtml('manual_token', 'Access Token', {
+      placeholder: '粘贴 Access Token', secret: true, required: true,
+      help: '粘贴 OAuth access_token（可带 Bearer 前缀）'
+    })
   } else if (fields.length) {
     for (const f of fields) renderField(f)
   } else {
