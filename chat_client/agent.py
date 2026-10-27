@@ -1415,14 +1415,12 @@ Here is some useful information about the environment you are running in:
                     if _pending > 0 or _finished:
                         logger.info("[Background] drain session_id=%s pending=%d finished=%d", self.session_id[:20], _pending, len(_finished))
                     for _t in _finished:
+                        _res = tool_result_for_model(_t['result'])
                         _text = (
-                            f"<background_task_done>\n"
-                            f"<task_id>{_t['task_id']}</task_id>\n"
-                            f"<tool>{_t['tool']}</tool>\n"
-                            f"<status>{_t['status']}</status>\n"
-                            f"<duration_s>{_t.get('duration_s', '')}</duration_s>\n"
-                            f"<result>\n{_t['result']}\n</result>\n"
-                            f"</background_task_done>\n"
+                            f"[后台任务完成] task_id={_t['task_id']} "
+                            f"tool={_t['tool']} status={_t['status']} "
+                            f"duration={_t.get('duration_s', '')}\n"
+                            f"结果：\n{_res}\n"
                             f"以上是你之前转入后台的工具任务的执行结果，现已完成，"
                             f"请据此继续推进任务，不要重复调用该工具。"
                         )

@@ -3579,11 +3579,12 @@ def _register_orphan_callback():
                 time.strftime('%H:%M:%S', time.localtime(parent_finished_at)))
             return False, 'window_expired'
 
-        # 推前端事件（user 消息形式展示结果）
+        # 推前端事件（user 消息形式展示结果，纯文本，不带 XML 外壳）
+        _plain = _strip_tool_xml(result)
         parent_job.append("background_result", {
-            "task_id": task_id, "tool": tool, "status": status, "result": result
+            "task_id": task_id, "tool": tool, "status": status, "result": _plain
         })
-        parent_job.append("message", result)
+        parent_job.append("message", _plain)
         parent_job.append("message_end", None)
         parent_job.finish("done")
         logger.info(
@@ -3678,6 +3679,25 @@ def _register_orphan_callback():
 
     bg.set_orphan_callback(_handler)
     logger.info("[Background] 孤儿回调已注册（AI_AGENT_ORPHAN_DELAY=%ss）", bg._orphan_delay)
+
+
+def _strip_tool_xml(result: str) -> str:
+    """把工具结果中的 <tool> XML 外壳剥成纯文本，保留状态与正文。
+
+    与 chat_client.tools.base.tool_result_for_model 保持一致，供 web_server
+    内部（孤儿回灌 / background_result 事件）在无 tools 依赖时做同样归一化。
+    """
+    if not isinstance(result, str) or "<tool>" not in result:
+        return result
+    body_m = re.search(r"<toolcall_result>(.*?)</toolcall_result>", result, re.DOTALL)
+    if not body_m:
+        return result
+    name_m = re.search(r"<tool_name>(.*?)</tool_name>", result, re.DOTALL)
+    status_m = re.search(r"<toolcall_status>(.*?)</toolcall_status>", result, re.DOTALL)
+    name = (name_m.group(1).strip() if name_m else "") or "unknown"
+    st = (status_m.group(1).strip() if status_m else "done") or "done"
+    body = body_m.group(1).strip("\n")
+    return f"--- tool result: {name} ({st}) ---\n{body}\n--- end tool result ---"
 
 
 def _dispatch_orphan_job_after_append(session_id: str, task_id: str, tool: str, status: str, result: str):
@@ -3803,11 +3823,12 @@ def _try_append_to_parent_job(session_id: str, task_id: str, tool: str, status: 
             time.strftime('%H:%M:%S', time.localtime(parent_finished_at)))
         return False
 
-    # 推前端事件（user 消息形式展示结果）
+    # 推前端事件（user 消息形式展示结果，纯文本，不带 XML 外壳）
+    _plain = _strip_tool_xml(result)
     parent_job.append("background_result", {
-        "task_id": task_id, "tool": tool, "status": status, "result": result
+        "task_id": task_id, "tool": tool, "status": status, "result": _plain
     })
-    parent_job.append("message", result)
+    parent_job.append("message", _plain)
     parent_job.append("message_end", None)
     parent_job.finish("done")
     logger.info(
@@ -3826,12 +3847,8 @@ def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, 
         "session_id": session_id,
         "message": (
             f"[后台任务结果回灌]\n"
-            f"<background_task_done>\n"
-            f"<task_id>{task_id}</task_id>\n"
-            f"<tool>{tool}</tool>\n"
-            f"<status>{status}</status>\n"
-            f"<result>\n{result}\n</result>\n"
-            f"</background_task_done>\n"
+            f"task_id={task_id} tool={tool} status={status}\n"
+            f"结果：\n{_strip_tool_xml(result)}\n"
             f"以上是之前派发的后台任务执行结果，现已完成。\n"
             f"请基于以上结果回答用户的问题。如果之前用户在等你完成任务，"
             f"现在请给出完整答案。"
