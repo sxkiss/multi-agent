@@ -3677,17 +3677,35 @@ def _dispatch_orphan_job_after_append(session_id: str, task_id: str, tool: str, 
             def _run():
                 from chat_client.tools import set_current_job as _set_job
                 _set_job(orphan_job)
+                # 拉取最终文本（用于推回通道；没有则跳过）
+                reply_text = ""
                 try:
                     for chunk in agent.chat(user_input):
                         for ev, data in _map_agent_chunk(chunk):
                             orphan_job.append(ev, data)
+                            if ev == "message" and isinstance(data, dict):
+                                c = str(data.get("content") or data.get("text") or "")
+                                if c:
+                                    reply_text = c
                     orphan_job.append("message_end", None)
                     orphan_job.finish("done")
                 except Exception as e:
+                    reply_text = f"任务执行出错: {e!s}"
                     orphan_job.append("error", {"msg": f"孤儿回灌异常: {e!s}"})
                     orphan_job.append("message_end", None)
                     orphan_job.finish("error")
                 finally:
+                    # 推到 IM 通道（若路由可用）；失败只记日志不抛
+                    if reply_text.strip():
+                        try:
+                            from platform_ext.gateway_processor import push_to_channel
+                            push_to_channel(session_id, reply_text)
+                        except Exception:  # noqa: BLE001
+                            logger.debug(
+                                "[Background] 回灌消息推送通道失败 session=%s task=%s",
+                                session_id[:24], task_id[:12],
+                                exc_info=True,
+                            )
                     try:
                         agent.close()
                     except Exception:
@@ -3801,17 +3819,37 @@ def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, 
     def _run():
         from chat_client.tools import set_current_job as _set_job
         _set_job(job)
+        # 拉取最终文本（用于推回通道；没有则跳过）
+        reply_text = ""
         try:
             for chunk in agent.chat(user_input):
                 for ev, data in _map_agent_chunk(chunk):
                     job.append(ev, data)
+                    if ev == "message" and isinstance(data, dict):
+                        c = str(data.get("content") or data.get("text") or "")
+                        if c:
+                            reply_text = c
             job.append("message_end", None)
             job.finish("done")
         except Exception as e:
+            reply_text = f"任务执行出错: {e!s}"
             job.append("error", {"msg": f"孤儿回灌异常: {e!s}"})
             job.append("message_end", None)
             job.finish("error")
         finally:
+            # 推到 IM 通道（若路由可用）；失败只记日志不抛
+            if reply_text.strip():
+                try:
+                    from platform_ext.gateway_processor import push_to_channel
+                    push_to_channel(session_id, reply_text)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "[Background] 回灌消息推送通道失败 session=%s task=%s",
+                        session_id[:24], task_id[:12],
+                        exc_info=True,
+                    )
+            job.append("message_end", None)
+            job.finish("done")
             try:
                 agent.close()
             except Exception:
@@ -5892,6 +5930,7 @@ if os.path.exists(static_dir):
 
 # 功能面板等核心页面禁止缓存，避免浏览器继续使用旧版（扫码显示修复等）。
 # 用中间件确保无论路由顺序如何，都注入 no-cache 响应头。
+# 卡密用户访问管理面板时重定向到卡密登录页，避免泄露管理员功能。
 if os.path.exists(static_dir):
     @app.middleware("http")
     async def _no_cache_static_panel(request, call_next):
@@ -5900,6 +5939,12 @@ if os.path.exists(static_dir):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
+            # 卡密用户重定向到卡密登录页
+            from auth import extract_token, is_card_token
+            token = extract_token(request)
+            if token and is_card_token(BASE_DIR, token) and "/static/platform_panel.html" in request.url.path:
+                from fastapi.responses import RedirectResponse
+                return RedirectResponse(url="/static/card-login.html", status_code=302)
         return response
 
 

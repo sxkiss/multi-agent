@@ -92,6 +92,10 @@ PUBLIC_PREFIX = (
     "/favicon.png",
     "/static/",
     "/assets/",
+    # 注意：/api/knowledge/* 不在此白名单。
+    # 它是管理员面板（/static/platform_panel.html）的数据接口，
+    # 必须要求有效 token，且中间件会额外拒绝卡密用户（sub=card:*）。
+    # 面板页的 kbApi() 会从 localStorage 取 token 并带上 Authorization 头。
 )
 
 # ------------------------------------------------------------------
@@ -889,5 +893,23 @@ def register_auth(app: FastAPI, base_dir: str) -> None:
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+        # 前端面板（/static/platform_panel.html）是管理员专用后台，
+        # 卡密用户的子资源 API（/api/knowledge/* 等）也必须要求管理员 token。
+        # 由于 /api/knowledge/* 被加进了免鉴权白名单，这里必须显式拦截卡密用户。
+        # 但卡密专属路径（/api/card/*、/api/v2/card/*、/api/v2/connectors/*）是
+        # 卡密用户自己的子资源，应正常放行由路由内部鉴权，而非一律拒掉。
+        if token and is_card_token(base_dir, token):
+            _card_allowed_prefixes = (
+                "/api/card/",
+                "/api/v2/card/",
+                "/api/v2/connectors/",
+                "/api/models",  # 卡密面板用此接口查可用模型
+            )
+            if not any(path.startswith(p) for p in _card_allowed_prefixes):
+                return JSONResponse(
+                    {"status": False, "msg": "仅管理员可访问", "code": 403},
+                    status_code=403,
+                )
 
         return await call_next(request)

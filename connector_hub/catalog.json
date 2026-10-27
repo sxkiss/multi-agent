@@ -1019,6 +1019,7 @@
       "category": "office",
       "guide_url": "https://open.feishu.cn/document/mcp_open_tools/feishu-cli/set-up-lark-cli-for-ai-agents-in-openclaw_hermes.md",
       "manual_url": "https://open.feishu.cn/app",
+      "login_url": "/api/v2/connectors/cli/feishu-cli/auth/start",
       "auth_hint": {
         "en": "Enter the Feishu app App ID and App Secret; document search also needs Authorize",
         "zh": "填写飞书应用 App ID 与 App Secret；文档搜索需再点「登录授权」"

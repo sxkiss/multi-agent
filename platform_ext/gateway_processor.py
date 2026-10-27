@@ -36,6 +36,148 @@ def session_id_for(channel_type: str, subject_id: str) -> str:
     return f"gw_{_safe_session_component(channel_type)}_{_safe_session_component(subject_id)}"
 
 
+# ── 会话 → 通道出站路由（后台任务回灌用） ────────────────────────────────
+# 为什么需要：长任务子代理在主会话结束后才回调，此时通道侧的 inbound 处理器
+# （processor 的 async generator）已经 return，SSE 流早已关闭。回灌产生的新回复
+# 只会写进 web_server 的 chat job，前端 SSE 若已断开就彻底没人读——用户永远收不到。
+# 因此这里记录每个 gw_ 会话最近一次的出站上下文（channel 实例 + subject），
+# 供 web_server 在回灌收尾时主动 push 到通道。
+
+# session_id -> (channel, subject)
+_SESSION_ROUTES: dict[str, Any] = {}
+
+
+def register_session_route(session_id: str, channel: Any, subject: Any) -> None:
+    """记录会话的出站路由上下文（每次 inbound 处理时刷新）。"""
+    try:
+        if session_id and channel is not None and subject is not None:
+            _SESSION_ROUTES[session_id] = (channel, subject)
+    except Exception:  # noqa: BLE001
+        logger.debug("[gw-proc] 注册会话路由失败 sid=%s", session_id, exc_info=True)
+
+
+def get_session_route(session_id: str):
+    """取会话出站路由 (channel, subject)，未注册返回 None。"""
+    return _SESSION_ROUTES.get(session_id)
+
+
+def parse_session_id(session_id: str) -> tuple[str, str] | None:
+    """从 gw_<channel_type>_<subject> 反解出 (channel_type, subject_id)。
+
+    注意：_safe_session_component 会把非法字符替换成 ``_``，所以反解得到的
+    subject_id 可能与原值不完全一致；这里只用于路由兜底匹配，不做严格还原。
+    """
+    s = str(session_id or "")
+    if not s.startswith("gw_"):
+        return None
+    rest = s[3:]
+    # channel_type 里不含下划线（feishu/dingtalk/qq/weixin/wecom/telegram/...）
+    if "_" not in rest:
+        return None
+    channel_type, subject = rest.split("_", 1)
+    if not channel_type or not subject:
+        return None
+    return channel_type, subject
+
+
+def push_to_channel(session_id: str, text: str, *, prefer_route: bool = True) -> bool:
+    """把一段文本主动推送到该会话所属的 IM 通道。
+
+    优先用 register_session_route 记录的精确 (channel, subject)；若没有记录，
+    退化为按 channel_type 扫描所有运行中通道、匹配 subject_id。
+
+    本函数是同步阻塞的（内部用 run_coroutine_threadsafe 投递到事件循环），
+    可安全地在 web_server 的回灌线程里直接调用。
+
+    @return True 表示已投递，False 表示找不到路由或投递失败。
+    """
+    if not str(text or "").strip():
+        return False
+
+    channel = None
+    subject = None
+
+    if prefer_route:
+        route = _SESSION_ROUTES.get(session_id)
+        if route is not None:
+            channel, subject = route
+
+    if channel is None or subject is None:
+        parsed = parse_session_id(session_id)
+        if parsed is None:
+            return False
+        channel_type, subject_hint = parsed
+        channel, subject = _find_channel_subject(channel_type, subject_hint)
+
+    if channel is None or subject is None:
+        return False
+
+    return _dispatch_push(channel, subject, text)
+
+
+def _find_channel_subject(channel_type: str, subject_hint: str):
+    """按 channel_type 扫描运行中通道，找到 subject_id 匹配的 subject。"""
+    try:
+        from platform_ext import gateway as gw
+
+        mgr = gw._manager  # noqa: SLF001 - 同包内部协作
+        if mgr is None:
+            return None, None
+        for cid in list(getattr(mgr, "channel_ids", []) or []):
+            ch = mgr.get_channel(cid)
+            if ch is None:
+                continue
+            if str(getattr(ch, "channel_type", "") or "") != channel_type:
+                continue
+            for sub in ch.list_subjects():
+                if str(getattr(sub, "subject_id", "") or "") == subject_hint:
+                    return ch, sub
+            # subject 尚未登记时，用裸 hint 造一个最小 subject 兜底
+            try:
+                from octop_gateway.models import ChannelSubject
+
+                return ch, ChannelSubject(subject_id=subject_hint)
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        logger.debug("[gw-proc] 扫描通道失败 type=%s", channel_type, exc_info=True)
+    return None, None
+
+
+def _dispatch_push(channel: Any, subject: Any, text: str) -> bool:
+    """把 push 调用投递到 channel 所在事件循环执行。"""
+    import asyncio
+    import threading
+
+    async def _do_push() -> None:
+        await channel.push_text(subject, text)
+
+    try:
+        loop = getattr(channel, "_main_loop", None)
+        if loop is None or loop.is_closed():
+            # 退化为当前线程若无循环则起临时循环（同步执行完即弃）
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(_do_push())
+                return True
+            # 已在循环中：直接调度
+            loop = asyncio.get_running_loop()
+
+        if loop.is_running() and threading.current_thread() is not threading.main_thread():
+            fut = asyncio.run_coroutine_threadsafe(_do_push(), loop)
+            fut.result(timeout=30)
+            return True
+        if loop.is_running():
+            asyncio.run_coroutine_threadsafe(_do_push(), loop)
+            return True
+        asyncio.run(_do_push())
+        return True
+    except Exception:  # noqa: BLE001
+        logger.warning("[gw-proc] 推送到通道失败", exc_info=True)
+        return False
+
+
 def _extract_text(message) -> str:
     """从 InboundMessage 提取纯文本。"""
     try:
@@ -237,6 +379,18 @@ def make_processor(agent_main=None, chat_jobs=None, gateway=None):
             tpl = _channel_template(gw, channel_type)
             mode = _channel_mode(gw, channel_type, default="single")
             workspace = _channel_workspace(gw, channel_type)
+
+        # 注册出站路由：记录 (channel, subject)，供长任务子代理回灌时主动回推。
+        # 这里用 message.channel_id 精确定位通道实例（同类通道可能有多个实例）。
+        try:
+            _cid = str(getattr(message, "channel_id", "") or "")
+            _mgr = getattr(gw, "_manager", None) if gw is not None else None
+            if _cid and _mgr is not None and subject is not None:
+                _ch = _mgr.get_channel(_cid)
+                if _ch is not None:
+                    register_session_route(sid, _ch, subject)
+        except Exception:  # noqa: BLE001
+            logger.debug("[gw-proc] 注册出站路由失败 sid=%s", sid, exc_info=True)
 
         # 启动后台对话任务（复用 BT 现有 agent 体系）
         start_params: dict[str, Any] = {
