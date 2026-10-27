@@ -429,6 +429,13 @@ class Agent:
     # 确认一次后全进程剥离 reasoning_content，避免每个新 Agent 实例都先吃一次 400。
     _upstream_rejects_reasoning = False
 
+    # 上游网关返回的占位符前缀：当模型不支持/暂不可用时返回这些无效字符串。
+    # 识别模式：任意大小写的 "reasoning" 后跟 unavailable/unfinished/unanswered/unforeseen 等。
+    _REASONING_PLACEHOLDER_RE = re.compile(
+        r'\[\s*reasoning\s+(unavailable|unfinished|unanswered|unforeseen|failed|skipped)\s*\]',
+        re.IGNORECASE,
+    )
+
     @staticmethod
     def _is_response_input_400(err: Exception) -> bool:
         """识别 Responses 协议网关的确定性 400（json_parse_error / ResponseInput）。"""
@@ -436,6 +443,17 @@ class Agent:
         return "ResponseInput" in msg or (
             "400" in msg and "json_parse_error" in msg
         )
+
+    @staticmethod
+    def _strip_reasoning_placeholders(text: str) -> str:
+        """过滤上游网关返回的占位符文本（模型不支持/暂不可用时返回）。
+
+        这些占位符会被错误地当作真实思考内容透传给前端，导致展示
+        "[reasoning unavailable]" 等无意义文字。
+        """
+        if not text:
+            return text
+        return Agent._REASONING_PLACEHOLDER_RE.sub('', text).strip()
 
     @staticmethod
     def next_bad_args_streak(current: int) -> int:
@@ -1527,7 +1545,9 @@ Here is some useful information about the environment you are running in:
                             # 退化思考生成完；校验通过的内容在正文之前补发，保证
                             # 思维链顺序，也避免把大段重复思考刷给前端。
                             if getattr(delta, "reasoning_content", None):
-                                current_reasoning_content += delta.reasoning_content
+                                cleaned = self._strip_reasoning_placeholders(delta.reasoning_content)
+                                if cleaned:
+                                    current_reasoning_content += cleaned
                                 if (len(current_reasoning_content) - reasoning_checked_len
                                         >= 2000):
                                     reasoning_checked_len = len(current_reasoning_content)
