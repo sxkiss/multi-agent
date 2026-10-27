@@ -25,10 +25,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── catalog ────────────────────────────────────────────────
 class TestCatalog:
-    def test_loads_27_connectors(self):
+    def test_loads_connectors(self):
         from connector_hub import connectors_catalog as cat
         entries = cat.list_catalog_entries()
-        assert len(entries) == 27
+        # 含 WorkBuddy 443 个连接器（原 27/28 个）
+        assert len(entries) >= 400
+        assert len(entries) == 466
 
     def test_known_kind_present(self):
         from connector_hub import connectors_catalog as cat

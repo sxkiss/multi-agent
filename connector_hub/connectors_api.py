@@ -425,6 +425,19 @@ async def api_reset_catalog_cache():
     return _ok({"reset": True}, "缓存已清除")
 
 
+@router.post("/catalog/sync-workbuddy")
+async def api_sync_workbuddy(request: Request):
+    """从 WorkBuddy CDN 拉取最新连接器目录并更新 catalog.json。"""
+    try:
+        from connector_hub.sync_workbuddy import sync_catalog
+        res = sync_catalog()
+        cat.reset_catalog_cache()
+        return _ok(res, "同步完成")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("sync-workbuddy failed")
+        return _err(f"同步失败: {exc}")
+
+
 # ── 同步到 mcp/config.json ──────────────────────────────────
 @router.post("/sync")
 async def api_sync(request: Request):

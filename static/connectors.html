@@ -163,6 +163,7 @@
     </div>
     <div class="spacer"></div>
     <button class="btn ghost" id="themeBtn" title="切换主题">🌓</button>
+    <button class="btn" id="syncWbBtn">🔄 从 WorkBuddy 更新</button>
     <button class="btn" id="syncBtn">同步到 MCP</button>
     <button class="btn" id="refreshBtn">刷新</button>
   </header>
@@ -294,6 +295,9 @@
         // CLI 设备码登录授权（飞书 CLI 等）：扫码即可，无需手填 App 凭据
         actions += '<button class="btn primary" data-cli-auth="' + esc(e.kind) + '">🔐 登录授权</button>';
         if (supported) actions += '<button class="btn" data-add="' + esc(e.kind) + '">+ 手动配置</button>';
+      } else if (e.auth_kind === 'none' && e.mcp_mode === 'remote') {
+        // 无需凭据的 remote MCP：直接添加即可（251 个开箱即用的连接器）
+        actions += '<button class="btn primary" data-add="' + esc(e.kind) + '">+ 添加</button>';
       } else if (supported) {
         actions += '<button class="btn primary" data-add="' + esc(e.kind) + '">+ 添加</button>';
       }
@@ -802,6 +806,20 @@
   $('#searchInput').oninput = renderMarket;
   $('#catSelect').onchange = renderMarket;
   $('#refreshBtn').onclick = function () { loadCatalog(); loadInstances(); toast('已刷新', 'ok'); };
+  $('#syncWbBtn').onclick = async function () {
+    this.disabled = true; this.textContent = '⏳ 同步中…';
+    try {
+      var r = await api('/catalog/sync-workbuddy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if (r.status) {
+        toast('✅ 已更新：新增 ' + (r.data?.added || 0) + ' 个，共 ' + r.data?.total + ' 个', 'ok');
+        loadCatalog(); loadInstances();
+      } else {
+        toast('❌ 同步失败：' + (r.msg || '未知错误'), 'err');
+      }
+    } finally {
+      this.disabled = false; this.textContent = '🔄 从 WorkBuddy 更新';
+    }
+  };
   $('#syncBtn').onclick = async function () {
     var r = await api('/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     if (r.status) { var d = r.data; toast('已同步：+' + d.added.length + ' / -' + d.removed.length, 'ok'); }

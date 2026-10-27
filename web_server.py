@@ -3509,6 +3509,13 @@ _orphan_cb_registered = False
 # 等待窗口：父 job 在 notify_done 后 N 秒内结束，视为"仍在等待"，
 # 把结果追加到父 job 而非开孤儿 job（前端 SSE 还会继续收事件）。
 _ORPHAN_APPEND_WINDOW = float(os.environ.get("AI_AGENT_ORPHAN_APPEND_WINDOW", "10"))
+# R6：会话活跃重试参数 —— 主循环仍在跑时延迟重试，而不是直接丢弃。
+# 重试超过上限说明主循环已死，强制走孤儿回灌兜底。
+_MAX_ORPHAN_RETRIES = int(os.environ.get("AI_AGENT_ORPHAN_MAX_RETRIES", "60"))
+_ORPHAN_RETRY_DELAY = float(os.environ.get("AI_AGENT_ORPHAN_RETRY_DELAY", "3"))
+# 每个 task 的重试计数（按 task_id 隔离），防止不同孤儿任务互相干扰。
+_ORPHAN_RETRY_COUNTER: dict[str, int] = {}
+
 
 def _register_orphan_callback():
     """在 agent_main 初始化后注册孤儿回调。由 _setup_lifespan 调用一次。"""
@@ -3584,6 +3591,21 @@ def _register_orphan_callback():
             task_id[:12], session_id[:24], parent_job.key, _window_age)
         return True, 'appended'
 
+    def _retry_orphan_check(session_id: str, task_id: str, tool: str, status: str, result: str):
+        """延迟重试入口：R6 主循环仍在运行时，稍后重新检查并触发孤儿回调。
+
+        之所以要用独立线程而不是直接递归调用 _handler，是为了释放 session_lock，
+        避免在 Timer 线程里长时间持有锁导致其他孤儿回调阻塞。
+        """
+        try:
+            # 重新走完整 handler 逻辑（内部会再次检查 _dispatching_tasks 防重）。
+            # 注意这里不再持有旧锁，重新走 _handler 会重新加锁，保证原子性。
+            _handler(session_id, task_id, tool, status, result)
+        except Exception:
+            logger.warning(
+                "[Background] 孤儿重试失败 session=%s task=%s",
+                session_id[:24], task_id[:12], exc_info=True)
+
     def _handler(session_id: str, task_id: str, tool: str, status: str, result: str):
         """孤儿回调：父会话已结束，尝试把结果追加到父 job 或开新 job。
 
@@ -3592,9 +3614,11 @@ def _register_orphan_callback():
         2. 否则 → 开孤儿 job（兜底，结果可能已过期）
 
         R1/R4 修复：per-session 锁保证原子性，调度状态防止重复派发。
-        R5 修复：用 parent_job_key 精确判断父 job 是否仍在跑，避免「会话有其他 running job
-                 但父 job 已结束」时的误判导致结果丢失。
+        R6 修复：以「父会话是否有 running job」为活跃判据（job 实例随时会死，
+                 但会话维度稳定）。若主循环仍在运行则延迟重试，而非直接丢弃；
+                 重试超限说明主循环已死，强制走孤儿 job 兜底回灌。
         """
+        retries = _ORPHAN_RETRY_COUNTER.get(task_id, 0)
         try:
             # R4 修复：检查是否正在派发中
             if task_id in _dispatching_tasks:
@@ -3602,27 +3626,25 @@ def _register_orphan_callback():
                 return
             _dispatching_tasks.add(task_id)
 
-            # R5：从后台任务管理器拿父 job key（注册 Task/RunCrew 时已记录）
-            bg = get_background_manager()
-            parent_job_key = bg.get_parent_job_key(task_id)
-
             session_lock = _get_session_lock(session_id)
             with session_lock:
-                # R5：精确判断父 job 是否还在跑，不再用 count_running(session_id) 粗粒度判断
-                parent_job_is_running = False
-                if parent_job_key:
-                    pj = chat_jobs.get(parent_job_key)
-                    parent_job_is_running = bool(pj and pj.is_running)
-                else:
-                    # 旧任务或恢复任务没有 parent_job_key：回退为检查会话下是否还有 running job
-                    parent_job_is_running = chat_jobs.count_running(session_id) > 0
-
-                if parent_job_is_running:
-                    logger.info(
-                        "[Background] 父 job %s 仍在运行，不触发孤儿回调，等 drain 消费 task=%s",
-                        parent_job_key[:12] if parent_job_key else "unknown", task_id[:12])
-                    _dispatching_tasks.discard(task_id)
-                    return
+                # R6：以「会话下是否存在 running job」判断主循环是否活跃
+                # （job 实例随时会死/被 prune/重启后停掉，会话维度才是稳定判据）
+                if chat_jobs.count_running(session_id) > 0:
+                    retries += 1
+                    _ORPHAN_RETRY_COUNTER[task_id] = retries
+                    if retries <= _MAX_ORPHAN_RETRIES:
+                        logger.info(
+                            "[Background] 父会话 %s 仍有 running job（第 %d 次），延迟重试等 drain 消费 task=%s",
+                            session_id[:24], retries, task_id[:12])
+                        _dispatching_tasks.discard(task_id)
+                        threading.Timer(_ORPHAN_RETRY_DELAY, _retry_orphan_check,
+                                        args=(session_id, task_id, tool, status, result)).start()
+                        return
+                    logger.warning(
+                        "[Background] 父会话 %s 在 %d 次重试后仍有 running job，判定主循环已死，"
+                        "强制走孤儿回灌兜底 task=%s",
+                        session_id[:24], _MAX_ORPHAN_RETRIES, task_id[:12])
 
                 # 先尝试追加到父 job
                 success, reason = _try_append_to_parent_job_inner(
@@ -3635,8 +3657,10 @@ def _register_orphan_callback():
                 else:
                     # 父 job 不可用，开孤儿 job
                     if reason == 'parent_running':
-                        # R2 修复：父 job 仍在运行，什么都不做
-                        logger.info("[Background] 父 job 仍在运行，等 drain 消费 task=%s", task_id[:12])
+                        # R6：外层重试已超限才可能走到这里（count_running 仍 >0 但已判定主循环死），
+                        # 此时强制开孤儿 job 兜底回灌，而非只记日志等待（会永久丢失）。
+                        logger.info("[Background] 父 job 仍在运行但重试已超限，强制开孤儿 job task=%s", task_id[:12])
+                        _dispatch_orphan_job(session_id, task_id, tool, status, result)
                     elif reason == 'window_expired':
                         _dispatch_orphan_job(session_id, task_id, tool, status, result)
                     else:
@@ -3649,6 +3673,8 @@ def _register_orphan_callback():
             )
         finally:
             _dispatching_tasks.discard(task_id)
+            # R6：任务已得到最终处理（追加/开孤儿 job），清理重试计数，避免内存泄漏
+            _ORPHAN_RETRY_COUNTER.pop(task_id, None)
 
     bg.set_orphan_callback(_handler)
     logger.info("[Background] 孤儿回调已注册（AI_AGENT_ORPHAN_DELAY=%ss）", bg._orphan_delay)
