@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -18,7 +19,11 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_DB_PATH = Path(__file__).parent.parent.parent / "background_tasks.sqlite"
+# 默认落在项目根；允许通过环境变量重定向（测试隔离必须，否则 pytest 会写进生产库）
+_DB_PATH = Path(os.environ.get(
+    "BT_BG_TASKS_DB",
+    str(Path(__file__).parent.parent.parent / "background_tasks.sqlite"),
+))
 
 # 状态常量
 STATUS_PENDING   = "pending"

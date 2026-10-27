@@ -16,16 +16,24 @@ import pytest
 _METRICS_TMP = tempfile.mkdtemp(prefix="bt_metrics_test_")
 os.environ["BT_METRICS_DIR"] = _METRICS_TMP
 
+# 后台任务仓库同样是进程级单例，若测试跑在项目目录下会直接写进生产
+# background_tasks.sqlite，污染真实任务状态机。这里强制重定向到临时 DB。
+_BG_DB_TMP = tempfile.mktemp(prefix="bt_bgtasks_test_", suffix=".sqlite")
+os.environ["BT_BG_TASKS_DB"] = _BG_DB_TMP
+
 
 @pytest.fixture(autouse=True)
 def _isolate_metrics():
     """每个测试前后重置 metrics 单例，保证路径隔离生效且用例互不干扰。"""
     from chat_client import metrics as metrics_mod
+    from chat_client.tools import bg_repo
 
     metrics_mod.reset_metrics()
+    bg_repo.close_repo()
     yield
     try:
         metrics_mod._registry and metrics_mod._registry.flush()
     except Exception:
         pass
     metrics_mod.reset_metrics()
+    bg_repo.close_repo()

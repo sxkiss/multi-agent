@@ -18,6 +18,7 @@ from typing import Any
 import aiohttp
 
 from octop_gateway.channel import BaseChannel, ChannelConfig, MessageProcessor
+from octop_gateway.constraints import ChannelConstraints
 from octop_gateway.models import (
     AudioContent,
     ChannelSubject,
@@ -100,6 +101,22 @@ class DingTalkChannel(BaseChannel):
         self._stream_task: asyncio.Task[None] | None = None
         # Stream connection session ID (generated on each connect)
         self._stream_session_id: str | None = None
+
+    def _default_constraints(self) -> ChannelConstraints:
+        """DingTalk has no native typing API; disable keepalive."""
+        return ChannelConstraints(
+            show_thinking=False,
+            show_tool_hints=True,
+            typing_keepalive_interval=0.0,
+        )
+
+    async def _send_typing_indicator(self, subject: ChannelSubject) -> None:
+        """No-op: DingTalk has no native typing indicator API."""
+        pass
+
+    async def _clear_typing_indicator(self, subject: ChannelSubject) -> None:
+        """No-op: DingTalk has no native typing indicator API."""
+        pass
 
     # =========================================================================
     # Lifecycle

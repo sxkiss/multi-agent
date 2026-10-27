@@ -95,6 +95,7 @@ class MQTTChannel(BaseChannel):
     def _default_constraints(self) -> ChannelConstraints:
         return ChannelConstraints(
             send_rate_limit=(30, 60.0),
+            typing_keepalive_interval=3.0,
             show_thinking=False,
             show_tool_hints=True,
         )
@@ -239,6 +240,34 @@ class MQTTChannel(BaseChannel):
         topic = self._config.publish_topic.format(client_id=client_id)
         self._client.publish(topic, text, qos=self._config.qos)
         logger.debug("MQTT published to %s (%d chars)", topic, len(text))
+
+    async def _send_typing_indicator(self, subject: ChannelSubject) -> None:
+        """Publish a typing marker to the device so the frontend can show a loading state."""
+        if not self._client or not self._connected:
+            return
+        client_id = subject.metadata.get("client_id") or subject.subject_id
+        topic = self._config.publish_topic.format(client_id=client_id).rstrip("/")
+        typing_topic = f"{topic}/typing"
+        payload = json.dumps({"type": "typing"}, ensure_ascii=False)
+        try:
+            self._client.publish(typing_topic, payload, qos=self._config.qos)
+            logger.debug("MQTT typing marker published to %s", typing_topic)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("MQTT typing publish failed", exc_info=True)
+
+    async def _clear_typing_indicator(self, subject: ChannelSubject) -> None:
+        """Publish a done marker so the device stops showing the loading state."""
+        if not self._client or not self._connected:
+            return
+        client_id = subject.metadata.get("client_id") or subject.subject_id
+        topic = self._config.publish_topic.format(client_id=client_id).rstrip("/")
+        typing_topic = f"{topic}/typing"
+        payload = json.dumps({"type": "done"}, ensure_ascii=False)
+        try:
+            self._client.publish(typing_topic, payload, qos=self._config.qos)
+            logger.debug("MQTT typing done marker published to %s", typing_topic)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("MQTT typing done publish failed", exc_info=True)
 
     async def _send_content(self, subject: ChannelSubject, parts: list[ContentPart]) -> None:
         for part in parts:
