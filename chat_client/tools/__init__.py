@@ -417,6 +417,21 @@ class BackgroundTaskManager:
                 if t.session_id == session_id and t.status == "running"
             )
 
+    def busy_count(self, session_id: str) -> int:
+        """本会话中尚未终结的后台任务数（pending / queued / running 全算）。
+
+        与 pending_count 的区别：pending_count 只数 running，用于"是否还有结果
+        待注入"的语义；busy_count 用于主循环的等待判断——任务刚 register 还没
+        mark_running 的极短窗口内也不能误判为空闲，否则等待会提前退出、
+        结果掉到孤儿回灌路径。
+        """
+        with self._lock:
+            return sum(
+                1 for t in self._tasks.values()
+                if t.session_id == session_id
+                and t.status in ("pending", "queued", "running")
+            )
+
     def drain_finished(self, session_id: str, max_chars: int = 8000) -> list[dict]:
         """取出本会话中"已完成但尚未注入对话"的后台任务结果。
 

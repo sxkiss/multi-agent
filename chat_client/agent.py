@@ -1389,6 +1389,9 @@ Here is some useful information about the environment you are running in:
             full_response_content = "" # 最终累积响应
             full_reasoning_content = "" # 最终累积思考
             tool_call_chunks = {} # Initialize to ensure scope availability
+            # R7：本轮是否向后台任务注入过结果。注入后需 continue 让模型下一轮读到，
+            # 而不是直接 yield stop 结束本轮（否则结果虽然进了内存 messages 却没人消费）。
+            _injected_bg_results = False
             
             total_usage = {
                 "total_tokens": 0,
@@ -1679,26 +1682,30 @@ Here is some useful information about the environment you are running in:
                     # 此时结果已落盘可查、不丢。
                     try:
                         _bg = get_background_manager()
-                        if _bg.pending_count(self.session_id) > 0:
-                            # 静默等待短时窗口（默认 10s）：若子代理在窗口内完成，
-                            # 直接注入结果让模型收尾；超时则正常 message_end 结束主会话，
-                            # 不再阻塞用户（结果由孤儿回灌/notify_done 自动回推到同一会话）。
-                            # 设计意图：主会话不卡死、不等长任务；长任务结果稍后自动回来。
-                            _wait_budget = float(self.config.get("background_wait_seconds", 10))
+                        # R7：只要本会话还有后台任务在跑（pending/queued/running），
+                        # 就一直等它完成：notify_done/notify_failed set wake event 唤醒，
+                        # drain_finished 把完整结果注入 messages，模型据此继续/收尾。
+                        # 不设硬上限（除非 chat_stop 取消）：主会话不结束本轮，
+                        # 结果就不会掉到孤儿回灌（新开会话）路径。
+                        if _bg.busy_count(self.session_id) > 0:
                             _wake = _bg.get_wake_event(self.session_id)
                             _t0 = time.monotonic()
+                            # R7 硬上限（秒）：默认 0=无限等待（主会话一直挂起直到
+                            # 后台任务完成）。紧急兜底可设 AI_AGENT_BG_WAIT_HARD_CAP=300
+                            # 等长任务场景，避免主循环永久挂起。
+                            _hard_cap = float(os.environ.get("AI_AGENT_BG_WAIT_HARD_CAP", "0") or 0)
                             logger.info(
-                                "[Background] 收尾短等后台任务 pending=%d budget=%.0fs session=%s",
-                                _bg.pending_count(self.session_id), _wait_budget, self.session_id[:20],
+                                "[Background] 收尾等待后台任务完成 busy=%d session=%s",
+                                _bg.busy_count(self.session_id), self.session_id[:20],
                             )
-                            while (_bg.pending_count(self.session_id) > 0
+                            while (_bg.busy_count(self.session_id) > 0
                                    and not _is_cancelled()
-                                   and time.monotonic() - _t0 < _wait_budget):
+                                   and (_hard_cap <= 0 or time.monotonic() - _t0 < _hard_cap)):
                                 # 必须 clear 后再 wait：否则上一轮 notify_done 遗留的 set
-                                # 会让 wait 立即返回，配合 pending_count 仍 > 0 形成空转轮询。
+                                # 会让 wait 立即返回，配合 busy_count 仍 > 0 形成空转轮询。
                                 _wake.clear()
-                                _wake.wait(timeout=max(0.1, _wait_budget - (time.monotonic() - _t0)))
-                            # 唤醒后 drain 注入：窗口内完成的会拿到结果，模型据此收尾
+                                _wake.wait(timeout=1.0)
+                            # 唤醒后 drain 注入：全部任务完成的会拿到结果，模型据此收尾
                             for _t in _bg.drain_finished(self.session_id):
                                 _text = (
                                     f"<background_task_done>\n"
@@ -1712,23 +1719,19 @@ Here is some useful information about the environment you are running in:
                                     f"请据此继续推进任务，不要重复调用该工具。"
                                 )
                                 messages.append({"role": "system", "content": _text})
+                                _injected_bg_results = True
                                 logger.info("[Background] 收尾注入后台结果 task=%s", _t['task_id'])
-                            # 窗口内未完成：如实告诉模型"仍在跑、结果稍后自动回来"，
-                            # 然后正常 message_end 结束本轮（不阻塞、不 continue 死等）
-                            if _bg.pending_count(self.session_id) > 0:
-                                _n_pending = _bg.pending_count(self.session_id)
-                                messages.append({
-                                    "role": "system",
-                                    "content": (
-                                        f"<background_task_pending>\n"
-                                        f"有 {_n_pending} 个后台任务仍在运行（未在 {_wait_budget:g}s 内完成）。\n"
-                                        f"请直接告诉用户：任务已在后台运行，完成后结果会自动回灌到本对话，"
-                                        f"无需用户重复发起。不要声称任务已完成，也不要重复发起同一工具调用。\n"
-                                        f"</background_task_pending>"
-                                    ),
-                                })
                     except Exception:
                         logger.warning("[Background] 等待后台任务失败", exc_info=True)
+
+
+                    # R7：若本轮注入过后台任务结果，则不能直接结束——
+                    # 需要 continue 让模型在下一轮读到结果并据此继续/收尾。
+                    # 只有没有任何后台结果注入时才正常 stop。
+                    if _injected_bg_results:
+                        # 清空标记；新一轮工具调用后仍无工具则再判断
+                        _injected_bg_results = False
+                        continue
 
                     # 用量统计：把本轮 token 用量追加到 usage ledger（失败静默）
                     try:
@@ -2082,22 +2085,22 @@ Here is some useful information about the environment you are running in:
                 # 调用，用户看到的就是"派完子代理不静默"。
                 try:
                     _bg2 = get_background_manager()
-                    if _bg2.pending_count(self.session_id) > 0:
-                        # 工具执行后短时静默等待（默认 10s）：窗口内完成则注入结果、
-                        # 模型继续收尾；超时则正常 message_end 结束，不再阻塞用户。
-                        _budget2 = float(self.config.get("background_wait_seconds", 10))
+                    # R7：工具执行后同样一直等（不设硬上限）——子代理完成后
+                    # drain_finished 注入结果，模型带着结果继续，而不是中途结束。
+                    if _bg2.busy_count(self.session_id) > 0:
                         _wake2 = _bg2.get_wake_event(self.session_id)
                         _t0_2 = time.monotonic()
+                        _hard_cap2 = float(os.environ.get("AI_AGENT_BG_WAIT_HARD_CAP", "0") or 0)
                         logger.info(
-                            "[Background] 工具后静默短等 pending=%d budget=%.0fs session=%s",
-                            _bg2.pending_count(self.session_id), _budget2, self.session_id[:20],
+                            "[Background] 工具后等待后台任务完成 busy=%d session=%s",
+                            _bg2.busy_count(self.session_id), self.session_id[:20],
                         )
-                        while (_bg2.pending_count(self.session_id) > 0
+                        while (_bg2.busy_count(self.session_id) > 0
                                and not _is_cancelled()
-                               and time.monotonic() - _t0_2 < _budget2):
+                               and (_hard_cap2 <= 0 or time.monotonic() - _t0_2 < _hard_cap2)):
                             # clear 后再 wait：防止遗留的 set 导致空转轮询。
                             _wake2.clear()
-                            _wake2.wait(timeout=max(0.1, _budget2 - (time.monotonic() - _t0_2)))
+                            _wake2.wait(timeout=1.0)
                         for _t2 in _bg2.drain_finished(self.session_id):
                             messages.append({
                                 "role": "system",
@@ -2113,23 +2116,11 @@ Here is some useful information about the environment you are running in:
                                     f"请据此继续推进任务，不要重复调用该工具。"
                                 ),
                             })
+                            _injected_bg_results = True
                             logger.info(
-                                "[Background] 静默短等后注入结果 task=%s tool=%s",
+                                "[Background] 工具后等待注入结果 task=%s tool=%s",
                                 _t2['task_id'], _t2['tool'],
                             )
-                        # 超时未完成的：注入提示让模型如实告知用户，然后正常走 message_end
-                        if _bg2.pending_count(self.session_id) > 0:
-                            _n_pending2 = _bg2.pending_count(self.session_id)
-                            messages.append({
-                                "role": "system",
-                                "content": (
-                                    f"<background_task_pending>\n"
-                                    f"有 {_n_pending2} 个后台任务仍在运行（未在 {_budget2:g}s 内完成）。\n"
-                                    f"请直接告诉用户：任务已在后台运行，完成后结果会自动回灌到本对话，"
-                                    f"无需用户重复发起。不要声称任务已完成，也不要重复发起同一工具调用。\n"
-                                    f"</background_task_pending>"
-                                ),
-                            })
                 except Exception:
                     logger.warning("[Background] 静默等待后台任务失败", exc_info=True)
             # 6. 最终记忆更新 (助手响应)
