@@ -3592,6 +3592,8 @@ def _register_orphan_callback():
         2. 否则 → 开孤儿 job（兜底，结果可能已过期）
 
         R1/R4 修复：per-session 锁保证原子性，调度状态防止重复派发。
+        R5 修复：用 parent_job_key 精确判断父 job 是否仍在跑，避免「会话有其他 running job
+                 但父 job 已结束」时的误判导致结果丢失。
         """
         try:
             # R4 修复：检查是否正在派发中
@@ -3600,12 +3602,25 @@ def _register_orphan_callback():
                 return
             _dispatching_tasks.add(task_id)
 
+            # R5：从后台任务管理器拿父 job key（注册 Task/RunCrew 时已记录）
+            bg = get_background_manager()
+            parent_job_key = bg.get_parent_job_key(task_id)
+
             session_lock = _get_session_lock(session_id)
             with session_lock:
-                # R1 修复：在锁内原子检查 + 创建 job
-                running_count = chat_jobs.count_running(session_id)
-                if running_count > 0:
-                    logger.info("[Background] 仍有 %d 个 running job，不触发孤儿回调", running_count)
+                # R5：精确判断父 job 是否还在跑，不再用 count_running(session_id) 粗粒度判断
+                parent_job_is_running = False
+                if parent_job_key:
+                    pj = chat_jobs.get(parent_job_key)
+                    parent_job_is_running = bool(pj and pj.is_running)
+                else:
+                    # 旧任务或恢复任务没有 parent_job_key：回退为检查会话下是否还有 running job
+                    parent_job_is_running = chat_jobs.count_running(session_id) > 0
+
+                if parent_job_is_running:
+                    logger.info(
+                        "[Background] 父 job %s 仍在运行，不触发孤儿回调，等 drain 消费 task=%s",
+                        parent_job_key[:12] if parent_job_key else "unknown", task_id[:12])
                     _dispatching_tasks.discard(task_id)
                     return
 

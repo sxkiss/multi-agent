@@ -112,10 +112,10 @@ def disclosure_mode() -> str:
 class _BgTask:
     """单条后台任务的状态数据"""
     __slots__ = ("task_id", "tool", "args", "future", "status", "result",
-                 "start_time", "session_id")
+                 "start_time", "session_id", "parent_job_key")
 
     def __init__(self, task_id: str, tool: str, args: tuple, future,
-                 session_id: str = ""):
+                 session_id: str = "", parent_job_key: str = ""):
         self.task_id = task_id
         self.tool = tool
         self.args = args
@@ -124,6 +124,7 @@ class _BgTask:
         self.result: str = ""
         self.start_time = time.time()
         self.session_id = session_id
+        self.parent_job_key = parent_job_key
 
 
 # ============================================================
@@ -228,13 +229,13 @@ class BackgroundTaskManager:
         timer.start()
 
     def register(self, task_id: str, tool: str, args: tuple,
-                 future, session_id: str) -> None:
+                 future, session_id: str, parent_job_key: str = "") -> None:
         with self._lock:
             if len(self._tasks) >= self._MAX:
                 # LRU：淘汰最早注册的
                 oldest = min(self._tasks, key=lambda k: self._tasks[k].start_time)
                 self._tasks.pop(oldest, None)
-            self._tasks[task_id] = _BgTask(task_id, tool, args, future, session_id)
+            self._tasks[task_id] = _BgTask(task_id, tool, args, future, session_id, parent_job_key)
         # 持久化：确保进程重启后能恢复
         try:
             from .bg_repo import get_repo
@@ -397,6 +398,12 @@ class BackgroundTaskManager:
         self._task_done_at = getattr(self, '_task_done_at', {})
         self._task_done_at[task_id] = time.monotonic()
         self._schedule_orphan_check(task_id)
+
+    def get_parent_job_key(self, task_id: str) -> str:
+        """查询后台任务派发时的父 job key，供孤儿回调精确判断。"""
+        with self._lock:
+            t = self._tasks.get(task_id)
+            return t.parent_job_key if t else ""
 
     def pending_count(self, session_id: str) -> int:
         """本会话中仍在运行、且结果尚未注入上下文的后台任务数。

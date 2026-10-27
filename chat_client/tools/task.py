@@ -350,8 +350,9 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
     # 先注册再启动：避免子代理瞬间完成时 notify 早于 register 而丢结果
     if bg_manager is not None:
         _reg_sid = parent_session_id or ""
+        _reg_job_key = parent_job.key if parent_job is not None else ""
         bg_manager.register(
-            bg_task_id, "Task", (description,), fut, _reg_sid
+            bg_task_id, "Task", (description,), fut, _reg_sid, parent_job_key=_reg_job_key
         )
         logger.info("[Task] 注册后台任务 bg_task_id=%s parent_session_id=%s", bg_task_id[:12], _reg_sid[:40])
         # 同步驱动状态机：pending → queued → running（线程启动前完成，避免竞态）
@@ -854,7 +855,15 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
 
     bg_task_id = str(_uuid.uuid4())
     bgm = get_background_manager()
-    bgm.register(bg_task_id, "RunCrew", (objective,), None, parent_session_id or "")
+    _crew_job_key = ""
+    try:
+        from . import get_current_job as _get_cur_job
+        _cj = _get_cur_job()
+        if _cj is not None:
+            _crew_job_key = getattr(_cj, "key", "")
+    except Exception:
+        pass
+    bgm.register(bg_task_id, "RunCrew", (objective,), None, parent_session_id or "", parent_job_key=_crew_job_key)
     def _crew_thread():
         try:
             _out = _run_crew_body()
