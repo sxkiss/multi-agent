@@ -164,6 +164,38 @@ def _expert_id(expert: Dict[str, Any]) -> str:
             or _expert_field(expert, "name", "Name", "key", "slug"))
 
 
+
+
+def _local_skill_names(limit: int = 20) -> list[str]:
+    """返回本地已安装技能名（前 limit 个），供市场工具补充本地信息。"""
+    try:
+        from chat_client.skills import skill_manager
+        return [s.name for s in skill_manager.all_enabled()][:limit]
+    except Exception:
+        return []
+
+
+def _local_mcp_servers(limit: int = 20) -> list[str]:
+    """返回本地已配置 MCP server 名，供 MCP 市场工具补充本地信息。"""
+    import os as _os
+    _cfg_path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))), "mcp", "config.json")
+    try:
+        with open(_cfg_path, "r", encoding="utf-8") as f:
+            _data = __import__("json").load(f)
+        return list(_data.get("mcpServers", {}).keys())[:limit]
+    except Exception:
+        return []
+
+
+def _local_packages(limit: int = 10) -> list[str]:
+    """返回本地 packages/ 目录中已安装专家包（zip 文件名）。"""
+    import os as _os
+    _pkg_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))), "packages")
+    if not _os.path.isdir(_pkg_dir):
+        return []
+    return sorted(f.replace(".zip", "") for f in _os.listdir(_pkg_dir) if f.endswith(".zip"))[:limit]
+
+
 @register_tool(category="市场", name_cn="查询专家市场", risk_level="low")
 def ExpertMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
     """
@@ -503,8 +535,13 @@ def SkillMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
     if not items and online_total == 0:
         return _xml_response("done", f"未匹配到技能（keyword={keyword!r} category={category!r}）。")
 
+    local_skills = _local_skill_names(10)
+    lines = []
+    if local_skills:
+        lines.append(f"<!-- 本地已装技能 {len(local_skills)} 个 -->\n" + "\n".join(f"- {n}" for n in local_skills))
+        lines.append("")
     if keyword.strip():
-        lines = [f"<!-- 技能市场：{len(items)} 条 -->"]
+        lines.append(f"<!-- 技能市场：{len(items)} 条 -->")
     elif category.strip():
         lines = [f"<!-- 技能市场[{category}]：{len(items)} 条（该分类在线共 {online_total} 个） -->"]
     else:
@@ -711,7 +748,12 @@ def SkillPackageMarket(keyword: str = "", category: str = "", limit: int = 20) -
     if not hits:
         return _xml_response("done", f"未匹配到专家包（keyword={keyword!r} category={category!r}）。可留空 keyword 查看全部。")
 
-    lines = [f"<!-- 专家包市场：命中 {len(hits)} 个 -->"]
+    local_pkgs = _local_packages(10)
+    lines = []
+    if local_pkgs:
+        lines.append(f"<!-- 本地已装专家包 {len(local_pkgs)} 个 -->\n" + "\n".join(f"- {n}" for n in local_pkgs))
+        lines.append("")
+    lines.append(f"<!-- 专家包市场：命中 {len(hits)} 个 -->")
     for i, pkg in enumerate(hits, 1):
         name = pkg.get("displayName") or pkg.get("slug") or f"包{i}"
         slug = pkg.get("slug") or ""
@@ -869,7 +911,12 @@ def McpMarket(keyword: str = "", limit: int = 20) -> str:
     if not hits:
         return _xml_response("done", f"未匹配到 MCP 服务器（keyword={keyword!r}）。可留空 keyword 查看全部。")
 
-    lines = [f"<!-- MCP 市场：命中 {len(hits)} 个 -->"]
+    local_mcp = _local_mcp_servers(10)
+    lines = []
+    if local_mcp:
+        lines.append(f"<!-- 本地已配置 MCP server {len(local_mcp)} 个 -->\n" + "\n".join(f"- {n}" for n in local_mcp))
+        lines.append("")
+    lines.append(f"<!-- MCP 市场：命中 {len(hits)} 个 -->")
     for i, s in enumerate(hits, 1):
         name = s.get("displayName") or s.get("qualifiedName") or s.get("name") or f"服务器{i}"
         qname = s.get("qualifiedName") or s.get("id") or ""
