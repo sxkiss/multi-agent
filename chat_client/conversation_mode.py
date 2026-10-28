@@ -17,7 +17,7 @@ from typing import Any
 HOST_READ_TOOLS: frozenset[str] = frozenset({
     "Read", "Glob", "Grep", "ReadToolArchive", "LS",
     "WebFetch", "WebSearch", "curl_url", "http_check",
-    "check_ssl_cert",
+    
     "mem0_search", "mem0_search_all", "mem0_list",
     "KnowledgeSearch", "KnowledgeList",
     "ExpertMarket", "GetExpertPrompt",

@@ -332,7 +332,7 @@ class Agent:
         "Read", "Glob", "Grep", "ReadToolArchive",
         "TaskStatus", "CheckCommandStatus", "TaskStop", "StopCommand",
         "WebFetch", "WebSearch", "curl_url", "http_check",
-        "check_ssl_cert",
+        
         "mem0_search", "mem0_search_all", "mem0_list",
         "KnowledgeSearch", "KnowledgeList",
         "ExpertMarket", "GetExpertPrompt",
