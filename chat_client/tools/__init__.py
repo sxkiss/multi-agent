@@ -72,8 +72,7 @@ GATED_TOOL_GROUPS: dict[str, frozenset[str]] = {
     "memory": frozenset({"mem0_search", "mem0_add", "mem0_list", "mem0_delete", "mem0_import",
                          "Mem0Search", "Mem0Add"}),
     # 市场发现
-    "market": frozenset({"ExpertMarket", "GetExpertPrompt", "InstallExpert",
-                         "SkillMarket", "SkillCategories", "ExpertScenes"}),
+    "market": frozenset({"ExpertMarket", "SkillMarket"}),
     # 定时任务
     "scheduler": frozenset({"ScheduleTask", "ListScheduledTasks", "CancelScheduledTask",
                             "RunScheduledTaskNow"}),
@@ -1679,8 +1678,7 @@ DEFAULT_CORE_TOOL_NAMES: frozenset[str] = frozenset([
     # 搜索/知识
     "WebSearch", "WebFetch", "curl_url", "http_check",
     # 市场/技能/专家
-    "Skills", "SkillMarket", "ExpertMarket", "GetExpertPrompt",
-    "InstallExpert", "SkillCategories", "ExpertScenes",
+    "Skills", "SkillMarket", "ExpertMarket",
     # 按需加载入口
     "ToolSearch", "MCP",
     # 记忆/知识库

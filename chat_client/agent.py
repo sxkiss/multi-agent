@@ -303,7 +303,7 @@ class Agent:
     #   · 两个 Edit 改不同文件 → 可并行；改同一文件 → 串行
     #    #   · 只读工具（Read/Grep/查询类）无写资源 → 自由并行
     #   · 有全局共享状态、无法用资源键区分的（Bash/TodoWrite/MCP/Skills/
-    #     InstallExpert/TaskSummary 等）→ 独占串行
+    #     TaskSummary 等）→ 独占串行
     #   · 子代理（Task/ConsultPeer）无共享状态 → 并行
     # 可用 config 覆盖：tool_parallel_force（强制并行）、tool_parallel_deny
     #                  （强制串行，优先级最高）。
@@ -313,7 +313,7 @@ class Agent:
         "Bash",                       # cwd/后台任务/环境共享，且顺序敏感
         "TodoWrite", "TaskSummary",   # 单文件读改写，全局唯一
         "MCP", "Skills",              # 插件/技能加载全局状态
-        "InstallExpert", "RecruitMember", "CreateDepartment",  # 写 crew_agents.json
+        "RecruitMember", "CreateDepartment",  # 写 crew_agents.json
     }
     # 写类工具 → 资源键为文件路径（同文件串行，异文件并行）
     _WRITE_FILE_TOOLS: dict[str, tuple[str, ...]] = {
@@ -335,8 +335,7 @@ class Agent:
         
         "mem0_search", "mem0_search_all", "mem0_list",
         "KnowledgeSearch", "KnowledgeList",
-        "ExpertMarket", "GetExpertPrompt",
-        "SkillMarket",
+        "ExpertMarket", "SkillMarket",
         "ListScheduledTasks", "TodoRead",
         # 子代理：本身无共享状态，可并行
         "Task", "ConsultPeer",
@@ -674,15 +673,15 @@ class Agent:
                 "\n\n## 市场发现工具（主动使用，不要等用户给链接）\n"
                 "- 专家市场：429 个领域专家（含完整人设提示词），覆盖营销/技术/设计/运营等。"
                 "当用户需要专业角色/人设/专家时（如\"帮我找营销专家\"\"用产品经理视角分析\"），"
-                "主动调用 `ExpertMarket(keyword=...)` 搜索，再用 `GetExpertPrompt(name=...)` 取提示词作为角色设定。\n"
-                "- **本地没有的专家会自动缓存**：`GetExpertPrompt`/`InstallExpert` 取用市场专家后，"
+                "主动调用 `ExpertMarket(action=\"list\", keyword=...)` 搜索，用 `ExpertMarket(action=\"install\", name=...)` 落地为成员。\n"
+                "- **本地没有的专家会自动缓存**：`ExpertMarket(action=\"install\")` 落地后自动缓存，"
                 "会落盘到 expert_market/ 并被自动发现，之后即算本地已有（无需重复联网）。"
                 "所以遇到任务先看上方【本地专家库】，没有再查市场。\n"
                 "- 技能市场：SkillHub 社区公开技能库。当本地技能不够、用户要找新技能/插件时，"
-                "调用 `SkillMarket(keyword=...)` 或 `SkillCategories()` 探索。\n"
-                "- 精选场景：`ExpertScenes()` 查看专家市场精选场景。\n"
+                "调用 `SkillMarket(action=\"search\", keyword=...)` 或 `SkillMarket(action=\"packages\")` 探索。\n"
+                "- 精选场景：`ExpertMarket(action=\"scenes\")` 查看专家市场精选场景。\n"
                 "- 用法示例：用户说\"我需要一个内容营销专家\"→ 调 `ExpertMarket(keyword=\"内容创作\")`"
-                "→ 命中后调 `GetExpertPrompt(name=\"content-creator\")` 加载人设。\n"
+                "→ 命中后调 `ExpertMarket(action=\"install\", name=\"content-creator\")` 落地为成员。\n"
                 "- **自查**：回复用户前，若涉及专家角色/外部技能需求而你没调过市场工具，就是漏用。"
             )
             # 专家派发铁律（2026-10-21 boss 要求，2026-10-24 增强自动判断）：
@@ -708,7 +707,7 @@ class Agent:
                 "\n"
                 "### 【表外领域：必须去市场找，不许自己顶】\n"
                 "只要任务属于「某个专业领域」，而本地专家库没有对应项，**必须调 `ExpertMarket(keyword=...)` 检索**，"
-                "命中后 `InstallExpert` 落地再 `Task` 派发。典型领域（含建议关键词）：\n"
+                "命中后 `ExpertMarket(action=\"install\", name=...)` 落地再 `Task` 派发。典型领域（含建议关键词）：\n"
                 "- 设计/UI/品牌/视觉 → `设计`、`UI`、`品牌`\n"
                 "- 法律/合同/合规/隐私 → `法务`、`合同`、`合规`\n"
                 "- 财务/税务/会计/投资 → `财务`、`税务`、`投资`\n"
@@ -723,9 +722,9 @@ class Agent:
                 "### 【派发流程（三步，按顺序试）】\n"
                 "1. **本地成员**（crew_agents.json 已装）→ 直接 "
                 "`Task(subagent_type=\"成员名\", description=..., prompt=..., expected_output=...)`；\n"
-                "2. **本地专家库有但未落地为成员** → `InstallExpert(name=\"专家id\")` → 再 `Task` 派发；\n"
+                "2. **本地专家库有但未落地为成员** → `ExpertMarket(action=\"install\", name=\"专家id\")` → 再 `Task` 派发；\n"
                 "3. **本地完全没有** → `ExpertMarket(keyword=\"领域词\")` 检索 → 选最匹配的 → "
-                "`InstallExpert(name=\"命中id\")` 落地 → `Task` 派发。\n"
+                "`ExpertMarket(action=\"install\", name=\"命中id\")` 落地 → `Task` 派发。\n"
                 "   - 市场检索为空/无合适项 → 才可退化为通用成员（researcher/coder 等）执行，"
                 "并在回复中说明「该领域未找到匹配专家，已用通用成员处理」。\n"
                 "\n"
@@ -740,7 +739,7 @@ class Agent:
                 "### 【交付前自查（硬性）】\n"
                 "回复会话人之前，逐条确认：\n"
                 "- 这次任务是专业领域任务吗？如果是，我真的调用了 `Task(subagent_type=...)` 吗？\n"
-                "- 本地没有对应专家时，我真的调过 `ExpertMarket` 检索并 `InstallExpert` 落地了吗？\n"
+                "- 本地没有对应专家时，我真的调过 `ExpertMarket(action=\"list\")` 检索并 `ExpertMarket(action=\"install\")` 落地了吗？\n"
                 "- 如果没派发，理由必须二选一：「非专业领域（闲聊/通用问答/纯查询）」或「会话人明确要求本人回答」，"
                 "不能是「我自己做更快」「这次比较小」「查市场太慢」——这类理由一律违规。\n"
             )

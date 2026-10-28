@@ -197,7 +197,7 @@ def _local_packages(limit: int = 10) -> list[str]:
 
 
 @register_tool(category="市场", name_cn="查询专家市场", risk_level="low")
-def ExpertMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
+def ExpertMarket(action: str = "list", keyword: str = "", category: str = "", limit: int = 20, name: str = "") -> str:
     """
     查询专家市场（429 个专家、15 个分类，腾讯云 COS 公开，无需认证）。
 
@@ -264,6 +264,25 @@ def ExpertMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
     return _xml_response("done", "\n".join(lines))
 
 
+    # action分支
+    act = (action or "list").strip().lower()
+    if act == "prompt":
+        if not name:
+            return _xml_response("error", "action=prompt需要name参数")
+        try:
+            key, text = fetch_expert_prompt(name)
+            return _xml_response("done", text[:5000])
+        except Exception as e:
+            return _xml_response("error", f"获取提示词失败: {e!s}")
+    if act == "install":
+        if not name:
+            return _xml_response("error", "action=install需要name参数")
+        return InstallExpert(name=name)
+    if act == "scenes":
+        return ExpertScenes()
+    return _xml_response("done", "\n".join(lines))
+
+
 def fetch_expert_prompt(name: str) -> tuple[str, str]:
     """拉取专家提示词原文（供 GetExpertPrompt / InstallExpert 复用）。
 
@@ -311,183 +330,8 @@ def find_expert_meta(name: str) -> Dict[str, Any]:
     return {}
 
 
-@register_tool(category="市场", name_cn="获取专家提示词", risk_level="low")
-def GetExpertPrompt(name: str) -> str:
-    """
-    获取专家市场里某个专家的完整提示词（.md 原文，无需认证）。
-
-    - name：专家标识（来自 ExpertMarket 结果，如 "marketing-expert"）
-    路径规则：{base}/plugins/{name}/agents/{name}.md
-
-    提示：若希望把该专家**落地为可复用的团队成员**（而非每次临时取提示词），
-    请改用 InstallExpert(name=...) —— 它会写入 crew_agents.json 并立即可派发。
-    """
-    if not (name or "").strip():
-        return _xml_response("error", "需要提供 name（专家标识）")
-    try:
-        key, text = fetch_expert_prompt(name)
-    except ValueError as e:
-        return _xml_response("error", str(e))
-    except Exception as e:
-        return _xml_response("error", f"获取专家提示词失败: {e!s}")
-    try:
-        from . import PROJECT_ROOT
-        from ..experts import get_catalog
-        meta = find_expert_meta(key) or find_expert_meta(name)
-        get_catalog(PROJECT_ROOT).cache_market_expert(key, text, meta or {})
-    except Exception as _cache_err:
-        logger.debug(f"专家缓存落盘失败（不影响返回）: {_cache_err!s}")
-    if len(text) > 30000:
-        text = text[:30000] + "\n\n[...提示词过长已截断...]"
-    return _xml_response("done", f"<!-- 专家: {key} -->\n{text}")
-
-
-@register_tool(category="市场", name_cn="安装专家为成员", risk_level="medium", timeout=90)
-def InstallExpert(name: str, department: str = "experts", member_name: str = "",
-                  tools: Optional[List[str]] = None, identity: str = "") -> str:
-    """
-    把专家市场的一个专家**落地为可复用的团队成员**（写入 crew_agents.json，立即生效）。
-    与 GetExpertPrompt（临时取提示词）不同：安装后该专家成为集团常驻成员，
-    可通过 Task(subagent_type=成员名) 或 RunCrew 反复调用，无需每次重新取提示词。
-
-    **何时使用**：
-    - 用户说"把 XX 专家加进团队""招一个营销专家""以后都用这个专家"
-    - 某个领域会反复用到同一专家（省去每次 ExpertMarket→GetExpertPrompt 的开销）
-
-    Args:
-        name: 专家市场标识（来自 ExpertMarket，如 "marketing-expert"）
-        department: 目标部门标识（默认 experts；不存在会自动创建「专家部」）
-        member_name: 落地后的成员名（留空则用专家标识规范化生成）
-        tools: 授予该成员的工具名列表（留空则用一套通用只读+读写默认集）
-        identity: 可选身份补充（名字/定位/风格），会作为身份层拼进成员系统提示词
-    """
-    import re as _re
-    # 0. 优先从**本地专家库**（自动发现）取——本地专家无需联网、含完整人格文件
-    local = None
-    try:
-        from ..experts import get_catalog
-        from . import PROJECT_ROOT
-        cat = get_catalog(PROJECT_ROOT)
-        local = cat.get(name)
-    except Exception:
-        local = None
-
-    if local is not None:
-        key = local.id
-        display = local.label
-        desc = local.description
-        category = local.category
-        # 组装 backstory：SOUL + IDENTITY 作为系统提示
-        prompt_text = (local.soul or "").strip()
-        if local.identity:
-            prompt_text += "\n\n" + local.identity.strip()
-        if not prompt_text:
-            prompt_text = f"你是{display}。{desc}"
-        # 本地专家可携带推荐工具
-        if not tools and local.tools:
-            tools = list(local.tools)
-        expert_skills = list(getattr(local, "skills", None) or [])
-        expert_dir = str(getattr(local, "directory", "") or "")
-    else:
-        # 1. 取专家市场提示词 + 元数据
-        try:
-            key, prompt_text = fetch_expert_prompt(name)
-        except ValueError as e:
-            return _xml_response("error", str(e))
-        except Exception as e:
-            return _xml_response("error", f"获取专家提示词失败: {e!s}")
-
-        meta = find_expert_meta(key) or find_expert_meta(name)
-        display = _expert_field(meta, "displayName", "name", "Name", "title") if meta else ""
-        desc = _expert_field(meta, "description", "desc", "summary", "intro") if meta else ""
-        category = _expert_field(meta, "categoryName", "category", "group", "type") if meta else ""
-        expert_skills = []
-        expert_dir = ""
-
-    # 2. 规范化成员名：优先 member_name，其次专家标识；非法字符转 -
-    raw_member = (member_name or key or "").strip().lower()
-    member = _re.sub(r"[^a-z0-9_\-]", "-", raw_member).strip("-")
-    if not _re.match(r"^[a-z0-9_\-]{2,40}$", member or ""):
-        return _xml_response("error", f"成员名不合法（规范化后为 {member!r}）。请用 member_name 指定一个仅含小写字母/数字/_/- 的名字。")
-    dept = (department or "experts").strip().lower()
-
-    # 3. 组装 backstory（系统提示词）：专家原文 + 可选身份层
-    backstory = prompt_text.strip()
-    if len(backstory) > 20000:
-        backstory = backstory[:20000] + "\n\n[...专家提示词过长已截断...]"
-    id_line = ""
-    if identity.strip():
-        id_line = f"\n\n[身份设定]\n{identity.strip()}"
-        backstory += id_line
-
-    # 4. 工具集：留空给一套通用默认（只读为主 + 常用执行）
-    default_tools = [
-        "Read", "Glob", "Grep", "Write", "Edit", "Bash",
-        "WebSearch", "WebFetch", "TodoWrite", "Skills",
-    ]
-    grant = tools if tools else default_tools
-
-    # 5. 落地：复用 task.py 的部门/成员持久化逻辑（延迟导入避免循环依赖）
-    from .task import _CREW_LOCK, _crew_load_file, _crew_save_file, reload_custom_agents
-    with _CREW_LOCK:
-        data = _crew_load_file()
-        # 自动建部门
-        depts = {d.get("name") for d in data["departments"]}
-        dept_created = False
-        if dept not in depts:
-            if len(data["departments"]) >= 20:
-                return _xml_response("error", "部门数量已达上限（20），无法自动创建 experts 部。请先指定一个已存在的 department。")
-            data["departments"].append({
-                "name": dept,
-                "title": "专家部" if dept == "experts" else dept,
-                "description": "由专家市场安装的领域专家成员",
-            })
-            dept_created = True
-        # 成员查重
-        if any(a.get("name") == member for a in data["agents"]):
-            return _xml_response("error", f"成员已存在: {member}（可用 member_name 换名，或先卸载）")
-        if len(data["agents"]) >= 50:
-            return _xml_response("error", "成员数量已达上限（50）")
-        # 工具白名单过滤
-        from . import registry as _tool_registry
-        known = set(_tool_registry._metadata.keys()) | {
-            s["function"]["name"] for s in _tool_registry._schemas
-        }
-        granted = [t for t in grant if t in known]
-        dropped = [t for t in grant if t not in known]
-        if not granted:
-            sample = ", ".join(sorted(known)[:15])
-            return _xml_response("error", f"tools 全部无效。系统真实可用工具例如：{sample}。")
-        data["agents"].append({
-            "name": member,
-            "department": dept,
-            "description": (desc or f"专家市场安装的专家（{key}）")[:500],
-            "backstory": backstory[:20000],
-            "tools": granted[:40],
-            "model": "",
-            "expert_source": key,          # 溯源：记录来源专家标识
-            "expert_category": category[:80],
-            "identity": identity.strip()[:2000],
-            "skills": expert_skills,        # 专家自带技能（随专家目录注入子 agent）
-            "expert_dir": expert_dir,       # 专家目录（含 skills/），供 load_agent_skills_block 读取
-        })
-        _crew_save_file(data)
-
-    reload_custom_agents()
-
-    note = f"（未识别工具已忽略: {dropped}）" if dropped else ""
-    dept_note = "（已自动创建专家部）" if dept_created else ""
-    return _xml_response(
-        "done",
-        f"专家「{display or key}」已安装为团队成员：**{member}**（部门 {dept}）{dept_note}\n"
-        f"授予工具：{', '.join(granted)} {note}\n"
-        f"立即生效：可用 Task(subagent_type='{member}') 派发任务，或在 RunCrew 计划中作为成员调用。\n"
-        f"来源专家标识：{key}（记录于 crew_agents.json 的 expert_source 字段，便于溯源/更新）。",
-    )
-
-
 @register_tool(category="市场", name_cn="查询技能市场", risk_level="low")
-def SkillMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
+def SkillMarket(action: str = "search", keyword: str = "", category: str = "", limit: int = 20, package_slug: str = "") -> str:
     """
     查询技能市场（SkillHub，api.skillhub.cn，公开接口无需认证）。
 
@@ -581,77 +425,25 @@ def SkillMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
         if d:
             lines.append(f"   {d}")
     lines.append(f"\n技能市场 Web 端：https://skillhub.cn ｜ MCP 市场：{MCP_MARKET}")
+    # action分支
+    act = (action or "search").strip().lower()
+    if act == "packages":
+        return SkillPackageMarket(keyword=keyword, category=category, limit=limit)
+    if act == "list":
+        local = _local_skill_names(999)
+        if not local:
+            return _xml_response("done", "当前无已装技能。")
+        lines = [f"本地已装技能（共{len(local)}个）："]
+        for s in sorted(local)[:50]:
+            lines.append(f"  - {s}")
+        return _xml_response("done", "\n".join(lines))
+    if act == "categories":
+        return SkillCategories()
+    if act == "install":
+        if not package_slug:
+            return _xml_response("error", "action=install需要package_slug参数")
+        return InstallSkillPackage(package_slug=package_slug)
     return _xml_response("done", "\n".join(lines))
-
-
-@register_tool(category="市场", name_cn="查询技能分类", risk_level="low")
-def SkillCategories() -> str:
-    """列出技能市场（SkillHub）的全部分类（公开接口，无需认证）。"""
-    try:
-        # 带缓存（key="categories"，TTL 1h）
-        cached = _market_cache_load("categories")
-        if cached is not None:
-            data = cached
-        else:
-            data = _get_json(f"{SKILLHUB_BASE}/api/v1/categories")
-            _market_cache_save("categories", data)
-    except Exception as e:
-        return _xml_response("error", f"获取分类失败: {e!s}")
-    cats = data if isinstance(data, list) else (data.get("categories") or data.get("data") or [])
-    if not cats:
-        return _xml_response("done", "未取到分类列表")
-    lines = ["<!-- 技能市场分类 -->"]
-    for c in cats:
-        if isinstance(c, dict):
-            nm = c.get("name") or c.get("label") or c.get("slug") or ""
-            cnt = c.get("count") or c.get("skillCount") or ""
-            lines.append(f"- {nm}" + (f"（{cnt}）" if cnt != "" else ""))
-        else:
-            lines.append(f"- {c}")
-    return _xml_response("done", "\n".join(lines))
-
-
-@register_tool(category="市场", name_cn="查询专家场景", risk_level="low")
-def ExpertScenes() -> str:
-    """列出专家市场的精选场景（featuredScenes.json，公开无需认证）。"""
-    try:
-        # 带缓存（key="scenes"，TTL 1h）
-        cached = _market_cache_load("scenes")
-        if cached is not None:
-            data = cached
-        else:
-            data = _get_json(f"{EXPERT_BASE}/featuredScenes.json")
-            _market_cache_save("scenes", data)
-    except Exception as e:
-        return _xml_response("error", f"获取精选场景失败: {e!s}")
-    items = data if isinstance(data, list) else (data.get("scenes") or data.get("list") or data.get("data") or [])
-    if not items:
-        return _xml_response("done", "未取到精选场景")
-    lines = ["<!-- 专家市场：精选场景 -->"]
-    for s in items:
-        if isinstance(s, dict):
-            nm = s.get("name") or s.get("title") or s.get("sceneName") or ""
-            d = (s.get("description") or s.get("desc") or "")[:100]
-            lines.append(f"- **{nm}**" + (f"：{d}" if d else ""))
-        else:
-            lines.append(f"- {s}")
-    return _xml_response("done", "\n".join(lines))
-
-
-# ============================================================
-# 专家包市场（SkillHub SkillSets）
-#
-# 数据源：
-# - 列表：https://api.skillhub.cn/api/v1/skillsets
-#   响应 {"skillSets":[{slug,displayName,summary,scene,subScene,skillSlugs,...}], "total":N}
-# - 单包详情：https://api.skillhub.cn/api/v1/skillsets/{slug}
-#   响应含 content（YAML frontmatter，orchestration.children 为 skill slug 列表）
-# - 单技能详情：https://api.skillhub.cn/api/v1/skills/{slug}
-#   响应含 skill.sourceUrl / skill.upstream_url 等链接
-# ============================================================
-
-SKILLHUB_SKILLSETS_BASE = f"{SKILLHUB_BASE}/api/v1/skillsets"
-SKILLHUB_SKILL_BASE = f"{SKILLHUB_BASE}/api/v1/skills"
 
 
 def _parse_yaml_front_matter(text: str) -> Dict[str, Any]:
@@ -712,176 +504,6 @@ def _skillset_children(skillset: Dict[str, Any]) -> List[str]:
         if isinstance(children, list):
             return [str(c) for c in children]
     return []
-
-
-@register_tool(category="市场", name_cn="查询专家包市场", risk_level="low")
-def SkillPackageMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
-    """
-    查询专家包市场（SkillHub SkillSets，api.skillhub.cn，公开接口无需认证）。
-
-    **何时使用（主动查询）**：
-    - 用户想要"一整套工作流"而非单个技能（如「自动化测试专家包」「数据分析专家包」）
-    - 需要为任务挑选一个专家包（meta-skill，内含多个子技能的编排流程）
-
-    - keyword：按 displayName/slug/summary 本地模糊过滤
-    - category：按 scene/subScene 本地过滤
-    - limit：返回条数上限（默认 20）
-    """
-    try:
-        cache_key = f"skill_package_{keyword.strip().lower()[:30]}_{category.strip().lower()[:30]}_{limit}"
-        cached = _market_cache_load(cache_key)
-        if cached is not None:
-            data = cached
-        else:
-            data = _get_json(SKILLHUB_SKILLSETS_BASE + "?pageSize=100")
-            _market_cache_save(cache_key, data)
-    except Exception as e:
-        return _xml_response("error", f"拉取专家包市场失败: {e!s}")
-
-    items = data if isinstance(data, list) else (data.get("skillSets") or data.get("items") or data.get("results") or [])
-    if not items:
-        return _xml_response("done", "未取到专家包列表")
-
-    kw = (keyword or "").strip().lower()
-    cat = (category or "").strip().lower()
-    hits: List[Dict[str, Any]] = []
-    for pkg in items:
-        if not isinstance(pkg, dict):
-            continue
-        if cat:
-            scene = " ".join([
-                str(pkg.get("scene") or ""),
-                str(pkg.get("subScene") or ""),
-                str(pkg.get("displayNameEn") or ""),
-            ]).lower()
-            if cat not in scene:
-                continue
-        if kw:
-            blob = " ".join([
-                str(pkg.get("displayName") or ""),
-                str(pkg.get("displayNameEn") or ""),
-                str(pkg.get("slug") or ""),
-                str(pkg.get("summary") or ""),
-                str(pkg.get("summaryEn") or ""),
-            ]).lower()
-            if kw not in blob:
-                continue
-        hits.append(pkg)
-        if len(hits) >= max(1, min(int(limit or 20), 100)):
-            break
-
-    if not hits:
-        return _xml_response("done", f"未匹配到专家包（keyword={keyword!r} category={category!r}）。可留空 keyword 查看全部。")
-
-    local_pkgs = _local_packages(10)
-    lines = []
-    if local_pkgs:
-        lines.append(f"<!-- 本地已装专家包 {len(local_pkgs)} 个 -->\n" + "\n".join(f"- {n}" for n in local_pkgs))
-        lines.append("")
-    lines.append(f"<!-- 专家包市场：命中 {len(hits)} 个 -->")
-    for i, pkg in enumerate(hits, 1):
-        name = pkg.get("displayName") or pkg.get("slug") or f"包{i}"
-        slug = pkg.get("slug") or ""
-        scene = pkg.get("scene") or ""
-        sub = pkg.get("subScene") or ""
-        summary = str(pkg.get("summary") or pkg.get("summaryEn") or "")[:150]
-        child_slugs = _skillset_children(pkg)[:6]
-        lines.append(f"{i}. **{name}** `{slug}`" + (f" [{scene}/{sub}]" if scene else ""))
-        if summary:
-            lines.append(f"   {summary}")
-        if child_slugs:
-            lines.append(f"   技能: {'、'.join(child_slugs)}")
-    lines.append("\n下一步：用 `InstallSkillPackage(package_slug=\"<上面反引号里的 slug>\")` 安装专家包。")
-    return _xml_response("done", "\n".join(lines))
-
-
-@register_tool(category="市场", name_cn="安装专家包", risk_level="medium")
-def InstallSkillPackage(package_slug: str = "") -> str:
-    """
-    安装 SkillHub 专家包（meta-skill）。
-
-    从 /api/v1/skillsets/{slug} 获取包详情（含 skillSlugs），
-    对每个技能调用 /api/v1/skills/{slug} 获取详情并尝试取 zipUrl/downloadUrl 下载链接。
-    若无直接下载链接，输出提示从官网手动下载安装。
-
-    - package_slug：专家包标识（SkillPackageMarket 输出中的 slug）
-    """
-    slug = (package_slug or "").strip().strip("/")
-    if not slug:
-        return _xml_response("error", "需要提供 package_slug（专家包标识，如 tech-test-automation）")
-
-    # 1. 获取包详情（不带缓存，安装需要最新数据）
-    try:
-        detail = _get_json(f"{SKILLHUB_SKILLSETS_BASE}/{slug}")
-    except Exception as e:
-        return _xml_response("error", f"获取专家包详情失败: {e!s}")
-    if not isinstance(detail, dict) or detail.get("error"):
-        return _xml_response("error", f"未找到专家包: {slug}")
-
-    pkg_name = detail.get("displayName") or slug
-    child_slugs = _skillset_children(detail)
-    if not child_slugs:
-        return _xml_response("error", f"专家包 {slug} 未包含任何技能（skillSlugs 为空）。")
-
-    lines = [f"<!-- 安装专家包：{pkg_name}（{slug}） -->"]
-    lines.append(f"专家包包含 {len(child_slugs)} 个技能，逐个获取下载链接：")
-
-    installed = 0
-    no_link = 0
-    for i, skill_slug in enumerate(child_slugs, 1):
-        skill_slug = str(skill_slug).strip()
-        lines.append(f"\n[{i}/{len(child_slugs)}] **{skill_slug}**")
-        try:
-            sdata = _get_json(f"{SKILLHUB_SKILL_BASE}/{skill_slug}")
-        except Exception as e:
-            lines.append(f"   ❌ 获取详情失败: {e!s}")
-            no_link += 1
-            continue
-        if not isinstance(sdata, dict):
-            lines.append("   ❌ 响应格式异常")
-            no_link += 1
-            continue
-
-        # 查找下载链接：zipUrl / downloadUrl / sourceUrl / upstream_url
-        skill = sdata.get("skill") if isinstance(sdata.get("skill"), dict) else sdata
-        url = ""
-        for k in ("zipUrl", "downloadUrl", "download_url", "zip_url"):
-            v = skill.get(k) or sdata.get(k)
-            if isinstance(v, str) and v.startswith(("http://", "https://")):
-                url = v
-                break
-        if not url:
-            for k in ("sourceUrl", "upstream_url", "homepage"):
-                v = skill.get(k) or sdata.get(k)
-                if isinstance(v, str) and v.startswith(("http://", "https://")):
-                    url = v
-                    break
-        if url:
-            display = skill.get("displayName") or sdata.get("displayName") or skill_slug
-            lines.append(f"   - 技能名：{display}")
-            lines.append(f"   - 下载链接：{url}")
-            lines.append("   - 安装：用 `Skills(action=\"install\", source=\"<下载链接>\")` 将技能安装到本地 skills/ 目录。")
-            installed += 1
-        else:
-            no_link += 1
-            lines.append("   - 未找到直接下载链接，请手动安装。")
-
-    lines.append(f"\n完成：{installed} 个技能找到下载链接，{no_link} 个需手动处理。")
-    if no_link:
-        lines.append(f"\n提示：请手动从 https://skillhub.cn/skillspackage/{slug} 下载后安装。")
-    lines.append("\n安装后用 `Skills(action=\"list\")` 确认技能已就绪。")
-    return _xml_response("done", "\n".join(lines))
-
-
-# ============================================================
-# MCP 服务器市场（Smithery）
-#
-# 数据源：https://api.smithery.ai/servers
-# 响应 {"servers":[{qualifiedName, displayName, description, useCount, remote, ...}], ...}
-# 支持 ?q= 搜索；本地也可按 name/description 过滤
-# ============================================================
-
-SMITHERY_BASE = "https://api.smithery.ai"
 
 
 @register_tool(category="市场", name_cn="查询MCP市场", risk_level="low")

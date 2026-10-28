@@ -20,8 +20,7 @@ HOST_READ_TOOLS: frozenset[str] = frozenset({
     
     "mem0_search", "mem0_search_all", "mem0_list",
     "KnowledgeSearch", "KnowledgeList",
-    "ExpertMarket", "GetExpertPrompt",
-    "SkillMarket",
+    "ExpertMarket", "SkillMarket",
     "ListScheduledTasks", "TodoRead", "TaskStatus", "CheckCommandStatus",
     "Skills",  # 读取技能（只加载工作流，不写）
 })
