@@ -20,7 +20,7 @@ KB_LIST_DESC = """- 列出知识库中的全部文档（名称、块数、字数
 - 适用场景：查看知识库有什么、确认某文档是否已入库"""
 
 KB_DELETE_DESC = """- 从知识库删除指定文档（按 doc_id）
-- doc_id 可通过 KnowledgeList 获取
+- doc_id 可通过 Knowledge(action='list') 获取
 - 不可撤销"""
 
 

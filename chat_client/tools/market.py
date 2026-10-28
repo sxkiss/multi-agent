@@ -210,7 +210,7 @@ def ExpertMarket(action: str = "list", keyword: str = "", category: str = "", li
     - category：分类过滤（留空不过滤）
     - limit：返回条数上限（默认 20）
 
-    找到目标专家后，用 GetExpertPrompt(name=...) 取完整提示词（.md 原文）。
+    找到目标专家后，用 ExpertMarket(action="prompt", name=...) 取完整提示词（.md 原文）。
     """
     try:
         experts = _load_experts()
@@ -258,8 +258,8 @@ def ExpertMarket(action: str = "list", keyword: str = "", category: str = "", li
         if desc:
             lines.append(f"   {desc}")
     lines.append(
-        "\n下一步：用 `InstallExpert(name=\"<上面反引号里的标识>\")` 直接落地为团队成员，"
-        "再用 `Task(subagent_type=\"成员名\")` 派发；只需临时人设时用 `GetExpertPrompt(name=\"<标识>\")`。"
+        "\n下一步：用 `ExpertMarket(action=\"install\", name=\"<上面反引号里的标识>\")` 直接落地为团队成员，"
+        "再用 `Task(subagent_type=\"成员名\")` 派发；只需临时人设时用 `ExpertMarket(action=\"prompt\", name=\"<标识>\")`。"
     )
     return _xml_response("done", "\n".join(lines))
 

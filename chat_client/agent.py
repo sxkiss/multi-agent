@@ -324,8 +324,7 @@ class Agent:
     # 服务/容器类工具 → 资源键为服务名/容器名（同目标串行，异目标并行）
     _RESOURCE_TOOLS: dict[str, tuple[str, ...]] = {
         "ScheduleTask": ("name",),
-        "CancelScheduledTask": ("name_or_id",),
-        "RunScheduledTaskNow": ("name_or_id",),
+
     }
     # 只读工具：无写资源，自由并行
     _PARALLEL_ALLOW: set[str] = {

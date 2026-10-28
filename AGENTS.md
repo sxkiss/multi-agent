@@ -38,7 +38,7 @@
 
 ## 8. 定时任务（硬性约束）
 
-- **建定时任务只用 btag 自带调度器**（`/home/sxkiss/bt/scheduled_tasks.json`，经 ScheduleTask / ListScheduledTasks / CancelScheduledTask 工具管理）。
+- **建定时任务只用 btag 自带调度器**（`/home/sxkiss/bt/scheduled_tasks.json`，经 `ScheduleTask(action=create/list/cancel/run_now)` 工具管理）。
 - **禁止**往 Hermes cron（`~/.hermes/cron/jobs.json`）或系统 crontab 新增定时任务。
 - 已有系统 crontab 里的历史任务（daily-cost-report、闲鱼同步/看门狗、watchdog 探活等）保持不动，除非 Boss 明确指示。
 - 心跳/轮询只做巡检，不做定时。
