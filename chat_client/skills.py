@@ -590,6 +590,21 @@ class SkillManager:
             user, repo, branch = m.group(1), m.group(2), m.group(3)
             branch = branch or "main"
             return f"https://codeload.github.com/{user}/{repo}/zip/refs/heads/{branch}"
+
+        # SkillHub：详情页 URL → 官方下载接口
+        #   https://api.skillhub.cn/{namespace}/{slug}  →  download?slug={slug}&namespace={namespace}
+        #   https://skillhub.cn/skill/{slug}            →  download?slug={slug}
+        sh = re.match(
+            r"^https://(?:api\.)?skillhub\.cn/(?:(?P<ns>[A-Za-z0-9_.\-]+)/)?(?P<slug>[A-Za-z0-9_.\-]+)/?$",
+            url.strip(),
+        )
+        if sh:
+            ns, slug = sh.group("ns"), sh.group("slug")
+            if slug and slug not in ("skill", "skills", "skillspackage", "market"):
+                q = f"slug={slug}"
+                if ns and ns not in ("skill", "skills", "api"):
+                    q += f"&namespace={ns}"
+                return f"https://api.skillhub.cn/api/v1/download?{q}"
         return url.strip()
 
     @staticmethod
