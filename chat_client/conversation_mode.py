@@ -16,19 +16,12 @@ from typing import Any
 # 只读工具白名单（ask 模式仅允许这些）
 HOST_READ_TOOLS: frozenset[str] = frozenset({
     "Read", "Glob", "Grep", "ReadToolArchive", "LS",
-    "WebFetch", "WebSearch", "curl_url", "http_check", "ping_target",
-    "check_domain", "check_ssl_cert", "get_server_ip",
-    "get_current_time", "get_service_status", "get_system_resources",
-    "get_top_processes", "get_docker_info", "get_docker_containers",
-    "get_docker_inspect", "get_docker_logs", "get_firewall_status",
-    "get_mysql_list", "get_sites", "get_sites_conf", "get_sites_logs",
-    "get_site_analysis", "list_port_bindings", "dir_usage", "find_large_files",
-    "tail_log",
-    "mem0_search", "mem0_search_all", "mem0_list",
-    "KnowledgeSearch", "KnowledgeList",
-    "ExpertMarket", "GetExpertPrompt", "ExpertScenes",
-    "SkillMarket", "SkillCategories",
-    "ListScheduledTasks", "TodoRead", "TaskStatus", "CheckCommandStatus",
+    "WebFetch", "WebSearch", "curl_url", "http_check",
+    
+    "mem0",
+    "Knowledge",
+    "ExpertMarket", "SkillMarket",
+    "ScheduleTask", "TodoRead", "TaskStatus", "CheckCommandStatus",
     "Skills",  # 读取技能（只加载工作流，不写）
 })
 

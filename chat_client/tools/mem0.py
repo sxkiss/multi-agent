@@ -38,15 +38,48 @@ MEM0_IMPORT_DESC = """- 批量导入记忆（每行一条，用 \\n 分隔）
 - 适用场景：从文件/文档一次性导入大量知识点"""
 
 
-@register_tool(category="知识", name_cn="查询记忆", risk_level="low")
-def mem0_search(query: str, limit: int = 5) -> str:
+@register_tool(category="知识", name_cn="记忆", risk_level="low")
+def mem0(action: str = "search", query: str = "", limit: int = 5, id: str = "",
+         text: str = "", metadata: dict | None = None, agent_id: str | None = None,
+         texts: str = "") -> str:
     """
-    从 mem0 记忆系统查询相关记忆。
-    适用于回忆用户偏好、历史决策、技术踩坑等长周期上下文。
+    记忆系统工具（支持搜索/添加/列表/删除/导入）。
+
     Args:
-        query: 搜索关键词
-        limit: 返回条数，默认5
+        action: 操作类型
+            - search: 查询当前agent记忆（需 query）
+            - search_all: 跨域搜索所有agent记忆（需 query）
+            - add: 写入记忆（需 text）
+            - list: 列出记忆（可按 agent_id 过滤）
+            - delete: 删除记忆（需 id）
+            - import: 批量导入记忆（需 texts，每行一条）
+        query: 搜索关键词（action=search/search_all 时必填）
+        limit: 返回条数，默认5（action=list时默认50）
+        id: 记忆ID（action=delete 时必填）
+        text: 要记住的内容（action=add 时必填）
+        metadata: 可选元数据（action=add 时可选）
+        agent_id: 按agent_id过滤（action=list时可选）
+        texts: 多行文本，每行一条记忆（action=import 时必填）
     """
+    act = (action or "search").strip().lower()
+    if act == "search":
+        return _mem0_search(query, limit)
+    elif act == "search_all":
+        return _mem0_search_all(query, limit)
+    elif act == "add":
+        return _mem0_add(text, metadata)
+    elif act == "list":
+        return _mem0_list(agent_id, limit)
+    elif act == "delete":
+        return _mem0_delete(id)
+    elif act == "import":
+        return _mem0_import(texts)
+    else:
+        return _xml_response("error", f"未知 action: {act}，可选: search/search_all/add/list/delete/import")
+
+
+def _mem0_search(query: str, limit: int) -> str:
+    """查询当前agent记忆。"""
     try:
         m = Mem0Service(agent_id="ai-agent", rag_final_count=int(limit or 5))
         results = m.search(query, score=0.1)
@@ -57,15 +90,8 @@ def mem0_search(query: str, limit: int = 5) -> str:
         return _xml_response("error", f"mem0 搜索失败: {e}")
 
 
-@register_tool(category="知识", name_cn="跨域搜索记忆", risk_level="low")
-def mem0_search_all(query: str, limit: int = 10) -> str:
-    """
-    跨域搜索所有 agent 的记忆（不限于当前 agent）。
-    适用于查询其他工具（OpenCode、Claude Code、Hermes 等）的记忆。
-    Args:
-        query: 搜索关键词
-        limit: 返回条数，默认10
-    """
+def _mem0_search_all(query: str, limit: int) -> str:
+    """跨域搜索所有agent记忆。"""
     import httpx
     try:
         resp = httpx.post("http://localhost:8000/search", json={
@@ -82,15 +108,8 @@ def mem0_search_all(query: str, limit: int = 10) -> str:
         return _xml_response("error", f"mem0 跨域搜索失败: {e}")
 
 
-@register_tool(category="知识", name_cn="记住信息", risk_level="low")
-def mem0_add(text: str, metadata: dict | None = None) -> str:
-    """
-    向 mem0 记忆系统写入重要信息。
-    当用户表达稳定偏好、协作规则、技术决策、踩坑经验时主动调用。
-    Args:
-        text: 要记住的内容
-        metadata: 可选元数据
-    """
+def _mem0_add(text: str, metadata: dict | None) -> str:
+    """写入记忆。"""
     try:
         m = Mem0Service(agent_id="ai-agent")
         m.add_document(text, metadata)
@@ -102,14 +121,8 @@ def mem0_add(text: str, metadata: dict | None = None) -> str:
         return _xml_response("error", f"mem0 写入失败: {e}")
 
 
-@register_tool(category="知识", name_cn="列出记忆", risk_level="low")
-def mem0_list(agent_id: str | None = None, limit: int = 50) -> str:
-    """
-    列出 mem0 记忆系统中的所有记忆。
-    Args:
-        agent_id: 按 agent_id 过滤，不指定则列出全部
-        limit: 最多返回条数，默认50
-    """
+def _mem0_list(agent_id: str | None, limit: int) -> str:
+    """列出记忆。"""
     import httpx
     try:
         url = "http://localhost:8000/memories"
@@ -127,13 +140,8 @@ def mem0_list(agent_id: str | None = None, limit: int = 50) -> str:
         return _xml_response("error", f"mem0 列表失败: {e}")
 
 
-@register_tool(category="知识", name_cn="删除记忆", risk_level="medium")
-def mem0_delete(id: str) -> str:
-    """
-    删除指定 ID 的记忆（不可撤销）。
-    Args:
-        id: 记忆的 memory_id（通过 mem0_list 获取）
-    """
+def _mem0_delete(id: str) -> str:
+    """删除记忆。"""
     import httpx
     try:
         resp = httpx.delete(f"http://localhost:8000/memories/{id}", timeout=10)
@@ -145,13 +153,8 @@ def mem0_delete(id: str) -> str:
         return _xml_response("error", f"mem0 删除失败: {e}")
 
 
-@register_tool(category="知识", name_cn="批量导入", risk_level="low")
-def mem0_import(texts: str) -> str:
-    """
-    批量导入记忆（每行一条）。
-    Args:
-        texts: 多行文本，每行一条记忆，用换行符 \\n 分隔
-    """
+def _mem0_import(texts: str) -> str:
+    """批量导入记忆。"""
     import httpx
     try:
         lines = [t.strip() for t in texts.strip().split("\n") if t.strip()]
@@ -167,3 +170,12 @@ def mem0_import(texts: str) -> str:
     except Exception as e:
         logger.debug(f"mem0_import 异常: {e}")
         return _xml_response("error", f"mem0 导入失败: {e}")
+
+
+# 向后兼容别名
+mem0_search = _mem0_search
+mem0_search_all = _mem0_search_all
+mem0_add = _mem0_add
+mem0_list = _mem0_list
+mem0_delete = _mem0_delete
+mem0_import = _mem0_import

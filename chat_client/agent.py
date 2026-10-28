@@ -301,10 +301,9 @@ class Agent:
     # ── 工具并行：按「资源冲突」判定（2026-10-15）──────────────────
     # 对齐 Claude Code / Cursor 的做法：不按工具名一刀切，而是看**资源冲突**。
     #   · 两个 Edit 改不同文件 → 可并行；改同一文件 → 串行
-    #   · 两个 restart_service 重启不同服务 → 可并行；同一服务 → 串行
-    #   · 只读工具（Read/Grep/查询类）无写资源 → 自由并行
+    #    #   · 只读工具（Read/Grep/查询类）无写资源 → 自由并行
     #   · 有全局共享状态、无法用资源键区分的（Bash/TodoWrite/MCP/Skills/
-    #     InstallExpert/TaskSummary 等）→ 独占串行
+    #     TaskSummary 等）→ 独占串行
     #   · 子代理（Task/ConsultPeer）无共享状态 → 并行
     # 可用 config 覆盖：tool_parallel_force（强制并行）、tool_parallel_deny
     #                  （强制串行，优先级最高）。
@@ -314,46 +313,30 @@ class Agent:
         "Bash",                       # cwd/后台任务/环境共享，且顺序敏感
         "TodoWrite", "TaskSummary",   # 单文件读改写，全局唯一
         "MCP", "Skills",              # 插件/技能加载全局状态
-        "InstallExpert", "RecruitMember", "CreateDepartment",  # 写 crew_agents.json
-        "GrantWriteAccess", "ManageWritePaths",  # 全局写白名单
-        "cron_manage", "cleanup_temp",           # 系统级共享
+        "RecruitMember", "CreateDepartment",  # 写 crew_agents.json
     }
     # 写类工具 → 资源键为文件路径（同文件串行，异文件并行）
     _WRITE_FILE_TOOLS: dict[str, tuple[str, ...]] = {
         "Write": ("file_path",),
         "Edit": ("file_path",),
         "LargeFileEdit": ("file_path",),
-        "compress_files": ("archive_path",),   # 输出包路径
-        "extract_archive": ("dest_dir",),       # 解压目标目录
     }
     # 服务/容器类工具 → 资源键为服务名/容器名（同目标串行，异目标并行）
     _RESOURCE_TOOLS: dict[str, tuple[str, ...]] = {
-        "restart_service": ("service_name",),
-        "manage_service": ("service_name",),
-        "docker_manage": ("container_id",),
-        "kill_process": ("pid",),
         "ScheduleTask": ("name",),
-        "CancelScheduledTask": ("name_or_id",),
-        "RunScheduledTaskNow": ("name_or_id",),
+
     }
     # 只读工具：无写资源，自由并行
     _PARALLEL_ALLOW: set[str] = {
         "Read", "Glob", "Grep", "ReadToolArchive",
         "TaskStatus", "CheckCommandStatus", "TaskStop", "StopCommand",
-        "WebFetch", "WebSearch", "curl_url", "http_check", "ping_target",
-        "check_domain", "check_ssl_cert", "get_server_ip",
-        "get_current_time", "get_service_status", "get_system_resources",
-        "get_top_processes", "get_docker_info", "get_docker_containers",
-        "get_docker_inspect", "get_docker_logs", "get_firewall_status",
-        "get_mysql_list", "get_sites", "get_sites_conf", "get_sites_logs",
-        "get_site_analysis", "list_port_bindings", "dir_usage", "find_large_files",
-        "tail_log",
-        "mem0_search", "mem0_search_all", "mem0_list",
-        "KnowledgeSearch", "KnowledgeList",
-        "ExpertMarket", "GetExpertPrompt", "ExpertScenes",
-        "SkillMarket", "SkillCategories",
-        "ListScheduledTasks", "TodoRead",
-        # 子代理：本身无共享状态，可并行（本次修复的主要目标）
+        "WebFetch", "WebSearch", "curl_url", "http_check",
+        
+        "mem0",
+        "Knowledge",
+        "ExpertMarket", "SkillMarket",
+        "ScheduleTask", "TodoRead",
+        # 子代理：本身无共享状态，可并行
         "Task", "ConsultPeer",
     }
 
@@ -620,6 +603,7 @@ class Agent:
         if mode in ("single", "codex_x"):
             # 只在 cwd 和 cwd/memories/ 下查找，不往上爬目录树
             _ctx_parts = []
+            _missing_soul_hint = None
             cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else os.getcwd()
             for fname, title in [("SOUL.md", "身份与行为准则（SOUL）"),
                                  ("USER.md", "用户信息（USER）"),
@@ -637,7 +621,7 @@ class Agent:
                                 _mem_chars = len(content)
                                 content = (
                                     f"（MEMORY.md 已加载，{_mem_lines} 行 / {_mem_chars} 字，"
-                                    "具体内容通过 `mem0_search` / `mem0_list` 按需检索，不在提示词中重复展开）"
+                                    "具体内容通过 `mem0(action='search', query=...)` / `mem0(action='list')` 按需检索，不在提示词中重复展开）"
                                 )
                             _ctx_parts.append(f"## {title}\n{content}")
                             found = True
@@ -647,9 +631,20 @@ class Agent:
                     except Exception:
                         pass
                 if not found:
-                    logger.debug("单AG模式未找到 %s/%s（cwd=%s），跳过", cwd, fname, cwd)
+                    # SOUL.md 缺失时必须显式提示，不能静默跳过
+                    if fname == "SOUL.md":
+                        _missing_soul_hint = (
+                            f"\n\n## ⚠️ 缺少 SOUL.md（必需）\n"
+                            f"工作目录 `{cwd}` 下未找到 `SOUL.md` 文件。\n"
+                            f"请创建工作目录下的 `SOUL.md`，定义你的角色身份、行为准则和安全边界。\n"
+                            f"参考模板：{os.path.join(PROJECT_ROOT, 'SOUL.md')}"
+                        )
+                    else:
+                        logger.debug("单AG模式未找到 %s/%s（cwd=%s），跳过", cwd, fname, cwd)
             if _ctx_parts:
                 self.system_prompt += "\n\n" + "\n\n".join(_ctx_parts)
+            if _missing_soul_hint:
+                self.system_prompt += _missing_soul_hint
 
         # 注入技能摘要，让 AI 知道有哪些技能可用（Codex 式三层披露 Layer 1）
         if not self.strict_tools and mode in ("single", "codex_x"):
@@ -689,15 +684,15 @@ class Agent:
                 "\n\n## 市场发现工具（主动使用，不要等用户给链接）\n"
                 "- 专家市场：429 个领域专家（含完整人设提示词），覆盖营销/技术/设计/运营等。"
                 "当用户需要专业角色/人设/专家时（如\"帮我找营销专家\"\"用产品经理视角分析\"），"
-                "主动调用 `ExpertMarket(keyword=...)` 搜索，再用 `GetExpertPrompt(name=...)` 取提示词作为角色设定。\n"
-                "- **本地没有的专家会自动缓存**：`GetExpertPrompt`/`InstallExpert` 取用市场专家后，"
+                "主动调用 `ExpertMarket(action=\"list\", keyword=...)` 搜索，用 `ExpertMarket(action=\"install\", name=...)` 落地为成员。\n"
+                "- **本地没有的专家会自动缓存**：`ExpertMarket(action=\"install\")` 落地后自动缓存，"
                 "会落盘到 expert_market/ 并被自动发现，之后即算本地已有（无需重复联网）。"
                 "所以遇到任务先看上方【本地专家库】，没有再查市场。\n"
                 "- 技能市场：SkillHub 社区公开技能库。当本地技能不够、用户要找新技能/插件时，"
-                "调用 `SkillMarket(keyword=...)` 或 `SkillCategories()` 探索。\n"
-                "- 精选场景：`ExpertScenes()` 查看专家市场精选场景。\n"
+                "调用 `SkillMarket(action=\"search\", keyword=...)` 或 `SkillMarket(action=\"packages\")` 探索。\n"
+                "- 精选场景：`ExpertMarket(action=\"scenes\")` 查看专家市场精选场景。\n"
                 "- 用法示例：用户说\"我需要一个内容营销专家\"→ 调 `ExpertMarket(keyword=\"内容创作\")`"
-                "→ 命中后调 `GetExpertPrompt(name=\"content-creator\")` 加载人设。\n"
+                "→ 命中后调 `ExpertMarket(action=\"install\", name=\"content-creator\")` 落地为成员。\n"
                 "- **自查**：回复用户前，若涉及专家角色/外部技能需求而你没调过市场工具，就是漏用。"
             )
             # 专家派发铁律（2026-10-21 boss 要求，2026-10-24 增强自动判断）：
@@ -723,7 +718,7 @@ class Agent:
                 "\n"
                 "### 【表外领域：必须去市场找，不许自己顶】\n"
                 "只要任务属于「某个专业领域」，而本地专家库没有对应项，**必须调 `ExpertMarket(keyword=...)` 检索**，"
-                "命中后 `InstallExpert` 落地再 `Task` 派发。典型领域（含建议关键词）：\n"
+                "命中后 `ExpertMarket(action=\"install\", name=...)` 落地再 `Task` 派发。典型领域（含建议关键词）：\n"
                 "- 设计/UI/品牌/视觉 → `设计`、`UI`、`品牌`\n"
                 "- 法律/合同/合规/隐私 → `法务`、`合同`、`合规`\n"
                 "- 财务/税务/会计/投资 → `财务`、`税务`、`投资`\n"
@@ -738,9 +733,9 @@ class Agent:
                 "### 【派发流程（三步，按顺序试）】\n"
                 "1. **本地成员**（crew_agents.json 已装）→ 直接 "
                 "`Task(subagent_type=\"成员名\", description=..., prompt=..., expected_output=...)`；\n"
-                "2. **本地专家库有但未落地为成员** → `InstallExpert(name=\"专家id\")` → 再 `Task` 派发；\n"
+                "2. **本地专家库有但未落地为成员** → `ExpertMarket(action=\"install\", name=\"专家id\")` → 再 `Task` 派发；\n"
                 "3. **本地完全没有** → `ExpertMarket(keyword=\"领域词\")` 检索 → 选最匹配的 → "
-                "`InstallExpert(name=\"命中id\")` 落地 → `Task` 派发。\n"
+                "`ExpertMarket(action=\"install\", name=\"命中id\")` 落地 → `Task` 派发。\n"
                 "   - 市场检索为空/无合适项 → 才可退化为通用成员（researcher/coder 等）执行，"
                 "并在回复中说明「该领域未找到匹配专家，已用通用成员处理」。\n"
                 "\n"
@@ -755,12 +750,12 @@ class Agent:
                 "### 【交付前自查（硬性）】\n"
                 "回复会话人之前，逐条确认：\n"
                 "- 这次任务是专业领域任务吗？如果是，我真的调用了 `Task(subagent_type=...)` 吗？\n"
-                "- 本地没有对应专家时，我真的调过 `ExpertMarket` 检索并 `InstallExpert` 落地了吗？\n"
+                "- 本地没有对应专家时，我真的调过 `ExpertMarket(action=\"list\")` 检索并 `ExpertMarket(action=\"install\")` 落地了吗？\n"
                 "- 如果没派发，理由必须二选一：「非专业领域（闲聊/通用问答/纯查询）」或「会话人明确要求本人回答」，"
                 "不能是「我自己做更快」「这次比较小」「查市场太慢」——这类理由一律违规。\n"
             )
             # 注入 mem0 记忆使用提示
-            self.system_prompt += "\n\n## 记忆系统\n- `mem0_search` 查询历史记忆（用户偏好、踩坑记录、已完成任务）\n- `mem0_add` 写入重要信息（用户明确说'记住'、协作规则、技术决策）\n- `mem0_list` 列出所有记忆（按 agent_id 过滤，默认50条）\n- `mem0_delete` 删除指定 ID 的记忆（不可撤销）\n- `mem0_import` 批量导入（多行文本，每行一条）\n- 涉及跨会话上下文、用户偏好、历史决策时主动调用，不要凭空回答"
+            self.system_prompt += "\n\n## 记忆系统\n- `mem0(action='search', query=...)` 查询历史记忆（用户偏好、踩坑记录、已完成任务）\n- `mem0(action='add', text=...)` 写入重要信息（用户明确说'记住'、协作规则、技术决策）\n- `mem0(action='list')` 列出所有记忆（可按 agent_id 过滤，默认50条）\n- `mem0(action='delete', id=...)` 删除指定 ID 的记忆（不可撤销）\n- `mem0(action='import', texts=...)` 批量导入（多行文本，每行一条）\n- 涉及跨会话上下文、用户偏好、历史决策时主动调用，不要凭空回答"
 
         if not self.strict_tools:
             # 单 Agent 模式：默认全量工具，排除集团协作工具
@@ -3034,7 +3029,7 @@ Here is some useful information about the environment you are running in:
 
             m = {"role": reconstructed["role"], "content": content}
             if "tool_calls" in reconstructed:
-                # 只要求有函数名即可：无参数的工具（如 get_system_resources）arguments
+                # 只要求有函数名即可：无参数的工具 arguments
                 # 可能为空串，此处若一并丢弃，会导致 assistant 声明与其后的 tool 结果
                 # 双双消失，模型看不到"自己调用过该工具"。空参数由
                 # _sanitize_messages_for_api 统一替换为合法空 JSON "{}"。

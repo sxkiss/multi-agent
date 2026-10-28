@@ -276,8 +276,8 @@ class ExpertCatalog:
         bundled = [e for e in experts if e.source != "market"]
         market = [e for e in experts if e.source == "market"]
         lines = [f"## 本地专家库（共 {len(experts)} 位，可直接调用）"]
-        lines.append("当任务匹配某位专家时，用 `InstallExpert` 落地为团队成员，"
-                     "或用 `GetExpertPrompt` 取人设提示词；本地专家已自动发现，无需先查市场。")
+        lines.append("当任务匹配某位专家时，用 `ExpertMarket(action=\"install\", name=...)` 落地为团队成员，"
+                     "或用 `ExpertMarket(action=\"prompt\", name=...)` 取人设提示词；本地专家已自动发现，无需先查市场。")
         lines.append("")
 
         def _fmt(e: Expert) -> list[str]:

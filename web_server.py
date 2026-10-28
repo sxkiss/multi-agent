@@ -292,8 +292,13 @@ _MINIPROGRAM_SINGLE_PERSONA = _TERMINAL_SINGLE_PERSONA
 
 
 def _append_miniprogram_guard(system_prompt: str) -> str:
-    """为终端渠道的系统提示词追加上输出约束（其它渠道原样返回）"""
-    return (system_prompt or "") + _TERMINAL_CHANNEL_GUARD
+    """为终端渠道的系统提示词追加上输出约束（其它渠道原样返回）。
+    若 system_prompt 已包含渠道约束内容，则直接返回，避免重复。"""
+    if not system_prompt:
+        return _TERMINAL_CHANNEL_GUARD
+    if "【渠道约束" in system_prompt or "渠道约束（终端用户）" in system_prompt:
+        return system_prompt
+    return system_prompt + _TERMINAL_CHANNEL_GUARD
 
 
 def _map_agent_chunk(chunk):
@@ -1535,7 +1540,7 @@ class AgentMain:
                     logger.warning("system_prompt 模板解析失败，已记录", exc_info=True)
         if not parts:
             return None
-        return "你是 AI 运维助手「经理」，以下为你的核心设定，请严格遵守：\n\n" + "\n\n".join(parts)
+        return "\n\n".join(parts)
 
     def _load_prompt_config(self, prompt_id, system_prompt=None):
         prompt_config = {}

@@ -267,6 +267,23 @@ class SkillManager:
         disabled_names = self._disabled_name_set()
         return [skill for skill in self.all() if skill.name not in disabled_names]
 
+    def search(self, query: str, limit: int = 5) -> list[dict]:
+        """按关键词搜索技能（名称+描述），返回{score, name, description[:100]}列表，按分数降序。"""
+        if not query:
+            return []
+        q = query.lower()
+        hits = []
+        for s in self.all():
+            score = 0
+            if q in s.name.lower():
+                score += 3
+            if q in s.description.lower():
+                score += 1
+            if score > 0:
+                hits.append({"score": score, "name": s.name, "description": s.description[:150]})
+        hits.sort(key=lambda x: -x["score"])
+        return hits[:limit]
+
     def is_enabled(self, name: str) -> bool:
         if not self.get(name):
             return False
@@ -590,6 +607,21 @@ class SkillManager:
             user, repo, branch = m.group(1), m.group(2), m.group(3)
             branch = branch or "main"
             return f"https://codeload.github.com/{user}/{repo}/zip/refs/heads/{branch}"
+
+        # SkillHub：详情页 URL → 官方下载接口
+        #   https://api.skillhub.cn/{namespace}/{slug}  →  download?slug={slug}&namespace={namespace}
+        #   https://skillhub.cn/skill/{slug}            →  download?slug={slug}
+        sh = re.match(
+            r"^https://(?:api\.)?skillhub\.cn/(?:(?P<ns>[A-Za-z0-9_.\-]+)/)?(?P<slug>[A-Za-z0-9_.\-]+)/?$",
+            url.strip(),
+        )
+        if sh:
+            ns, slug = sh.group("ns"), sh.group("slug")
+            if slug and slug not in ("skill", "skills", "skillspackage", "market"):
+                q = f"slug={slug}"
+                if ns and ns not in ("skill", "skills", "api"):
+                    q += f"&namespace={ns}"
+                return f"https://api.skillhub.cn/api/v1/download?{q}"
         return url.strip()
 
     @staticmethod
@@ -966,23 +998,21 @@ class SkillManager:
                 cat = "工具集成"
             categories.setdefault(cat, []).append({"name": name, "desc": desc})
 
+        # 有 search 工具后，摘要只需展示类别+代表技能；具体匹配交给 Skills(action="search")
         lines = [f"## 可用技能（共 {len(skills)} 个，按 {len(categories)} 个类别分组）"]
-        lines.append("当用户请求涉及特定领域时，使用 `Skills(name=\"技能名\")` 加载该技能的详细工作流。")
+        lines.append("用法：先 `Skills(action=\"search\", name=\"关键词\")` 搜出候选，再用 `Skills(name=\"技能名\")` 加载完整工作流。")
         lines.append("")
         for cat, items in sorted(categories.items()):
-            sample = items[:6]
-            more = f" 等共{len(items)}个" if len(items) > 6 else ""
             parts = []
-            for s in sample:
-                d = (s['desc'] or "").strip()
-                if d:
-                    # 截断到 120 字符，避免单行过长；保留触发场景（description 前部通常是用途/触发词）
-                    d = d if len(d) <= 120 else d[:120] + "…"
-                    parts.append(f"`{s['name']}`（{d}）")
+            for i, s in enumerate(items[:2]):
+                name = f"`{s['name']}`"
+                if s.get('desc'):
+                    d = s['desc'].strip().replace('\n', ' ')[:60]
+                    parts.append(f"{name}（{d}…）")
                 else:
-                    parts.append(f"`{s['name']}`")
-            names = ', '.join(parts)
-            lines.append(f"- **{cat}**{more}: {names}")
+                    parts.append(name)
+            more = f" 等{len(items)}个" if len(items) > 2 else ""
+            lines.append(f"- **{cat}**{more}: {', '.join(parts)}")
         return "\n".join(lines)
 
     # ==================== P2-a: 技能包（复用/导出/导入） ====================

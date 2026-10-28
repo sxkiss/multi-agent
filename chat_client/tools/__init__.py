@@ -67,16 +67,13 @@ GATED_TOOL_GROUPS: dict[str, frozenset[str]] = {
     # 数据库
     "database": frozenset({"MySQLQuery", "SQLQuery", "DatabaseQuery"}),
     # 知识库（文档 RAG）
-    "knowledge": frozenset({"KnowledgeAdd", "KnowledgeSearch", "KnowledgeList", "KnowledgeDelete"}),
+    "knowledge": frozenset({"Knowledge"}),
     # 记忆
-    "memory": frozenset({"mem0_search", "mem0_add", "mem0_list", "mem0_delete", "mem0_import",
-                         "Mem0Search", "Mem0Add"}),
+    "memory": frozenset({"mem0"}),
     # 市场发现
-    "market": frozenset({"ExpertMarket", "GetExpertPrompt", "InstallExpert",
-                         "SkillMarket", "SkillCategories", "ExpertScenes"}),
+    "market": frozenset({"ExpertMarket", "SkillMarket"}),
     # 定时任务
-    "scheduler": frozenset({"ScheduleTask", "ListScheduledTasks", "CancelScheduledTask",
-                            "RunScheduledTaskNow"}),
+    "scheduler": frozenset({"ScheduleTask"}),
     # 网站/运维
     "website": frozenset({"SiteList", "SiteConf", "SiteLogs", "SiteAnalysis", "ServerStatus",
                           "FirewallStatus", "DockerInfo", "DockerContainers"}),
@@ -1220,7 +1217,7 @@ class ToolRegistry:
         """按 function.name 去重，保留首次出现的（内置工具先注册，故优先）。
 
         背景：_schemas 是 list.append 累积、_register_func 不去重，而 MCP 加载时
-        desktop-commander 的 kill_process 会与内置同名工具共存两条 schema。
+        desktop-commander 的工具注册需避免与内置工具同名冲突。
         上游模型不接受同名顶层工具，会返回 400 "duplicate top-level executable
         tool name"，被中转池再包装成 503 no_healthy_account。
         """
@@ -1679,17 +1676,14 @@ DEFAULT_CORE_TOOL_NAMES: frozenset[str] = frozenset([
     # 搜索/知识
     "WebSearch", "WebFetch", "curl_url", "http_check",
     # 市场/技能/专家
-    "Skills", "SkillMarket", "ExpertMarket", "GetExpertPrompt",
-    "InstallExpert", "SkillCategories", "ExpertScenes",
+    "Skills", "SkillMarket", "ExpertMarket",
     # 按需加载入口
     "ToolSearch", "MCP",
     # 记忆/知识库
-    "mem0_search", "mem0_add", "mem0_list",
-    "KnowledgeSearch", "KnowledgeAdd",
+    "mem0",
+    "Knowledge",
     # 定时任务
-    "ScheduleTask", "ListScheduledTasks",
-    # 系统
-    "get_current_time",
+    "ScheduleTask",
 ])
 
 # 高频工具（有历史统计数据时使用，替代 DEFAULT_CORE_TOOL_NAMES）
@@ -1703,8 +1697,7 @@ HIGH_FREQ_TOOL_NAMES: frozenset[str] = frozenset([
     "browser_use",
     "WebSearch", "WebFetch", "curl_url", "http_check",
     "ToolSearch", "MCP",
-    "mem0_search", "mem0_add", "mem0_list",
-    "KnowledgeSearch", "KnowledgeAdd",
-    "ScheduleTask", "ListScheduledTasks",
-    "get_current_time",
+    "mem0",
+    "Knowledge",
+    "ScheduleTask",
 ])
