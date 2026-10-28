@@ -93,14 +93,15 @@ Invoke this tool to load a skill when a task matches one of the available skills
 
 Actions (action 参数):
 - load (default): 加载指定 name 的技能。可加 resource='scripts/x.py' 读附属文件
+- search: 按关键词搜索技能（name=关键词，返回匹配的技能列表+描述摘要）
 - install: 安装技能到项目 skills/ 目录。source 可为 GitHub 仓库链接 / zip 直链 / 本地目录（zip 或文件夹）
 - uninstall: 卸载 name 指定的技能
 - list: 列出当前已装技能
 - market: 从配置的技能市场（多源，config.json skills_market）拉取可用技能清单
 
 Args:
-    name: The name of the skill from available_skills{hint}
-    action: load | install | uninstall | list | market (default: load)
+    name: 技能名（load/uninstall）或搜索关键词（action=search）
+    action: load | search | install | uninstall | list | market (default: load)
     source: install 时的来源（URL / 本地路径）
     overwrite: install 时是否覆盖已存在技能 (default: false)
     resource: load 时按需加载的附属文件路径
@@ -196,6 +197,17 @@ def _skills_impl(name: str = "", action: str = "load", source: str = "", overwri
         lines = [f"已装技能（共 {len(skills)} 个）："]
         for s in skills:
             lines.append(f"  - {s.name}")
+        return _xml_response("done", "\n".join(lines))
+
+    if action == "search":
+        if not name:
+            return _xml_response("error", "search 需要提供 name（搜索关键词）")
+        results = skill_manager.search(name, limit=10)
+        if not results:
+            return _xml_response("done", f"未找到匹配 '{name}' 的技能。")
+        lines = [f"搜索 '{name}' 结果（共 {len(results)} 条）："]
+        for r in results:
+            lines.append(f"  - {r['name']}（{r['description']}）")
         return _xml_response("done", "\n".join(lines))
 
     if action == "market":
