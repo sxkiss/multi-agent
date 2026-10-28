@@ -86,6 +86,8 @@ class SkillManager:
 
     # 市场源配置（从 config.json 的 skills_market 注入），支持多源合并
     _DEFAULT_MARKET_REPOS = [
+        # SkillHub 公开 API（免认证、无限流）优先，确保无 config.json 部署也能用
+        {"type": "skillhub", "owner": "skillhub", "name": "skillhub", "enabled": True},
         {"owner": "openai", "name": "skills", "path": "skills/.curated", "ref": "main", "enabled": True},
     ]
 
