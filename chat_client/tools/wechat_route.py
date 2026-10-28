@@ -202,8 +202,10 @@ def WeChatRoute(
             - card:   联系人名片（需 content=<对方wxid>，title=<昵称>）
             - music:  音乐卡片（需 url=音乐直链，title=歌名，可选 singer/cover_url/lyric）
         content: 文本内容（text 类型的消息内容；card 类型时填对方 wxid）
-        to_wxid: 接收方 wxid。**留空则取当前会话**（私聊=对方，群聊=群 id）。
-            注意：有对话上下文时只能发给当前会话，不能跨账号发。
+        to_wxid: 接收方 wxid。**留空则取当前会话**。
+            - 有会话上下文时自动使用，无需指定。
+            - 定时任务、后台任务等无会话场景必须显式传入（如 to_wxid="sxkiss_com"）。
+            - 注意：不能跨账号发消息（私聊只能发给当前会话对方，群聊只能发给当前群）。
         path: 媒体文件路径（image/video/voice/file 必填）
         title: 标题（link 卡片标题 / card 昵称 / music 歌名）
         desc: 描述（link 卡片描述）
