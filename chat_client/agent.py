@@ -637,7 +637,7 @@ class Agent:
                             f"\n\n## ⚠️ 缺少 SOUL.md（必需）\n"
                             f"工作目录 `{cwd}` 下未找到 `SOUL.md` 文件。\n"
                             f"请创建工作目录下的 `SOUL.md`，定义你的角色身份、行为准则和安全边界。\n"
-                            f"参考模板：{os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SOUL.md')}"
+                            f"参考模板：{os.path.join(PROJECT_ROOT, 'SOUL.md')}"
                         )
                     else:
                         logger.debug("单AG模式未找到 %s/%s（cwd=%s），跳过", cwd, fname, cwd)
