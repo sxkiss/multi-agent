@@ -603,6 +603,7 @@ class Agent:
         if mode in ("single", "codex_x"):
             # 只在 cwd 和 cwd/memories/ 下查找，不往上爬目录树
             _ctx_parts = []
+            _missing_soul_hint = None
             cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else os.getcwd()
             for fname, title in [("SOUL.md", "身份与行为准则（SOUL）"),
                                  ("USER.md", "用户信息（USER）"),
@@ -630,9 +631,20 @@ class Agent:
                     except Exception:
                         pass
                 if not found:
-                    logger.debug("单AG模式未找到 %s/%s（cwd=%s），跳过", cwd, fname, cwd)
+                    # SOUL.md 缺失时必须显式提示，不能静默跳过
+                    if fname == "SOUL.md":
+                        _missing_soul_hint = (
+                            f"\n\n## ⚠️ 缺少 SOUL.md（必需）\n"
+                            f"工作目录 `{cwd}` 下未找到 `SOUL.md` 文件。\n"
+                            f"请创建工作目录下的 `SOUL.md`，定义你的角色身份、行为准则和安全边界。\n"
+                            f"参考模板：{os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SOUL.md')}"
+                        )
+                    else:
+                        logger.debug("单AG模式未找到 %s/%s（cwd=%s），跳过", cwd, fname, cwd)
             if _ctx_parts:
                 self.system_prompt += "\n\n" + "\n\n".join(_ctx_parts)
+            if _missing_soul_hint:
+                self.system_prompt += _missing_soul_hint
 
         # 注入技能摘要，让 AI 知道有哪些技能可用（Codex 式三层披露 Layer 1）
         if not self.strict_tools and mode in ("single", "codex_x"):
