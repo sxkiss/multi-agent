@@ -536,32 +536,34 @@ def SkillMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
         return _xml_response("done", f"未匹配到技能（keyword={keyword!r} category={category!r}）。")
 
     local_set = set(_local_skill_names(999))
-    local_shown = []
-    if local_set:
-        local_shown = sorted(local_set)
-    # 过滤本地已装项并标记
-    filtered_items = []
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        nm = it.get("name") or it.get("slug") or it.get("title") or ""
-        if nm in local_set:
-            it["_local"] = True
-        filtered_items.append(it)
-    items = filtered_items
+    # 从本地技能中筛出匹配 kw 的
+    local_hits = []
+    if local_set and (keyword.strip() or category.strip()):
+        kw = (keyword or "").strip().lower()
+        cat = (category or "").strip().lower()
+        from chat_client.skills import skill_manager as _sm
+        for sk in _sm.all_enabled():
+            nm = sk.name
+            desc = (sk.description or "").lower()
+            blob = f"{nm} {desc}"
+            if kw and kw not in blob:
+                continue
+            if cat and cat not in blob:
+                continue
+            local_hits.append({"name": nm, "slug": nm, "description": sk.description})
     lines = []
-    if local_shown:
-        # 关键词搜索时只提示数量，不在结果里列出全部名称
-        # 无参数全览时才展开部分名称
-        if keyword.strip() or category.strip():
-            lines.append(f"<!-- 本地已装技能 {len(local_shown)} 个，市场中已过滤 -->")
-        else:
-            lines.append(f"<!-- 本地已装技能 {len(local_shown)} 个 -->")
-            for n in local_shown[:30]:
-                lines.append(f"- {n}")
-            if len(local_shown) > 30:
-                lines.append(f"  ...等，共{len(local_shown)}个")
+    if local_hits:
+        lines.append(f"<!-- 本地已装技能：命中 {len(local_hits)} 个 -->")
+        for idx, lh in enumerate(local_hits[:limit], 1):
+            nm = lh.get("name") or lh.get("slug") or ""
+            d = (lh.get("description") or "")[:150]
+            lines.append(f"{idx}. **{nm}** 📦本地已装")
+            if d:
+                lines.append(f"   {d}")
+        if len(local_hits) > limit:
+            lines.append(f"  ...等，共 {len(local_hits)} 个本地匹配项")
         lines.append("")
+
     if keyword.strip():
         lines.append(f"<!-- 技能市场：{len(items)} 条 -->")
     elif category.strip():
@@ -574,8 +576,8 @@ def SkillMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
         nm = it.get("name") or it.get("slug") or it.get("title") or ""
         d = (it.get("description") or it.get("summary") or "")[:120]
         slug = it.get("slug") or ""
-        local_tag = " 📦 本地已装" if it.get("_local") else ""
-        lines.append(f"{i}. **{nm}**" + (f"  slug=`{slug}`" if slug else "") + local_tag)
+
+        lines.append(f"{i}. **{nm}**" + (f"  slug=`{slug}`" if slug else ""))
         if d:
             lines.append(f"   {d}")
     lines.append(f"\n技能市场 Web 端：https://skillhub.cn ｜ MCP 市场：{MCP_MARKET}")
