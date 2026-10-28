@@ -112,6 +112,14 @@ def _run(cmd: list[str], timeout: int = 120) -> dict:
         except json.JSONDecodeError:
             pass
 
+    # 优先检查 newMsgId（最可靠的送达证据）
+    if isinstance(payload, dict):
+        data = payload.get("Data")
+        new_msg_id = _extract_new_msg_id(data)
+        if new_msg_id is not None and new_msg_id > 0:
+            # 有有效 newMsgId，说明实际已送达，即使退出了非零码也按成功处理
+            return {"status": True, "msg": "已发送", "newMsgId": new_msg_id}
+    
     if result.returncode != 0:
         # 优先从 payload 取 msg（869 脚本在失败时也会输出 JSON）
         if isinstance(payload, dict):
