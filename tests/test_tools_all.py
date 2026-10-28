@@ -96,10 +96,6 @@ class TestAlignIndent:
 # agent_tools.py
 # ============================================================
 class TestAgentTools:
-    def test_get_current_time(self):
-        from chat_client.tools.agent_tools import get_current_time
-        assert isinstance(get_current_time(), str) and len(get_current_time()) > 0
-
     def test_read_nonexistent_file(self, tmp_path):
         from chat_client.tools.agent_tools import Read
         result = Read(file_path=str(tmp_path / "no_such_file.txt"))
@@ -230,14 +226,14 @@ class TestTerminal:
 # ============================================================
 class TestKnowledge:
     def test_knowledge_add_requires_path_or_text(self):
-        from chat_client.tools.knowledge import KnowledgeAdd
-        result = KnowledgeAdd()
+        from chat_client.tools.knowledge import Knowledge
+        result = Knowledge(action="add")
         assert "error" in str(result).lower() or "required" in str(result).lower()
 
     def test_knowledge_search_no_crash(self):
-        from chat_client.tools.knowledge import KnowledgeSearch
+        from chat_client.tools.knowledge import Knowledge
         try:
-            KnowledgeSearch(query="test", top_k=5)
+            Knowledge(action="search", query="test", top_k=5)
         except Exception:
             pass
 
@@ -362,8 +358,8 @@ class TestMarket:
         assert isinstance(result, str)
 
     def test_get_expert_prompt_missing_name(self):
-        from chat_client.tools.market import GetExpertPrompt
-        result = GetExpertPrompt(name="")
+        from chat_client.tools.market import ExpertMarket
+        result = ExpertMarket(action="prompt", name="")
         assert isinstance(result, str) or result is None
 
 
@@ -433,20 +429,7 @@ class TestBase:
 
 
 # ============================================================
-# sys_ops.py
+# sys_ops.py (部分工具已合并/删除，保留基础测试)
 # ============================================================
 class TestSysOps:
-    def test_find_large_files_min_size(self):
-        from chat_client.tools.sys_ops import find_large_files
-        result = find_large_files(min_size_mb=0, limit=5)
-        assert isinstance(result, str)
-
-    def test_dir_usage_basic(self):
-        from chat_client.tools.sys_ops import dir_usage
-        result = dir_usage(path="/tmp", limit=5)
-        assert isinstance(result, str)
-
-    def test_list_port_bindings_no_crash(self):
-        from chat_client.tools.sys_ops import list_port_bindings
-        result = list_port_bindings(port=None)
-        assert isinstance(result, str)
+    pass  # 原 find_large_files/dir_usage/list_port_bindings 已移除
