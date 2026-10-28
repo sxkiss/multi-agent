@@ -1220,7 +1220,7 @@ class ToolRegistry:
         """按 function.name 去重，保留首次出现的（内置工具先注册，故优先）。
 
         背景：_schemas 是 list.append 累积、_register_func 不去重，而 MCP 加载时
-        desktop-commander 的 kill_process 会与内置同名工具共存两条 schema。
+        desktop-commander 的工具注册需避免与内置工具同名冲突。
         上游模型不接受同名顶层工具，会返回 400 "duplicate top-level executable
         tool name"，被中转池再包装成 503 no_healthy_account。
         """
@@ -1688,8 +1688,6 @@ DEFAULT_CORE_TOOL_NAMES: frozenset[str] = frozenset([
     "KnowledgeSearch", "KnowledgeAdd",
     # 定时任务
     "ScheduleTask", "ListScheduledTasks",
-    # 系统
-    "get_current_time",
 ])
 
 # 高频工具（有历史统计数据时使用，替代 DEFAULT_CORE_TOOL_NAMES）
@@ -1706,5 +1704,4 @@ HIGH_FREQ_TOOL_NAMES: frozenset[str] = frozenset([
     "mem0_search", "mem0_add", "mem0_list",
     "KnowledgeSearch", "KnowledgeAdd",
     "ScheduleTask", "ListScheduledTasks",
-    "get_current_time",
 ])

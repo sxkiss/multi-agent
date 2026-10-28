@@ -301,8 +301,7 @@ class Agent:
     # ── 工具并行：按「资源冲突」判定（2026-10-15）──────────────────
     # 对齐 Claude Code / Cursor 的做法：不按工具名一刀切，而是看**资源冲突**。
     #   · 两个 Edit 改不同文件 → 可并行；改同一文件 → 串行
-    #   · 两个 restart_service 重启不同服务 → 可并行；同一服务 → 串行
-    #   · 只读工具（Read/Grep/查询类）无写资源 → 自由并行
+    #    #   · 只读工具（Read/Grep/查询类）无写资源 → 自由并行
     #   · 有全局共享状态、无法用资源键区分的（Bash/TodoWrite/MCP/Skills/
     #     InstallExpert/TaskSummary 等）→ 独占串行
     #   · 子代理（Task/ConsultPeer）无共享状态 → 并行
@@ -315,23 +314,15 @@ class Agent:
         "TodoWrite", "TaskSummary",   # 单文件读改写，全局唯一
         "MCP", "Skills",              # 插件/技能加载全局状态
         "InstallExpert", "RecruitMember", "CreateDepartment",  # 写 crew_agents.json
-        "GrantWriteAccess", "ManageWritePaths",  # 全局写白名单
-        "cron_manage", "cleanup_temp",           # 系统级共享
     }
     # 写类工具 → 资源键为文件路径（同文件串行，异文件并行）
     _WRITE_FILE_TOOLS: dict[str, tuple[str, ...]] = {
         "Write": ("file_path",),
         "Edit": ("file_path",),
         "LargeFileEdit": ("file_path",),
-        "compress_files": ("archive_path",),   # 输出包路径
-        "extract_archive": ("dest_dir",),       # 解压目标目录
     }
     # 服务/容器类工具 → 资源键为服务名/容器名（同目标串行，异目标并行）
     _RESOURCE_TOOLS: dict[str, tuple[str, ...]] = {
-        "restart_service": ("service_name",),
-        "manage_service": ("service_name",),
-        "docker_manage": ("container_id",),
-        "kill_process": ("pid",),
         "ScheduleTask": ("name",),
         "CancelScheduledTask": ("name_or_id",),
         "RunScheduledTaskNow": ("name_or_id",),
@@ -340,20 +331,14 @@ class Agent:
     _PARALLEL_ALLOW: set[str] = {
         "Read", "Glob", "Grep", "ReadToolArchive",
         "TaskStatus", "CheckCommandStatus", "TaskStop", "StopCommand",
-        "WebFetch", "WebSearch", "curl_url", "http_check", "ping_target",
-        "check_domain", "check_ssl_cert", "get_server_ip",
-        "get_current_time", "get_service_status", "get_system_resources",
-        "get_top_processes", "get_docker_info", "get_docker_containers",
-        "get_docker_inspect", "get_docker_logs", "get_firewall_status",
-        "get_mysql_list", "get_sites", "get_sites_conf", "get_sites_logs",
-        "get_site_analysis", "list_port_bindings", "dir_usage", "find_large_files",
-        "tail_log",
+        "WebFetch", "WebSearch", "curl_url", "http_check",
+        "check_ssl_cert",
         "mem0_search", "mem0_search_all", "mem0_list",
         "KnowledgeSearch", "KnowledgeList",
-        "ExpertMarket", "GetExpertPrompt", "ExpertScenes",
-        "SkillMarket", "SkillCategories",
+        "ExpertMarket", "GetExpertPrompt",
+        "SkillMarket",
         "ListScheduledTasks", "TodoRead",
-        # 子代理：本身无共享状态，可并行（本次修复的主要目标）
+        # 子代理：本身无共享状态，可并行
         "Task", "ConsultPeer",
     }
 
@@ -3034,7 +3019,7 @@ Here is some useful information about the environment you are running in:
 
             m = {"role": reconstructed["role"], "content": content}
             if "tool_calls" in reconstructed:
-                # 只要求有函数名即可：无参数的工具（如 get_system_resources）arguments
+                # 只要求有函数名即可：无参数的工具 arguments
                 # 可能为空串，此处若一并丢弃，会导致 assistant 声明与其后的 tool 结果
                 # 双双消失，模型看不到"自己调用过该工具"。空参数由
                 # _sanitize_messages_for_api 统一替换为合法空 JSON "{}"。
