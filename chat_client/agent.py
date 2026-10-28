@@ -333,10 +333,10 @@ class Agent:
         "TaskStatus", "CheckCommandStatus", "TaskStop", "StopCommand",
         "WebFetch", "WebSearch", "curl_url", "http_check",
         
-        "mem0_search", "mem0_search_all", "mem0_list",
-        "KnowledgeSearch", "KnowledgeList",
+        "mem0",
+        "Knowledge",
         "ExpertMarket", "SkillMarket",
-        "ListScheduledTasks", "TodoRead",
+        "ScheduleTask", "TodoRead",
         # 子代理：本身无共享状态，可并行
         "Task", "ConsultPeer",
     }

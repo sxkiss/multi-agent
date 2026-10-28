@@ -206,7 +206,7 @@ class KnowledgeBase:
         if not candidates:
             return {"status": True, "results": [], "msg": "知识库为空",
                     "gate": {"passed": False, "reason": "empty"},
-                    "hint": "知识库为空：请先用 KnowledgeAdd 入库文档或文本，再检索。"}
+                    "hint": "知识库为空：请先用 Knowledge(action='add') 入库文档或文本，再检索。"}
 
         qvecs = self.embed_fn([query])
         if not qvecs:
@@ -244,7 +244,7 @@ class KnowledgeBase:
         if not results:
             hint = (
                 f"未检索到相关内容（门槛 {score}）：可尝试①换更具体的关键词重试；"
-                f"②确认相关文档已用 KnowledgeAdd 入库（当前库内 {len(self.manifest)} 篇）；"
+                f"②确认相关文档已用 Knowledge(action='add') 入库（当前库内 {len(self.manifest)} 篇）；"
                 f"③适当降低 score 门槛。"
             )
         # 内嵌一段 JSON 注释，供前端/下游解析出结构化引用（去重、带 doc/块/相似度）。

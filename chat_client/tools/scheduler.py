@@ -250,34 +250,51 @@ def op_run_now(name_or_id: str, runner) -> dict[str, Any]:
 
 # ---------------- Agent 工具封装 ----------------
 
-@register_tool(category="Agent", name_cn="创建定时任务", risk_level="medium", timeout=30)
-def ScheduleTask(name: str, objective: str, schedule_type: str = "daily",
-                 schedule_value: str = "09:00", agents: list | None = None, model: str = "") -> str:
+@register_tool(category="Agent", name_cn="定时任务", risk_level="medium", timeout=30)
+def ScheduleTask(action: str = "create", name: str = "", objective: str = "",
+                 schedule_type: str = "daily", schedule_value: str = "09:00",
+                 agents: list | None = None, model: str = "", name_or_id: str = "") -> str:
     """
-    创建定时任务：到点后系统自动以独立会话启动集团执行该目标。
-    两种计划类型：
-    - interval：每 N 分钟一次，schedule_value 填分钟数（如 "30"）
-    - daily：每天固定时刻，schedule_value 填 HH:MM（如 "09:00"）
+    定时任务工具（创建/查询/取消/立即执行）。
 
     Args:
-        name: 任务名称（唯一）
-        objective: 到点要让集团完成的目标描述
-        schedule_type: interval | daily
-        schedule_value: 分钟数或 HH:MM
+        action: 操作类型
+            - create: 创建定时任务（需 name、objective、schedule_type、schedule_value）
+            - list: 列出全部定时任务
+            - cancel: 取消任务（需 name_or_id）
+            - run_now: 立即执行任务（需 name_or_id）
+        name: 任务名称（唯一，action=create 时必填）
+        objective: 到点要让集团完成的目标描述（action=create 时必填）
+        schedule_type: interval（每N分钟）| daily（每天固定时刻）（action=create 时可选）
+        schedule_value: 分钟数或 HH:MM（action=create 时可选）
         agents: 可选。限定执行的团队成员名单（留空由经理自行安排）
         model: 可选。指定执行模型（留空用默认模型）
+        name_or_id: 任务名称或ID（action=cancel/run_now 时必填）
     """
+    act = (action or "create").strip().lower()
+    if act == "create":
+        return _sched_create(name, objective, schedule_type, schedule_value, agents, model)
+    elif act == "list":
+        return _sched_list()
+    elif act == "cancel":
+        return _sched_cancel(name_or_id)
+    elif act == "run_now":
+        return _sched_run_now(name_or_id)
+    else:
+        return _xml_response("error", f"未知 action: {act}，可选: create/list/cancel/run_now")
+
+
+def _sched_create(name: str, objective: str, schedule_type: str,
+                  schedule_value: str, agents: list | None, model: str) -> str:
+    """创建定时任务。"""
     r = op_create(name, objective, schedule_type, schedule_value, agents, model)
     if r.get("status"):
-        return _xml_response("done", f"{r['msg']}\\n目标：{objective}\\n到点后将在后台自动执行，过程与结果可在左侧会话列表（sched_* 开头）中查看。")
+        return _xml_response("done", f"{r['msg']}\n目标：{objective}\n到点后将在后台自动执行，过程与结果可在左侧会话列表（sched_* 开头）中查看。")
     return _xml_response("error", r["msg"])
 
 
-@register_tool(category="Agent", name_cn="查询定时任务", risk_level="low", timeout=15)
-def ListScheduledTasks() -> str:
-    """
-    列出全部定时任务及其状态（下次执行时间等）。
-    """
+def _sched_list() -> str:
+    """列出全部定时任务。"""
     rows = op_list()
     if not rows:
         return _xml_response("done", "当前没有任何定时任务")
@@ -290,25 +307,19 @@ def ListScheduledTasks() -> str:
     return _xml_response("done", "\n".join(lines))
 
 
-@register_tool(category="Agent", name_cn="取消定时任务", risk_level="medium", timeout=15)
-def CancelScheduledTask(name_or_id: str) -> str:
-    """
-    取消（删除）一个定时任务。可传任务名或任务 ID。
-
-    Args:
-        name_or_id: 任务名称或 ID
-    """
+def _sched_cancel(name_or_id: str) -> str:
+    """取消定时任务。"""
     r = op_cancel(name_or_id)
     return _xml_response("done" if r["status"] else "error", r["msg"])
 
 
-@register_tool(category="Agent", name_cn="立即执行定时任务", risk_level="medium", timeout=60)
-def RunScheduledTaskNow(name_or_id: str) -> str:
-    """
-    立即触发某个定时任务（不影响其后续排期）。
-
-    Args:
-        name_or_id: 任务名称或 ID
-    """
+def _sched_run_now(name_or_id: str) -> str:
+    """立即执行定时任务。"""
     r = op_run_now(name_or_id, _runner)
     return _xml_response("done" if r["status"] else "error", r["msg"])
+
+
+# 向后兼容别名
+ListScheduledTasks = _sched_list
+CancelScheduledTask = _sched_cancel
+RunScheduledTaskNow = _sched_run_now

@@ -62,21 +62,46 @@ def _get_kb():
     return KnowledgeBase(_kb_storage_dir(), embed)
 
 
-@register_tool(category="知识", name_cn="知识库入库", risk_level="low")
-def KnowledgeAdd(path: str = "", text: str = "", name: str = "") -> str:
+@register_tool(category="知识", name_cn="知识库", risk_level="low")
+def Knowledge(action: str = "search", query: str = "", top_k: int = 5, score: float = 0.2,
+              path: str = "", text: str = "", name: str = "", doc_id: str = "") -> str:
     """
-    把文档或文本加入本地知识库（解析→切块→向量化→可检索）。
+    知识库工具（支持入库/检索/列表/删除）。
+
     Args:
-        path: 文档路径（本地文件，支持 pdf/docx/pptx/xlsx/html/md/txt/图片）
-        text: 直接入库的文本（与 path 二选一）
-        name: 可选，文档显示名
+        action: 操作类型
+            - add: 入库文档或文本（需 path 或 text）
+            - search: 语义检索知识库（需 query）
+            - list: 列出全部文档
+            - delete: 删除文档（需 doc_id）
+        query: 检索关键词（action=search 时必填）
+        top_k: 返回条数，默认5（action=search 时可选）
+        score: 最小相似度阈值，默认0.2（action=search 时可选）
+        path: 文档路径（action=add 时可选，与 text 二选一）
+        text: 直接入库的文本（action=add 时可选，与 path 二选一）
+        name: 文档显示名（action=add 时可选）
+        doc_id: 文档ID（action=list/delete 时使用）
     """
+    act = (action or "search").strip().lower()
+    if act == "add":
+        return _knowledge_add(path, text, name)
+    elif act == "search":
+        return _knowledge_search(query, top_k, score)
+    elif act == "list":
+        return _knowledge_list()
+    elif act == "delete":
+        return _knowledge_delete(doc_id)
+    else:
+        return _xml_response("error", f"未知 action: {act}，可选: add/search/list/delete")
+
+
+def _knowledge_add(path: str, text: str, name: str) -> str:
+    """入库文档或文本。"""
     if not path and not text:
-        return _xml_response("error", "须提供 path（文档路径）或 text（文本内容）之一")
+        return _xml_response("error", "action=add 须提供 path（文档路径）或 text（文本内容）之一")
     try:
         kb = _get_kb()
-        target = path if path else None
-        result = kb.add_document(path=target, text=(text or None), name=name)
+        result = kb.add_document(path=path or None, text=(text or None), name=name)
         if not result.get("status"):
             return _xml_response("error", json.dumps(result, ensure_ascii=False))
         return _xml_response("done", json.dumps(result, ensure_ascii=False))
@@ -85,15 +110,8 @@ def KnowledgeAdd(path: str = "", text: str = "", name: str = "") -> str:
         return _xml_response("error", f"知识库入库失败: {e}")
 
 
-@register_tool(category="知识", name_cn="知识库检索", risk_level="low")
-def KnowledgeSearch(query: str, top_k: int = 5, score: float = 0.2) -> str:
-    """
-    从本地知识库做语义检索，返回带来源引用的相关片段。
-    Args:
-        query: 检索问题/关键词
-        top_k: 返回条数，默认5
-        score: 最小相似度阈值，默认0.2
-    """
+def _knowledge_search(query: str, top_k: int, score: float) -> str:
+    """语义检索知识库。"""
     if not query or not query.strip():
         return _xml_response("error", "query 不能为空")
     try:
@@ -105,7 +123,6 @@ def KnowledgeSearch(query: str, top_k: int = 5, score: float = 0.2) -> str:
         if not hits:
             return _xml_response("done", json.dumps({"query": query, "results": [],
                                                      "msg": res.get("msg", "未命中")}, ensure_ascii=False))
-        # 拼接带引用的上下文，便于模型直接引用
         lines = [f"{h['citation']} (score={h['score']})\n{h['text']}" for h in hits]
         return _xml_response("done", "\n\n".join(lines))
     except Exception as e:
@@ -113,9 +130,8 @@ def KnowledgeSearch(query: str, top_k: int = 5, score: float = 0.2) -> str:
         return _xml_response("error", f"知识库检索失败: {e}")
 
 
-@register_tool(category="知识", name_cn="知识库列表", risk_level="low")
-def KnowledgeList() -> str:
-    """列出知识库中的全部文档（名称、doc_id、块数、字数、入库时间）。"""
+def _knowledge_list() -> str:
+    """列出全部文档。"""
     try:
         kb = _get_kb()
         docs = kb.list_documents()
@@ -134,13 +150,8 @@ def KnowledgeList() -> str:
         return _xml_response("error", f"知识库列表失败: {e}")
 
 
-@register_tool(category="知识", name_cn="知识库删除", risk_level="medium")
-def KnowledgeDelete(doc_id: str) -> str:
-    """
-    从知识库删除指定文档（不可撤销）。
-    Args:
-        doc_id: 文档 ID（通过 KnowledgeList 获取）
-    """
+def _knowledge_delete(doc_id: str) -> str:
+    """删除文档。"""
     if not doc_id or not doc_id.strip():
         return _xml_response("error", "doc_id 不能为空")
     try:
@@ -152,3 +163,10 @@ def KnowledgeDelete(doc_id: str) -> str:
     except Exception as e:
         logger.warning("KnowledgeDelete 异常", exc_info=True)
         return _xml_response("error", f"知识库删除失败: {e}")
+
+
+# 向后兼容别名
+KnowledgeAdd = _knowledge_add
+KnowledgeSearch = _knowledge_search
+KnowledgeList = _knowledge_list
+KnowledgeDelete = _knowledge_delete

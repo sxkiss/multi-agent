@@ -67,15 +67,13 @@ GATED_TOOL_GROUPS: dict[str, frozenset[str]] = {
     # 数据库
     "database": frozenset({"MySQLQuery", "SQLQuery", "DatabaseQuery"}),
     # 知识库（文档 RAG）
-    "knowledge": frozenset({"KnowledgeAdd", "KnowledgeSearch", "KnowledgeList", "KnowledgeDelete"}),
+    "knowledge": frozenset({"Knowledge"}),
     # 记忆
-    "memory": frozenset({"mem0_search", "mem0_add", "mem0_list", "mem0_delete", "mem0_import",
-                         "Mem0Search", "Mem0Add"}),
+    "memory": frozenset({"mem0"}),
     # 市场发现
     "market": frozenset({"ExpertMarket", "SkillMarket"}),
     # 定时任务
-    "scheduler": frozenset({"ScheduleTask", "ListScheduledTasks", "CancelScheduledTask",
-                            "RunScheduledTaskNow"}),
+    "scheduler": frozenset({"ScheduleTask"}),
     # 网站/运维
     "website": frozenset({"SiteList", "SiteConf", "SiteLogs", "SiteAnalysis", "ServerStatus",
                           "FirewallStatus", "DockerInfo", "DockerContainers"}),
@@ -1682,10 +1680,10 @@ DEFAULT_CORE_TOOL_NAMES: frozenset[str] = frozenset([
     # 按需加载入口
     "ToolSearch", "MCP",
     # 记忆/知识库
-    "mem0_search", "mem0_add", "mem0_list",
-    "KnowledgeSearch", "KnowledgeAdd",
+    "mem0",
+    "Knowledge",
     # 定时任务
-    "ScheduleTask", "ListScheduledTasks",
+    "ScheduleTask",
 ])
 
 # 高频工具（有历史统计数据时使用，替代 DEFAULT_CORE_TOOL_NAMES）
@@ -1699,7 +1697,7 @@ HIGH_FREQ_TOOL_NAMES: frozenset[str] = frozenset([
     "browser_use",
     "WebSearch", "WebFetch", "curl_url", "http_check",
     "ToolSearch", "MCP",
-    "mem0_search", "mem0_add", "mem0_list",
-    "KnowledgeSearch", "KnowledgeAdd",
-    "ScheduleTask", "ListScheduledTasks",
+    "mem0",
+    "Knowledge",
+    "ScheduleTask",
 ])

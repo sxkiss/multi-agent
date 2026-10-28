@@ -18,10 +18,10 @@ HOST_READ_TOOLS: frozenset[str] = frozenset({
     "Read", "Glob", "Grep", "ReadToolArchive", "LS",
     "WebFetch", "WebSearch", "curl_url", "http_check",
     
-    "mem0_search", "mem0_search_all", "mem0_list",
-    "KnowledgeSearch", "KnowledgeList",
+    "mem0",
+    "Knowledge",
     "ExpertMarket", "SkillMarket",
-    "ListScheduledTasks", "TodoRead", "TaskStatus", "CheckCommandStatus",
+    "ScheduleTask", "TodoRead", "TaskStatus", "CheckCommandStatus",
     "Skills",  # 读取技能（只加载工作流，不写）
 })
 
