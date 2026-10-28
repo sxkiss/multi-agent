@@ -51,7 +51,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 logger = logging.getLogger(__name__)
 
 # 默认工作目录：单 agent 模式的 cwd
-HERMES_DIR = "/home/sxkiss/.hermes"
+HERMES_DIR = os.environ.get("HERMES_DIR", os.path.expanduser("~/.hermes"))
 
 # 扫描提示词模板时的合法扩展名（与 web_server._load_prompt_config 保持一致）
 _PROMPT_EXTS = (".md", ".txt")

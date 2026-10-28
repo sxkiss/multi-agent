@@ -981,23 +981,13 @@ class SkillManager:
                 cat = "工具集成"
             categories.setdefault(cat, []).append({"name": name, "desc": desc})
 
+        # 只列技能名，不展开描述——详细描述在加载技能时才有意义
         lines = [f"## 可用技能（共 {len(skills)} 个，按 {len(categories)} 个类别分组）"]
         lines.append("当用户请求涉及特定领域时，使用 `Skills(name=\"技能名\")` 加载该技能的详细工作流。")
         lines.append("")
         for cat, items in sorted(categories.items()):
-            sample = items[:6]
-            more = f" 等共{len(items)}个" if len(items) > 6 else ""
-            parts = []
-            for s in sample:
-                d = (s['desc'] or "").strip()
-                if d:
-                    # 截断到 120 字符，避免单行过长；保留触发场景（description 前部通常是用途/触发词）
-                    d = d if len(d) <= 120 else d[:120] + "…"
-                    parts.append(f"`{s['name']}`（{d}）")
-                else:
-                    parts.append(f"`{s['name']}`")
-            names = ', '.join(parts)
-            lines.append(f"- **{cat}**{more}: {names}")
+            names = ', '.join(f"`{s['name']}`" for s in items)
+            lines.append(f"- **{cat}** ({len(items)}个): {names}")
         return "\n".join(lines)
 
     # ==================== P2-a: 技能包（复用/导出/导入） ====================
