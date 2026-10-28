@@ -86,6 +86,8 @@ class SkillManager:
 
     # 市场源配置（从 config.json 的 skills_market 注入），支持多源合并
     _DEFAULT_MARKET_REPOS = [
+        # SkillHub 公开 API（免认证、无限流）优先，确保无 config.json 部署也能用
+        {"type": "skillhub", "owner": "skillhub", "name": "skillhub", "enabled": True},
         {"owner": "openai", "name": "skills", "path": "skills/.curated", "ref": "main", "enabled": True},
     ]
 
@@ -115,6 +117,7 @@ class SkillManager:
                 "name": r["name"],
                 "path": str(r.get("path", "")).strip("/"),
                 "ref": r.get("ref", "main"),
+                "type": r.get("type", "github"),
             })
         self._market_repos = cleaned or list(self._DEFAULT_MARKET_REPOS)
         logger.info("[SkillManager] 市场源配置为 %d 个仓库", len(self._market_repos))
@@ -733,7 +736,56 @@ class SkillManager:
         merged: dict[str, dict] = {}   # name -> item（多源同名去重，先到先得）
         errors = []
         for repo in repos:
+            rtype = repo.get("type", "github")
             owner, name = repo["owner"], repo["name"]
+
+            # ── SkillHub 公开 API 源（免认证、无 GitHub 限流）──
+            if rtype == "skillhub":
+                for page in range(1, 4):  # 每页 100，拉前 300 条作为市场浏览列表
+                    api_url = f"https://api.skillhub.cn/api/skills?page={page}&pageSize=100"
+                    try:
+                        resp = _requests.get(api_url, timeout=(10, 30),
+                                             headers={"User-Agent": "ai-agent-skill-market"})
+                    except _requests.Timeout:
+                        errors.append(f"{owner}/{name}: 请求超时")
+                        break
+                    except Exception as e:
+                        errors.append(f"{owner}/{name}: {e!s}")
+                        break
+                    if resp.status_code != 200:
+                        errors.append(f"{owner}/{name}: HTTP {resp.status_code}")
+                        break
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        errors.append(f"{owner}/{name}: 响应解析失败")
+                        break
+                    skills = (data.get("data") or {}).get("skills") if isinstance(data, dict) else None
+                    if not isinstance(skills, list):
+                        errors.append(f"{owner}/{name}: 格式异常")
+                        break
+                    if not skills:
+                        break
+                    for sk in skills:
+                        if not isinstance(sk, dict):
+                            continue
+                        sname = sk.get("name", "")
+                        slug = sk.get("slug", "")
+                        key = slug or sname
+                        if not key or key in merged:
+                            continue
+                        homepage = sk.get("homepage") or ""
+                        if not homepage and slug:
+                            homepage = f"https://skillhub.cn/skill/{slug}"
+                        merged[key] = {
+                            "name": sname or slug,
+                            "installed": (sname in installed) or (slug in installed),
+                            "repo": "skillhub/skillhub",
+                            "url": homepage or "https://skillhub.cn",
+                        }
+                continue
+
+            # ── GitHub 仓库源 ──
             path = repo.get("path", "")
             ref = repo.get("ref", "main")
             api_path = f"{path}/" if path else ""
