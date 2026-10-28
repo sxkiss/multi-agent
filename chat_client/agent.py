@@ -621,7 +621,7 @@ class Agent:
                                 _mem_chars = len(content)
                                 content = (
                                     f"（MEMORY.md 已加载，{_mem_lines} 行 / {_mem_chars} 字，"
-                                    "具体内容通过 `mem0_search` / `mem0_list` 按需检索，不在提示词中重复展开）"
+                                    "具体内容通过 `mem0(action='search', query=...)` / `mem0(action='list')` 按需检索，不在提示词中重复展开）"
                                 )
                             _ctx_parts.append(f"## {title}\n{content}")
                             found = True
@@ -744,7 +744,7 @@ class Agent:
                 "不能是「我自己做更快」「这次比较小」「查市场太慢」——这类理由一律违规。\n"
             )
             # 注入 mem0 记忆使用提示
-            self.system_prompt += "\n\n## 记忆系统\n- `mem0_search` 查询历史记忆（用户偏好、踩坑记录、已完成任务）\n- `mem0_add` 写入重要信息（用户明确说'记住'、协作规则、技术决策）\n- `mem0_list` 列出所有记忆（按 agent_id 过滤，默认50条）\n- `mem0_delete` 删除指定 ID 的记忆（不可撤销）\n- `mem0_import` 批量导入（多行文本，每行一条）\n- 涉及跨会话上下文、用户偏好、历史决策时主动调用，不要凭空回答"
+            self.system_prompt += "\n\n## 记忆系统\n- `mem0(action='search', query=...)` 查询历史记忆（用户偏好、踩坑记录、已完成任务）\n- `mem0(action='add', text=...)` 写入重要信息（用户明确说'记住'、协作规则、技术决策）\n- `mem0(action='list')` 列出所有记忆（可按 agent_id 过滤，默认50条）\n- `mem0(action='delete', id=...)` 删除指定 ID 的记忆（不可撤销）\n- `mem0(action='import', texts=...)` 批量导入（多行文本，每行一条）\n- 涉及跨会话上下文、用户偏好、历史决策时主动调用，不要凭空回答"
 
         if not self.strict_tools:
             # 单 Agent 模式：默认全量工具，排除集团协作工具
