@@ -1648,7 +1648,7 @@ from . import (  # noqa: F401  (导入以触发各工具的 @register_tool 注�
     wechat_media,
     wechat_route,  # WeChatRoute 消息回复工具（文本/图片/视频/语音/链接/文件/名片/音乐卡片）
     gateway_media_send,  # 统一出站媒体发送工具
-    view_image,  # 查看本地图片（元信息 + base64 data URL）
+    view_image,  # 识图：读取图片并调用多模态API进行内容理解
 )
 
 # ============================================================

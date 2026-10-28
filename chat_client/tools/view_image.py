@@ -1,39 +1,57 @@
 """
-@input: base64, io, json, logging, mimetypes, os
-@output: ViewImage 工具 — 读取本地图片，返回元信息 + base64 data URL
-@position: Tools layer — 图片/多模态，供模型直接查看图片内容
-@auto-doc: Update header and folder INDEX.md when this file changes
+@input: base64, io, json, logging, mimetypes, os, requests
+@output: ViewImage 工具 — 识图工具，调用多模态API识别图片内容
+@position: Tools layer — 图片/多模态，支持视觉理解任务
 
 设计说明：
-- 模型需要查看本地图片时（截图、设计稿、测试报告图等），调用本工具。
-- 返回图片元信息（格式/尺寸/大小）+ base64 data URL，多模态模型可直接读取。
-- 单张图片大小限制 10MB，避免 base64 撑爆上下文。
-- 纯文本模型也可用：返回的元信息 + 可选 base64（后续可扩展 OCR）。
+- 模型需要理解图片内容时（截图分析、OCR、图像描述等），调用本工具。
+- 内部调用标准OpenAI兼容API（/v1/chat/completions），发送图片+提示词。
+- 支持任何支持多模态的模型（gpt-4-vision, claude-3, qwen-vl等）。
+- 自动从config.json读取API配置，无需手动传入。
+- 单张图片大小限制10MB。
 """
 
 import base64
+import json
 import logging
 import mimetypes
 import os
 
-from PIL import Image
+import requests
 
 from . import PROJECT_ROOT, register_tool
 from .base import _xml_response
 
 logger = logging.getLogger(__name__)
 
-# 单张图片大小上限：10MB（base64 后约 13.3MB，已足够绝大多数场景）
+# 单张图片大小上限：10MB
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
 
 # 支持的图片扩展名
 IMAGE_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".tiff", ".tif",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif",
 }
 
 
+def _load_api_config():
+    """从config.json读取API配置"""
+    config_path = os.path.join(PROJECT_ROOT, "config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        # 优先使用agent节配置，否则用顶层
+        api_config = config.get("agent", {})
+        base_url = api_config.get("base_url") or config.get("base_url", "")
+        api_key = api_config.get("api_key") or config.get("api_key", "")
+        model = api_config.get("model_name") or config.get("model_name", "auto")
+        return base_url, api_key, model
+    except Exception as e:
+        logger.debug("读取API配置失败: %s", e)
+        return "", "", "auto"
+
+
 def _safe_path(path: str) -> str:
-    """解析图片路径：绝对路径直接用，相对路径按项目根目录解析。"""
+    """解析图片路径：绝对路径直接用，相对路径按项目根目录解析"""
     if not path:
         return ""
     p = os.path.expanduser(path.strip())
@@ -42,106 +60,150 @@ def _safe_path(path: str) -> str:
     return os.path.realpath(os.path.abspath(p))
 
 
-@register_tool(category="媒体", name_cn="查看图片", risk_level="low")
-def ViewImage(path: str, return_base64: bool = False) -> str:
-    """
-    View a local image file and return its metadata plus an optional base64 data URL.
+def _read_image_as_base64(image_path: str) -> tuple[str, str]:
+    """读取图片并转为base64 data URL，返回(mime_type, data_url)"""
+    mime = mimetypes.guess_type(image_path)[0] or "image/jpeg"
+    with open(image_path, "rb") as f:
+        raw = f.read()
+    b64 = base64.b64encode(raw).decode("ascii")
+    data_url = f"data:{mime};base64,{b64}"
+    return mime, data_url
 
-    Use this tool when you need to inspect an image on disk: screenshots, design
-    mockups, test report images, photos, diagrams, etc. The model can directly
-    "see" the image when the data URL is included (multimodal models).
+
+@register_tool(category="媒体", name_cn="识图", risk_level="low")
+def ViewImage(
+    path: str,
+    prompt: str = "请描述这张图片的内容",
+    model: str = "",
+) -> str:
+    """
+    识图工具：读取本地图片并调用多模态API进行内容理解。
+
+    Use this tool when you need to understand or analyze an image:
+    - 截图分析、OCR文字提取
+    - 图像描述、内容理解
+    - 图表/公式识别
+    - 图像问答（"这张图里有什么？"）
 
     Args:
-        path: Absolute path to the image file. Relative paths are resolved against
-            the project root directory.
-        return_base64: Whether to embed the base64 data URL directly in the text
-            result. Default False: the tool returns compact metadata plus a
-            Markdown image link, and the agent layer converts it into a real
-            image_url content block for the vision model (so the model still
-            "sees" the image without paying 260KB+ of base64 in the transcript).
-            Set True only when you explicitly need the raw data URL inline.
+        path: 图片文件路径（绝对路径或相对于项目根目录）
+        prompt: 识图提示词，默认为"请描述这张图片的内容"
+        model: 指定使用的视觉模型（可选，默认用config.json中的model_name）
 
     Returns:
-        Image metadata (format, size, dimensions, mode) and, when requested,
-        a data:image/...;base64,... URL for direct viewing.
+        API返回的识别结果文本
 
-    Limitations:
-        - Maximum image size is 10MB.
-        - Only common raster image formats are supported (png/jpg/jpeg/gif/bmp/webp/ico/tiff).
-        - Sensitive files (e.g. SSH keys, /etc/shadow) are never readable.
+    Examples:
+        ViewImage(path="screenshots/error.png", prompt="这个错误是什么？")
+        ViewImage(path="design/mockup.jpg", prompt="描述这个UI设计")
+        ViewImage(path="photo.png", prompt="提取图中的所有文字（OCR）")
     """
     real = _safe_path(path)
+
+    # 路径检查
     if not real or not os.path.exists(real):
-        return _xml_response("error", f"File not found: {path}")
+        return _xml_response("error", f"文件不存在: {path}")
     if not os.path.isfile(real):
-        return _xml_response("error", f"Not a file: {path}")
+        return _xml_response("error", f"不是文件: {path}")
 
     ext = os.path.splitext(real)[1].lower()
     if ext not in IMAGE_EXTENSIONS:
         return _xml_response(
             "error",
-            f"Unsupported image extension: {ext or '(none)'}. "
-            f"Supported: {', '.join(sorted(IMAGE_EXTENSIONS))}",
+            f"不支持的图片格式: {ext}。支持: {', '.join(sorted(IMAGE_EXTENSIONS))}",
         )
 
-    # 敏感路径黑名单（与 Read 工具一致）
+    # 敏感路径检查
     SENSITIVE_PATHS = {"/etc/shadow", "/etc/sudoers", "/etc/gshadow", "/root/.ssh", "/etc/ssh"}
     for sp in SENSITIVE_PATHS:
         if real == sp or real.startswith(sp + os.sep):
-            return _xml_response("error", f"Access denied: 敏感文件不允许读取 ({path})")
+            return _xml_response("error", f"禁止访问: 敏感文件 ({path})")
 
+    # 文件大小检查
     try:
         file_size = os.path.getsize(real)
         if file_size > MAX_IMAGE_SIZE:
             return _xml_response(
                 "error",
-                f"Image too large: {file_size / 1024 / 1024:.1f}MB exceeds 10MB limit: {path}",
+                f"图片过大: {file_size / 1024 / 1024:.1f}MB，超过10MB限制",
             )
+    except OSError as e:
+        return _xml_response("error", f"读取文件失败: {e}")
 
-        with Image.open(real) as img:
-            fmt = img.format or ext.lstrip(".").upper()
-            width, height = img.size
-            mode = img.mode
-            # 读取第一帧（gif 等多帧图只取概览）
-            img.seek(0)
-
-        mime = mimetypes.guess_type(real)[0] or f"image/{ext.lstrip('.').lower()}"
-        meta = {
-            "path": real,
-            "format": fmt,
-            "width": str(width),
-            "height": str(height),
-            "mode": mode,
-            "size_bytes": str(file_size),
-            "mime": mime,
-        }
-
-        if not return_base64:
-            body = (
-                f"<path>{real}</path>\n"
-                f"<format>{fmt}</format>\n"
-                f"<size>{width}x{height}</size>\n"
-                f"<mode>{mode}</mode>\n"
-                f"<file_size>{file_size} bytes</file_size>\n"
-                f"![图片]({real})\n"
-                "Image attached (rendered in UI). The model receives the image itself."
-            )
-            return _xml_response("done", body, metadata=meta)
-
-        with open(real, "rb") as f:
-            raw = f.read()
-        b64 = base64.b64encode(raw).decode("ascii")
-        data_url = f"data:{mime};base64,{b64}"
-        body = (
-            f"<path>{real}</path>\n"
-            f"<format>{fmt}</format>\n"
-            f"<size>{width}x{height}</size>\n"
-            f"<mode>{mode}</mode>\n"
-            f"<file_size>{file_size} bytes</file_size>\n"
-            f"![图片]({data_url})\n"
-            "Image data URL is embedded above. You can see the image directly."
-        )
-        return _xml_response("done", body, metadata=meta)
+    # 读取图片
+    try:
+        mime, data_url = _read_image_as_base64(real)
     except Exception as e:
-        logger.warning("ViewImage 读取图片失败: %s", e, exc_info=True)
         return _xml_response("error", f"读取图片失败: {e}")
+
+    # 获取API配置
+    base_url, api_key, default_model = _load_api_config()
+    if not base_url or not api_key:
+        return _xml_response(
+            "error",
+            "未配置API（config.json缺少base_url/api_key）。请先在设置中配置网关地址和密钥。",
+        )
+
+    # 确定模型
+    use_model = model or default_model or "auto"
+
+    # 调用多模态API
+    api_url = f"{base_url.rstrip('/')}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": use_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ],
+        "max_tokens": 2000,
+    }
+
+    try:
+        logger.info("识图调用API: model=%s, path=%s", use_model, real)
+        resp = requests.post(api_url, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        result = resp.json()
+
+        # 解析响应
+        choices = result.get("choices", [])
+        if not choices:
+            return _xml_response("error", "API返回空结果")
+
+        message = choices[0].get("message", {})
+        text = message.get("content", "").strip()
+
+        if not text:
+            return _xml_response("error", "API返回空文本")
+
+        # 返回识别结果
+        body = (
+            f"# 识图结果\n\n"
+            f"**图片**: `{path}`\n"
+            f"**模型**: `{use_model}`\n"
+            f"**提示词**: `{prompt}`\n\n"
+            f"---\n\n"
+            f"{text}\n"
+        )
+        return _xml_response("done", body)
+
+    except requests.exceptions.Timeout:
+        return _xml_response("error", "API请求超时（>60s）")
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code
+        body_text = e.response.text[:500] if e.response.text else ""
+        return _xml_response(
+            "error",
+            f"API请求失败（HTTP {status}）: {body_text}",
+        )
+    except Exception as e:
+        logger.warning("识图API调用失败: %s", e, exc_info=True)
+        return _xml_response("error", f"识图失败: {e}")
