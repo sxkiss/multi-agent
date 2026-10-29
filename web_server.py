@@ -1524,14 +1524,14 @@ class AgentMain:
 
     def _load_agent_context_prompt(self):
         """
-        从 SOUL.md / AGENTS.md / USER.md / MEMORY.md 组装经理（含集团/系统派发模式）的系统设定，
-        取代原来写死在 config/代码中的规则。文件不存在时返回 None，由调用方回退到 config['system_prompt']。
+        从 SOUL.md / AGENTS.md / USER.md 组装经理（含集团/系统派发模式）的系统设定，
+        取代原来写死在 config/代码中的规则。MEMORY.md 不再全量注入，记忆由 mem0/知识库按需检索。
+        文件不存在时返回 None，由调用方回退到 config['system_prompt']。
         """
         ctx_files = {
             'SOUL.md': '身份与人格（SOUL）',
             'AGENTS.md': '行为准则与能力（AGENTS）',
             'USER.md': '关于用户（USER）',
-            'MEMORY.md': '记忆与偏好（MEMORY）',
         }
         parts = []
         for fname, title in ctx_files.items():
