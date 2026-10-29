@@ -34,20 +34,46 @@ IMAGE_EXTENSIONS = {
 
 
 def _load_api_config():
-    """从config.json读取API配置"""
+    """从config.json读取主API配置
+    config.json 中的实际 key 名：api_base_url / api_key / default_model
+    兼容旧名 base_url / model_name
+    """
     config_path = os.path.join(PROJECT_ROOT, "config.json")
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
-        # 优先使用agent节配置，否则用顶层
         api_config = config.get("agent", {})
-        base_url = api_config.get("base_url") or config.get("base_url", "")
+        # 取 key 的优先级：子节 > 顶层；支持新旧两种 key 名
+        base_url = (api_config.get("base_url") or config.get("base_url")
+                    or api_config.get("api_base_url") or config.get("api_base_url", ""))
         api_key = api_config.get("api_key") or config.get("api_key", "")
-        model = api_config.get("model_name") or config.get("model_name", "auto")
+        model = (api_config.get("model_name") or config.get("model_name")
+                 or api_config.get("default_model") or config.get("default_model", "auto"))
         return base_url, api_key, model
     except Exception as e:
         logger.debug("读取API配置失败: %s", e)
         return "", "", "auto"
+
+
+def _load_mm_config():
+    """从config.json读取多模态API配置（fallback用）
+    格式：{"mm_api": {"api_key": "...", "base_url": "...", "model_name": "..."}}
+    兼容旧格式：{"multimodal_api": {...}}
+    """
+    config_path = os.path.join(PROJECT_ROOT, "config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        mm = config.get("mm_api") or config.get("multimodal_api") or {}
+        if not isinstance(mm, dict):
+            return "", "", ""
+        base_url = (mm.get("base_url") or mm.get("api_base_url") or "").strip()
+        api_key = (mm.get("api_key") or "").strip()
+        model = (mm.get("model_name") or mm.get("model") or "").strip()
+        return base_url, api_key, model
+    except Exception as e:
+        logger.debug("读取多模态API配置失败: %s", e)
+        return "", "", ""
 
 
 def _safe_path(path: str) -> str:
@@ -147,63 +173,89 @@ def ViewImage(
     # 确定模型
     use_model = model or default_model or "auto"
 
-    # 调用多模态API
-    api_url = f"{base_url.rstrip('/')}/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": use_model,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            }
-        ],
-        "max_tokens": 2000,
-    }
+    # ── 端点列表：主API → 多模态fallback ──────────────────────────
+    endpoints = [(base_url, api_key, use_model)]
+    mm_url, mm_key, mm_md = _load_mm_config()
+    if mm_url and mm_key:
+        endpoints.append((mm_url, mm_key, mm_md or use_model))
+    if not endpoints:
+        return _xml_response("error", "未配置任何API，请先在设置中配置网关地址和密钥。")
 
-    try:
-        logger.info("识图调用API: model=%s, path=%s", use_model, real)
-        resp = requests.post(api_url, headers=headers, json=payload, timeout=60)
-        resp.raise_for_status()
-        result = resp.json()
+    MAX_RETRIES = 2       # 最多重试2次（含首次共3次）
+    TIMEOUT = 30          # 单次超时30秒
 
-        # 解析响应
-        choices = result.get("choices", [])
-        if not choices:
-            return _xml_response("error", "API返回空结果")
+    def _call_api(url, key, mdl):
+        """执行一次API调用，返回(成功bool, 结果文本str, 错误消息str)"""
+        # 自动检测 base_url 是否已含 /v1，避免拼成 /v1/v1/chat/completions
+        base = url.rstrip('/')
+        chat_path = "/v1/chat/completions" if not base.endswith("/v1") else "/chat/completions"
+        api_url = base + chat_path
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": mdl,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            "max_tokens": 2000,
+        }
+        try:
+            resp = requests.post(api_url, headers=headers, json=payload, timeout=TIMEOUT)
+            resp.raise_for_status()
+            result = resp.json()
+            choices = result.get("choices", [])
+            if not choices:
+                return False, "", "API返回空结果"
+            message = choices[0].get("message", {})
+            text = message.get("content", "").strip()
+            if not text:
+                return False, "", "API返回空文本"
+            return True, text, ""
+        except requests.exceptions.Timeout:
+            return False, "", "timeout"
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code
+            err_text = e.response.text[:300] if e.response.text else ""
+            return False, "", f"http_error_{status}"
+        except Exception:
+            return False, "", "network_error"
 
-        message = choices[0].get("message", {})
-        text = message.get("content", "").strip()
+    # ── 逐端点尝试，每端点最多重试MAX_RETRIES次 ───────────────────
+    last_err = ""
+    last_model = use_model
+    for i, (url, key, mdl) in enumerate(endpoints):
+        src_label = "主API" if i == 0 else "多模态fallback"
+        logger.info("识图调用%s (endpoint %d/%d): model=%s, path=%s", src_label, i + 1, len(endpoints), mdl, real)
+        for attempt in range(1 + MAX_RETRIES):
+            ok, text, err = _call_api(url, key, mdl)
+            if ok:
+                last_model = mdl
+                body = (
+                    f"# 识图结果\n\n"
+                    f"**图片**: `{path}`\n"
+                    f"**模型**: `{last_model}`\n"
+                    f"**提示词**: `{prompt}`\n\n"
+                    f"---\n\n"
+                    f"{text}\n"
+                )
+                return _xml_response("done", body)
+            last_err = err
+            logger.debug("识图尝试失败 (endpoint %d attempt %d): %s", i + 1, attempt + 1, err)
+        # 当前端点所有重试耗尽，进入下一端点（如有）
+        if i < len(endpoints) - 1:
+            logger.info("端点%d全部失败，切换至端点%d", i + 1, i + 2)
 
-        if not text:
-            return _xml_response("error", "API返回空文本")
-
-        # 返回识别结果
-        body = (
-            f"# 识图结果\n\n"
-            f"**图片**: `{path}`\n"
-            f"**模型**: `{use_model}`\n"
-            f"**提示词**: `{prompt}`\n\n"
-            f"---\n\n"
-            f"{text}\n"
-        )
-        return _xml_response("done", body)
-
-    except requests.exceptions.Timeout:
-        return _xml_response("error", "API请求超时（>60s）")
-    except requests.exceptions.HTTPError as e:
-        status = e.response.status_code
-        body_text = e.response.text[:500] if e.response.text else ""
-        return _xml_response(
-            "error",
-            f"API请求失败（HTTP {status}）: {body_text}",
-        )
-    except Exception as e:
-        logger.warning("识图API调用失败: %s", e, exc_info=True)
-        return _xml_response("error", f"识图失败: {e}")
+    # 所有端点、所有重试均失败
+    if last_err == "timeout":
+        return _xml_response("error", f"识图失败：API请求超时（> {TIMEOUT}s），所有端点重试均失败。")
+    if last_err and last_err.startswith("http_error"):
+        return _xml_response("error", f"识图失败：API HTTP 错误（{last_err}），所有端点重试均失败。")
+    return _xml_response("error", f"识图失败：{last_err or '未知错误'}，所有端点重试均失败。")

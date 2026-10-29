@@ -1081,10 +1081,16 @@ class AgentMain:
         emb = cfg.get("embedding")
         if isinstance(emb, dict) and "embedding_api_key" in emb:
             raw_emb = emb.get("embedding_api_key") or ""
-            # 与顶层同逻辑：默认值占位符 "--" 视为未配置（_set=false）
             emb_default = (default.get("embedding") or {}).get("embedding_api_key", "")
             emb["embedding_api_key_set"] = bool(raw_emb) and str(raw_emb) != str(emb_default)
             emb["embedding_api_key"] = ""
+        # mm_api 为嵌套结构，单独处理
+        mm = cfg.get("mm_api")
+        if isinstance(mm, dict) and "api_key" in mm:
+            raw_mm = mm.get("api_key") or ""
+            mm_default = (default.get("mm_api") or {}).get("api_key", "")
+            mm["api_key_set"] = bool(raw_mm) and str(raw_mm) != str(mm_default)
+            mm["api_key"] = ""
         return cfg
 
     def get_models(self, base_url='', key=''):
