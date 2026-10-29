@@ -259,7 +259,7 @@
             <h3>AI 接口与模型</h3>
             <div class="form-section">
               <label class="form-label">API Base URL</label>
-              <input type="text" class="form-input" id="set_api_base_url" placeholder="https://api.openai.com/v1" />
+              <input type="text" class="form-input" id="set_api_base_url" placeholder="https://api.openai.com 或 https://api.openai.com/v1" />
             </div>
             <div class="form-section">
               <label class="form-label">API Key</label>
@@ -396,6 +396,25 @@
             <div class="form-section">
               <label class="form-label">工具结果最大字符数</label>
               <input type="number" class="form-input" id="set_tool_result_max_chars" placeholder="8000" />
+            </div>
+          </div>
+          <div class="card">
+            <h3>多模态 API（识图回退）</h3>
+            <p style="color:var(--bt-text-2);font-size:12px;margin:0012px">当主 API 不支持视觉能力（如纯文本模型）时，ViewImage 自动切换到此接口。</p>
+            <div class="form-section">
+              <label class="form-label">API Base URL</label>
+              <input type="text" class="form-input" id="set_mm_api_base_url" placeholder="https://api.openai.com 或 https://api.openai.com/v1" />
+            </div>
+            <div class="form-section">
+              <label class="form-label">API Key</label>
+              <div class="key-row">
+                <input type="password" class="form-input" id="set_mm_api_key" placeholder="已配置（留空保持原值）" />
+                <span id="set_mm_api_key_badge" class="key-badge" style="display:none">已配置</span>
+              </div>
+            </div>
+            <div class="form-section">
+              <label class="form-label">模型名称</label>
+              <input type="text" class="form-input" id="set_mm_api_model_name" placeholder="如 gpt-4o、claude-3-5-sonnet" />
             </div>
           </div>
           <div class="form-section" style="padding-top:12px">
@@ -1361,6 +1380,11 @@
         $('set_embedding_api_key_badge').style.display = emb.embedding_api_key_set ? '' : 'none'
         $('set_embedding_base_url').value = emb.embedding_base_url || ''
         $('set_embedding_model_name').value = emb.embedding_model_name || ''
+        var mm = _cfg.mm_api || {}
+        $('set_mm_api_key').value = mm.api_key || ''
+        $('set_mm_api_key_badge').style.display = mm.api_key_set ? '' : 'none'
+        $('set_mm_api_base_url').value = mm.base_url || ''
+        $('set_mm_api_model_name').value = mm.model_name || ''
         var rag = _cfg.rag || {}
         $('set_rag_sliding_window_size').value = rag.sliding_window_size || ''
         $('set_rag_trigger_threshold').value = rag.rag_trigger_threshold || ''
@@ -1416,6 +1440,11 @@
         embedding_api_key: $('set_embedding_api_key').value.trim(),
         embedding_base_url: $('set_embedding_base_url').value.trim(),
         embedding_model_name: $('set_embedding_model_name').value.trim()
+      },
+      mm_api: {
+        api_key: $('set_mm_api_key').value.trim(),
+        base_url: $('set_mm_api_base_url').value.trim(),
+        model_name: $('set_mm_api_model_name').value.trim()
       },
       rag: {
         sliding_window_size: parseInt($('set_rag_sliding_window_size').value) || 15,
