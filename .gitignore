@@ -179,3 +179,6 @@ docs/bt-extension-architecture-summary.md
 docs/report-ds-tool-mismatch.md
 docs/media/
 background_tasks.sqlite
+
+# 本地脚本工具（不入库）
+scripts/

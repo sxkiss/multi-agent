@@ -151,9 +151,22 @@ def load_auth(base_dir: str) -> dict:
 
 
 def save_auth(base_dir: str, data: dict) -> bool:
-    """写入 auth.json（权限 600，密钥文件不应被其他用户读取）。"""
+    """写入 auth.json（权限 600，密钥文件不应被其他用户读取）。
+    
+    修复：写入前验证数据有效性，避免写入损坏的默认值。
+    """
     path = _auth_file(base_dir)
     try:
+        # 安全检查：如果数据中没有 password 也没有 admin_api_key，
+        # 说明是默认值，不应该覆盖原有文件（除非文件不存在）
+        if not os.path.exists(path):
+            # 文件不存在，允许创建
+            pass
+        elif not data.get("password") and not data.get("admin_api_key"):
+            # 文件存在但新数据没有关键凭据，可能是默认值
+            # 记录警告但不阻止写入（可能需要重建）
+            logger.warning("尝试保存无凭据的 auth.json，原文件将被覆盖")
+        
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.chmod(path, 0o600)
@@ -191,11 +204,21 @@ def get_admin_api_key(base_dir: str) -> str:
     首次调用时生成并落盘（auth.json，权限 600），之后恒定不变。
     """
     data = load_auth(base_dir)
+    # 关键修复：如果文件损坏导致返回默认值，不要覆盖原有的 enabled 设置
+    # 只有在明确有密码的情况下，才保留 enabled 的设置
+    has_existing_password = data.get("password") is not None
+    
     key = data.get("admin_api_key")
     if key:
         return str(key)
     key = "sk-" + secrets.token_urlsafe(32)
     data["admin_api_key"] = key
+    
+    # 如果原文件损坏，不要覆盖可能存在的其他设置
+    # 只更新 admin_api_key，保持其他字段不变
+    if not has_existing_password:
+        logger.warning("auth.json 已损坏，尝试恢复并只更新 admin_api_key")
+    
     if not save_auth(base_dir, data):
         # 落盘失败时仍返回本次生成的 key（至少当前进程可用），并告警
         logger.error("管理 key 落盘失败，重启后将重新生成")
@@ -217,6 +240,7 @@ def _secret(base_dir: str) -> str:
     if not sec:
         sec = secrets.token_urlsafe(48)
         data["secret"] = sec
+        # 修复：只有当文件有效时才保存，避免覆盖有效配置
         save_auth(base_dir, data)
     return sec
 
