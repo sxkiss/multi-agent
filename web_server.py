@@ -3697,6 +3697,10 @@ def _strip_tool_xml(result: str) -> str:
 
     与 chat_client.tools.base.tool_result_for_model 保持一致，供 web_server
     内部（孤儿回灌 / background_result 事件）在无 tools 依赖时做同样归一化。
+
+    回灌给模型时不携带 XML：内层 toolcall_result 中的 <terminal_id>/
+    <command_id> 等元数据一律剥掉，只保留可读文本；已转后台的 running
+    任务额外提炼 command_id，提示模型用 CheckCommandStatus 查询。
     """
     if not isinstance(result, str) or "<tool>" not in result:
         return result
@@ -3707,8 +3711,29 @@ def _strip_tool_xml(result: str) -> str:
     status_m = re.search(r"<toolcall_status>(.*?)</toolcall_status>", result, re.DOTALL)
     name = (name_m.group(1).strip() if name_m else "") or "unknown"
     st = (status_m.group(1).strip() if status_m else "done") or "done"
-    body = body_m.group(1).strip("\n")
-    return f"--- tool result: {name} ({st}) ---\n{body}\n--- end tool result ---"
+    inner = body_m.group(1)
+
+    # 剥掉全部内层 XML 标签，压缩多余空行
+    cmd_m = re.search(r"<command_id>(.*?)</command_id>", inner, re.DOTALL)
+    cmd_id = cmd_m.group(1).strip() if cmd_m else ""
+    # 先移除纯元数据元素（terminal_id/terminal_cwd/command_id），避免正文里
+    # 重复出现裸值；再剥掉其余标签。
+    text = re.sub(
+        r"<(terminal_id|terminal_cwd|command_id)>.*?</\1>",
+        "", inner, flags=re.DOTALL,
+    )
+    text = re.sub(r"<[^>]+>", "", text).strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    if st == "running" and cmd_id:
+        return (
+            f"[后台任务] {name} 命令已转入后台继续运行。\n"
+            f"command_id: {cmd_id}\n"
+            f"{text}\n"
+            f"请用 CheckCommandStatus(command_id=\"{cmd_id}\") 查询结果。"
+        )
+    header = f"[{name} 执行结果]" if st == "done" else f"[{name} 执行状态: {st}]"
+    return f"{header}\n{text}"
 
 
 def _dispatch_orphan_job_after_append(session_id: str, task_id: str, tool: str, status: str, result: str):
@@ -3719,12 +3744,11 @@ def _dispatch_orphan_job_after_append(session_id: str, task_id: str, tool: str, 
     payload = {
         "session_id": session_id,
         "message": (
-            f"<background_task_done>\n"
-            f"<task_id>{task_id}</task_id>\n"
-            f"<tool>{tool}</tool>\n"
-            f"<status>{status}</status>\n"
-            f"<result>\n{result}\n</result>\n"
-            f"</background_task_done>\n"
+            f"【后台任务完成回灌】\n"
+            f"task_id: {task_id}\n"
+            f"工具: {tool}\n"
+            f"状态: {status}\n"
+            f"结果:\n{_strip_tool_xml(result)}\n\n"
             f"以上是之前派发的后台任务执行结果，现已完成。\n"
             f"请基于以上结果回答用户的问题。如果之前用户在等你完成任务，"
             f"现在请给出完整答案。"
@@ -3863,7 +3887,7 @@ def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, 
     payload = {
         "session_id": session_id,
         "message": (
-            f"[后台任务结果回灌]\n"
+            f"【后台任务结果回灌】\n"
             f"task_id={task_id} tool={tool} status={status}\n"
             f"结果：\n{_strip_tool_xml(result)}\n"
             f"以上是之前派发的后台任务执行结果，现已完成。\n"
