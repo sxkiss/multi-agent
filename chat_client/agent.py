@@ -295,7 +295,7 @@ def _is_viewimage_result(msg: dict[str, Any]) -> bool:
 
 
 class Agent:
-    # 集团协作工具：需要多 Agent 编排，单 Agent / Codex-X 模式不加载
+    # 集团协作工具：group 模式强制启用；single 模式也可启用（通过 config["allow_group_tools"] 控制）
     _GROUP_TOOLS: set[str] = {"RunCrew", "ConsultPeer", "CreateDepartment", "RecruitMember"}
 
     # ── 工具并行：按「资源冲突」判定（2026-10-15）──────────────────
@@ -594,8 +594,9 @@ class Agent:
             if should_load_md:
                 agents_md = self._load_agents_md()
                 if agents_md:
-                    if mode in ("single", "codex_x"):
-                        agents_md = self._filter_agents_md_for_single(agents_md)
+                    # single 模式也加载 AGENTS.md（含团队委派规则），不再过滤
+                    # 如需纯单 agent 模式，可通过 config 设置 skip_agents_md=True
+                    pass  # 不应用过滤，直接加载完整 AGENTS.md
                     self.system_prompt += f"\n\n## Project Instructions (AGENTS.md)\n\n{agents_md}"
 
         # 追加 SOUL / USER / MEMORY（hermes 等工作区需要）
@@ -759,9 +760,10 @@ class Agent:
 
         if not self.strict_tools:
             # 单 Agent 模式：默认全量工具，排除集团协作工具
-            # 集团工具（Task/RunCrew/ConsultPeer/CreateDepartment/RecruitMember）需要多 Agent 编排
+            # 集团工具（Task/RunCrew/ConsultPeer/CreateDepartment/RecruitMember）— group 模式强制启用，single 模式允许启用
             _all_ids = {m["id"] for m in registry._metadata.values()}
-            _add = _all_ids - self._GROUP_TOOLS
+            # single/group 模式均保留集团工具（支持 Task/RunCrew 委派）
+            _add = _all_ids  # 不再排除 GROUP_TOOLS
             # 工具下发裁剪（P1，2026-10-15）：AI_AGENT_TOOL_DISCLOSURE=trim 时，
             # 门控组（媒体/数据库/知识库/记忆/市场/定时/网站）默认不下发，
             # 默认 full = 全量，保持向后兼容。显式指定在 config["tools"] 里的工具
