@@ -159,9 +159,13 @@ def _dispatch_push(channel: Any, subject: Any, text: str) -> bool:
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
+                # 当前无 running loop：用 asyncio.run() 启动新循环
+                # 注意：channel.push_text 内部可能使用 asyncio.timeout()，
+                # 必须在协程/任务上下文中调用，不能直接包在 with asyncio.timeout() 里。
                 asyncio.run(_do_push())
                 return True
-            # 已在循环中：直接调度
+            # 已在有 running loop 的线程中：不能再用 asyncio.run()，会冲突。
+            # 改为在当前 loop 上调度协程，用 run_coroutine_threadsafe 等待结果。
             loop = asyncio.get_running_loop()
 
         if loop.is_running() and threading.current_thread() is not threading.main_thread():
