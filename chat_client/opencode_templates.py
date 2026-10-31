@@ -36,7 +36,7 @@ OPENCODE_TEMPLATES = {
 Task(
   description="一句话描述任务",
   subagent_type="专家名或角色名",
-  prompt="""
+  prompt='''
 [团队派工，不是用户在直接问你]
 你是{专家角色}。主持人已消化用户问题，为你分配了本次任务。
 
@@ -48,7 +48,7 @@ Task(
 
 ## 必要上下文
 {相关信息/文件路径/约束条件}
-""",
+''',
   expected_output="期望产出说明"
 )
 ```
