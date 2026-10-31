@@ -3750,13 +3750,19 @@ def _dispatch_orphan_job_after_append(session_id: str, task_id: str, tool: str, 
                 from chat_client.tools import set_current_job as _set_job
                 _set_job(orphan_job)
                 # 拉取最终文本（用于推回通道；没有则跳过）
+                # 注意：_map_agent_chunk 对 type="content" 输出 ("message", str)
+                # 而 chat_events 路径走 SSE 解析后 data 是 dict，两者不一致；
+                # 这里必须同时兼容 string / dict 两种 data 形态。
                 reply_text = ""
                 try:
                     for chunk in agent.chat(user_input):
                         for ev, data in _map_agent_chunk(chunk):
                             orphan_job.append(ev, data)
-                            if ev == "message" and isinstance(data, dict):
-                                c = str(data.get("content") or data.get("text") or "")
+                            if ev == "message":
+                                if isinstance(data, dict):
+                                    c = str(data.get("content") or data.get("text") or "")
+                                else:
+                                    c = str(data or "")
                                 if c:
                                     reply_text = c
                     orphan_job.append("message_end", None)
@@ -3889,13 +3895,18 @@ def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, 
         from chat_client.tools import set_current_job as _set_job
         _set_job(job)
         # 拉取最终文本（用于推回通道；没有则跳过）
+        # 注意：_map_agent_chunk 对 type="content" 输出 ("message", str)，
+        # 与 chat_events 路径的 dict data 不一致，必须兼容两者。
         reply_text = ""
         try:
             for chunk in agent.chat(user_input):
                 for ev, data in _map_agent_chunk(chunk):
                     job.append(ev, data)
-                    if ev == "message" and isinstance(data, dict):
-                        c = str(data.get("content") or data.get("text") or "")
+                    if ev == "message":
+                        if isinstance(data, dict):
+                            c = str(data.get("content") or data.get("text") or "")
+                        else:
+                            c = str(data or "")
                         if c:
                             reply_text = c
             job.append("message_end", None)
