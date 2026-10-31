@@ -23,6 +23,7 @@
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -504,6 +505,88 @@ def _skillset_children(skillset: Dict[str, Any]) -> List[str]:
         if isinstance(children, list):
             return [str(c) for c in children]
     return []
+
+
+def SkillPackageMarket(keyword: str = "", category: str = "", limit: int = 20) -> str:
+    """技能包浏览（SkillHub /api/skills 分类列表，供 SkillMarket action=packages 复用）。"""
+    try:
+        if keyword.strip():
+            data = _get_json(f"{SKILLHUB_BASE}/api/v1/search?q={requests.utils.quote(keyword)}&limit={max(1, int(limit))}")
+            items = data if isinstance(data, list) else (data.get("skills") or data.get("items") or data.get("results") or [])
+            total = len(items)
+            inner = None
+        else:
+            params = f"page=1&pageSize={max(1, int(limit))}"
+            if category.strip():
+                params += f"&category={requests.utils.quote(category)}"
+            data = _get_json(f"{SKILLHUB_BASE}/api/skills?{params}")
+            inner = data.get("data") if isinstance(data, dict) else data
+            items = (inner.get("skills") if isinstance(inner, dict) else []) or []
+            total = (inner.get("total", 0) if isinstance(inner, dict) else 0)
+    except Exception as e:
+        return _xml_response("error", f"技能包列表查询失败: {e!s}")
+
+    if not items:
+        return _xml_response("done", f"未匹配到技能包（keyword={keyword!r} category={category!r}）。")
+
+    lines = [f"<!-- 技能包：{len(items)} 条（在线共 {total} 个） -->"]
+    for i, it in enumerate(items[: max(1, int(limit))], 1):
+        nm = it.get("name") or it.get("slug") or ""
+        slug = it.get("slug") or ""
+        d = str(it.get("summary") or it.get("description") or "")[:120]
+        lines.append(f"{i}. **{nm}**" + (f"  slug=`{slug}`" if slug else ""))
+        if d:
+            lines.append(f"   {d}")
+    lines.append("\n安装：`SkillMarket(action=\"install\", package_slug=\"<上面反引号里的 slug>\")`")
+    return _xml_response("done", "\n".join(lines))
+
+
+def InstallSkillPackage(package_slug: str, overwrite: bool = False) -> str:
+    """从 SkillHub 在线安装技能包到本地 skills 目录。
+
+    流程：详情接口取 namespace → download 接口 302 到 COS zip → 交给
+    skill_manager.install_from_zip 落盘。显式传 name=slug，规避中文 frontmatter
+    name 无法匹配 [A-Za-z0-9_-] 的问题。
+    """
+    slug = (package_slug or "").strip()
+    if not slug:
+        return _xml_response("error", "需要 package_slug（技能标识）")
+    if not re.match(r"^[A-Za-z0-9_.\-]{1,128}$", slug):
+        return _xml_response("error", f"非法 package_slug: {slug!r}")
+
+    try:
+        detail = _get_json(f"{SKILLHUB_BASE}/api/v1/skills/{requests.utils.quote(slug)}")
+    except Exception as e:
+        return _xml_response("error", f"获取技能详情失败: {e!s}")
+
+    ns = ""
+    if isinstance(detail, dict):
+        ns_obj = detail.get("namespace") or {}
+        if isinstance(ns_obj, dict):
+            ns = str(ns_obj.get("handle") or ns_obj.get("displayName") or "")
+
+    params = f"slug={requests.utils.quote(slug)}"
+    if ns:
+        params += f"&namespace={requests.utils.quote(ns)}"
+    try:
+        resp = requests.get(f"{SKILLHUB_BASE}/api/v1/download?{params}",
+                            timeout=REQUEST_TIMEOUT, allow_redirects=True)
+    except Exception as e:
+        return _xml_response("error", f"下载技能包失败: {e!s}")
+    if resp.status_code != 200:
+        return _xml_response("error", f"下载技能包失败: HTTP {resp.status_code}")
+    if not resp.content or len(resp.content) < 100:
+        return _xml_response("error", "下载内容为空或异常（可能不是 zip）")
+
+    try:
+        from chat_client.skills import skill_manager
+    except Exception as e:
+        return _xml_response("error", f"加载技能管理器失败: {e!s}")
+
+    result = skill_manager.install_from_zip(resp.content, overwrite=overwrite, name=slug)
+    if not result.get("status"):
+        return _xml_response("error", f"安装失败: {result.get('msg', '未知错误')}")
+    return _xml_response("done", f"✅ 技能 {slug} 安装成功（{result.get('msg', '')}）\n路径: {result.get('path', '')}")
 
 
 @register_tool(category="市场", name_cn="查询MCP市场", risk_level="low")
