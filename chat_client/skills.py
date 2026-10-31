@@ -427,11 +427,11 @@ class SkillManager:
     _MAX_SINGLE_FILE = 20 * 1024 * 1024   # 单个文件解压后上限 20MB
     _ZIP_BOMB_RATIO = 1000                # 压缩比异常阈值（file_size / compress_size）
 
-    def install_from_zip(self, zip_bytes: bytes, overwrite: bool = False) -> dict:
+    def install_from_zip(self, zip_bytes: bytes, overwrite: bool = False, name: str = "") -> dict:
         """
         从 ZIP 字节流安装技能包。
         支持两种布局：SKILL.md 位于压缩包根目录，或位于唯一一级子目录内。
-        技能名优先取 SKILL.md frontmatter 的 name 字段，否则用子目录名。
+        技能名优先取显式 name 参数，其次 SKILL.md frontmatter 的 name 字段，否则用子目录名。
         内置 Zip-Slip / 路径穿越 / 体积限制防护。
         """
         import io
@@ -489,17 +489,20 @@ class SkillManager:
         else:
             return {"status": False, "msg": "未找到 SKILL.md（须位于压缩包根目录或唯一一级子目录内）"}
 
-        # 解析技能名：frontmatter name > 子目录名
+        # 解析技能名：显式 name > frontmatter name > 子目录名
         skill_name = ""
-        try:
-            head = zf.read(md_member).decode("utf-8", errors="replace")[:2048]
-            m = re.search(r"^name:\s*['\"]?([A-Za-z0-9_\-]+)['\"]?\s*$", head, re.MULTILINE)
-            if m:
-                skill_name = m.group(1)
-        except Exception:
-            logger.warning("未处理的异常", exc_info=True)
-        if not skill_name and prefix:
-            skill_name = prefix.rstrip("/")
+        if name and self._NAME_RE.match(name):
+            skill_name = name
+        if not skill_name:
+            try:
+                head = zf.read(md_member).decode("utf-8", errors="replace")[:2048]
+                m = re.search(r"^name:\s*['\"]?([A-Za-z0-9_\-]+)['\"]?\s*$", head, re.MULTILINE)
+                if m:
+                    skill_name = m.group(1)
+            except Exception:
+                logger.warning("未处理的异常", exc_info=True)
+            if not skill_name and prefix:
+                skill_name = prefix.rstrip("/")
         if not skill_name or not self._NAME_RE.match(skill_name):
             return {"status": False, "msg": f"无法确定合法技能名（frontmatter name 或目录名需匹配 [A-Za-z0-9_-]，当前: {skill_name!r}）"}
 
