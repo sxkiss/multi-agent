@@ -439,6 +439,11 @@ class TelegramChannel(BaseChannel):
         user_id = str(user.id) if user and not message.sender_chat else ""
         is_group = getattr(chat, "type", "") in ("group", "supergroup")
 
+        reply_to = getattr(message, "reply_to_message", None)
+        quoted_text = ""
+        if reply_to:
+            quoted_text = (getattr(reply_to, "text", None) or "").strip()
+
         return {
             "chat_id": chat_id,
             "user_id": user_id,
@@ -448,7 +453,8 @@ class TelegramChannel(BaseChannel):
             "content": content_parts,
             "media": media_metadata,
             "edited": edited,
-            "reply_to_message_id": getattr(getattr(message, "reply_to_message", None), "message_id", None),
+            "reply_to_message_id": getattr(reply_to, "message_id", None),
+            "quoted_text": quoted_text,
         }
 
     async def fetch_remote_media(self, url: str) -> tuple[bytes, str]:
@@ -666,6 +672,12 @@ class TelegramChannel(BaseChannel):
         user_id = str(data.get("user_id") or chat_id)
         content = data.get("content") or []
         is_group = bool(data.get("is_group"))
+
+        quoted_text = data.get("quoted_text") or ""
+        if quoted_text:
+            content = [TextContent(text=f"[引用消息: {quoted_text}]")] + content
+        elif not content:
+            content = [TextContent(text="")]
 
         metadata = {
             "chat_id": chat_id,
