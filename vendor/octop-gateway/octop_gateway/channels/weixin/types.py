@@ -50,6 +50,13 @@ class VideoItem(BaseModel):
     url: str = ""
 
 
+class QuoteItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    text: str = ""
+    from_user_id: str = Field(default="", alias="fromUserId")
+    message_id: int | None = Field(default=None, alias="messageId")
+
+
 class MessageItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     type: int = 0

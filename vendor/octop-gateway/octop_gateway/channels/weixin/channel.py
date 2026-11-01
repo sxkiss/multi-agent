@@ -58,6 +58,7 @@ _ITEM_TYPE_IMAGE = 2
 _ITEM_TYPE_VOICE = 3
 _ITEM_TYPE_FILE = 4
 _ITEM_TYPE_VIDEO = 5
+_ITEM_TYPE_QUOTE = 6
 
 _MAX_MEDIA_SIZE = 100 * 1024 * 1024
 _CDN_MARKER_PREFIX = "weixin-cdn:"
@@ -761,6 +762,11 @@ class WeixinChannel(BaseChannel):
                 text = str(voice_item.get("text") or "")
                 if text:
                     content_parts.append(TextContent(text=text))
+            elif item_type == _ITEM_TYPE_QUOTE:
+                quote_item = self._item_payload(item, "quote_item")
+                quoted_text = str(quote_item.get("text") or "").strip()
+                if quoted_text:
+                    content_parts.insert(0, TextContent(text=f"[引用消息: {quoted_text}]"))
 
         if not content_parts:
             content_parts.append(TextContent(text=str(data.get("content") or "")))
