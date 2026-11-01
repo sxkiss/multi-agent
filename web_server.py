@@ -2398,7 +2398,8 @@ class AgentMain:
 
         sent_end = False
         idle_ticks = 0  # 空闲 tick 计数，用于 SSE keepalive，防止客户端 sock_read 超时断开
-        max_idle_seconds = 900  # P2-27: 最大空闲 15min，超时向客户端返回结束信号防止无限挂起
+        # P2-38: SSE 超时可配置，默认 30min（原 900s=15min 对长任务不够）
+        max_idle_seconds = int(os.environ.get("SSE_IDLE_TIMEOUT", "1800"))
         idle_start = asyncio.get_event_loop().time()
         # P1-75: message_end 后继续挂一小段时间（默认 10s），让后台任务结果
         # 有机会通过孤儿回调/notify_done 注入到同一个 job，前端能一次性收到。

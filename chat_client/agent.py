@@ -2121,16 +2121,61 @@ Here is some useful information about the environment you are running in:
         全局 job 引用会串台（工具内部 emit_progress / is_allow_high /
         _current_session_id 读错会话）。func 本身已含黑名单/风险/超时/
         审计守卫（registry 包装的 _guarded_execute），这里只兜底异常。
+
+        P2-38: 增加执行期间 cancel_event 轮询，避免旧任务延迟停止。
         """
         from .tools import _restore_job_ctx
         if ctx_job is not None:
             _restore_job_ctx(ctx_job)
-        try:
-            return func(**args)
-        except Exception as e:
-            return inject_tool_name(
-                _xml_response("error", f"Error executing tool: {e!s}"),
-                func_name)
+
+        ev = _cancel_event()
+        check_interval = 0.5  # 每 0.5s 检查一次取消状态
+
+        def _execute() -> tuple:
+            """执行工具，返回 (result, error)"""
+            try:
+                result = func(**args)
+                return (result, None)
+            except Exception as e:
+                return (None, e)
+
+        # 如果有 cancel_event，使用线程执行 + 主线程轮询取消状态
+        if ev is not None:
+            import threading
+            result_holder = {"result": None, "error": None, "done": False}
+
+            def _target():
+                r, e = _execute()
+                result_holder["result"] = r
+                result_holder["error"] = e
+                result_holder["done"] = True
+
+            thread = threading.Thread(target=_target, daemon=True)
+            thread.start()
+
+            # 轮询取消状态，直到工具完成或被取消
+            while not result_holder["done"]:
+                if ev.is_set():
+                    logger.info(f"[Tool-Cancel] 工具 {func_name} 执行中被用户取消")
+                    # 等待线程结束（最多 2s）
+                    thread.join(timeout=2.0)
+                    return inject_tool_name(
+                        _xml_response("error", "Tool execution cancelled by user"),
+                        func_name)
+                time.sleep(check_interval)
+
+            # 工具执行完成，检查结果
+            if result_holder["error"]:
+                raise result_holder["error"]
+            return result_holder["result"]
+        else:
+            # 无 cancel_event（非 chat 场景），直接执行
+            try:
+                return func(**args)
+            except Exception as e:
+                return inject_tool_name(
+                    _xml_response("error", f"Error executing tool: {e!s}"),
+                    func_name)
 
     # ── <invoke>/<skill name> 文本工具调用兜底解析（2026-10-18 恢复）─────────
     # 模型（尤其 GLM/自研系）在长会话中会输出 Claude Code 风格的 <invoke> 文本
