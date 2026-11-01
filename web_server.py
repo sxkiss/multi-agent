@@ -3745,7 +3745,7 @@ def _dispatch_orphan_job_after_append(session_id: str, task_id: str, tool: str, 
     payload = {
         "session_id": session_id,
         "message": (
-            f"【后台任务完成回灌】\n"
+            f"【后台任务结果回复】\n"
             f"task_id: {task_id}\n"
             f"工具: {tool}\n"
             f"状态: {status}\n"
@@ -3888,7 +3888,7 @@ def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, 
     payload = {
         "session_id": session_id,
         "message": (
-            f"【后台任务结果回灌】\n"
+            f"【后台任务结果回复】\n"
             f"task_id={task_id} tool={tool} status={status}\n"
             f"结果：\n{_strip_tool_xml(result)}\n"
             f"以上是之前派发的后台任务执行结果，现已完成。\n"
