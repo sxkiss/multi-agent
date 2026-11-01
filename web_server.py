@@ -3522,7 +3522,7 @@ _orphan_cb_registered = False
 # 把结果追加到父 job 而非开孤儿 job（前端 SSE 还会继续收事件）。
 _ORPHAN_APPEND_WINDOW = float(os.environ.get("AI_AGENT_ORPHAN_APPEND_WINDOW", "10"))
 # R6：会话活跃重试参数 —— 主循环仍在跑时延迟重试，而不是直接丢弃。
-# 重试超过上限说明主循环已死，强制走孤儿回灌兜底。
+# 重试超过上限说明主循环已死，强制走孤儿回复兜底。
 _MAX_ORPHAN_RETRIES = int(os.environ.get("AI_AGENT_ORPHAN_MAX_RETRIES", "60"))
 _ORPHAN_RETRY_DELAY = float(os.environ.get("AI_AGENT_ORPHAN_RETRY_DELAY", "3"))
 # 每个 task 的重试计数（按 task_id 隔离），防止不同孤儿任务互相干扰。
@@ -3656,7 +3656,7 @@ def _register_orphan_callback():
                         return
                     logger.warning(
                         "[Background] 父会话 %s 在 %d 次重试后仍有 running job，判定主循环已死，"
-                        "强制走孤儿回灌兜底 task=%s",
+                        "强制走孤儿回复兜底 task=%s",
                         session_id[:24], _MAX_ORPHAN_RETRIES, task_id[:12])
 
                 # 先尝试追加到父 job
@@ -3697,7 +3697,7 @@ def _strip_tool_xml(result: str) -> str:
     """把工具结果中的 <tool> XML 外壳剥成纯文本，保留状态与正文。
 
     与 chat_client.tools.base.tool_result_for_model 保持一致，供 web_server
-    内部（孤儿回灌 / background_result 事件）在无 tools 依赖时做同样归一化。
+    内部（孤儿回复 / background_result 事件）在无 tools 依赖时做同样归一化。
 
     回灌给模型时不携带 XML：内层 toolcall_result 中的 <terminal_id>/
     <command_id> 等元数据一律剥掉，只保留可读文本；已转后台的 running
@@ -3759,13 +3759,13 @@ def _dispatch_orphan_job_after_append(session_id: str, task_id: str, tool: str, 
     orphan_job = chat_jobs.create_if_idle(session_id, label=f"bg_orphan_{task_id[:8]}")
     if orphan_job is None:
         logger.warning(
-            "[Background] 孤儿回灌跳过（会话并行满）session=%s task=%s",
+            "[Background] 孤儿回复跳过（会话并行满）session=%s task=%s",
             session_id[:24], task_id[:12],
         )
     else:
         agent, user_input, err = agent_main._build_chat_agent(payload)
         if agent is None or err:
-            logger.warning("[Background] 孤儿回灌 Agent 初始化失败 session=%s task=%s err=%s",
+            logger.warning("[Background] 孤儿回复 Agent 初始化失败 session=%s task=%s err=%s",
                           session_id[:24], task_id[:12], err)
             chat_jobs.discard(orphan_job.key)
         else:
@@ -3794,7 +3794,7 @@ def _dispatch_orphan_job_after_append(session_id: str, task_id: str, tool: str, 
                     orphan_job.finish("done")
                 except Exception as e:
                     reply_text = f"任务执行出错: {e!s}"
-                    orphan_job.append("error", {"msg": f"孤儿回灌异常: {e!s}"})
+                    orphan_job.append("error", {"msg": f"孤儿回复异常: {e!s}"})
                     orphan_job.append("message_end", None)
                     orphan_job.finish("error")
                 finally:
@@ -3900,7 +3900,7 @@ def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, 
     job = chat_jobs.create_if_idle(session_id, label=f"bg_orphan_{task_id[:8]}")
     if job is None:
         logger.warning(
-            "[Background] 孤儿回灌跳过（会话并行满）session=%s task=%s",
+            "[Background] 孤儿回复跳过（会话并行满）session=%s task=%s",
             session_id[:24], task_id[:12],
         )
         return
@@ -3908,7 +3908,7 @@ def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, 
     agent, user_input, err = agent_main._build_chat_agent(payload)
     if agent is None or err:
         logger.warning(
-            "[Background] 孤儿回灌 Agent 初始化失败 session=%s task=%s err=%s",
+            "[Background] 孤儿回复 Agent 初始化失败 session=%s task=%s err=%s",
             session_id[:24], task_id[:12], err,
         )
         chat_jobs.discard(job.key)
@@ -3938,7 +3938,7 @@ def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, 
             job.finish("done")
         except Exception as e:
             reply_text = f"任务执行出错: {e!s}"
-            job.append("error", {"msg": f"孤儿回灌异常: {e!s}"})
+            job.append("error", {"msg": f"孤儿回复异常: {e!s}"})
             job.append("message_end", None)
             job.finish("error")
         finally:
@@ -3967,7 +3967,7 @@ def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, 
     )
     t.start()
     logger.info(
-        "[Background] 孤儿回灌已派发 session=%s task=%s job=%s",
+        "[Background] 孤儿回复已派发 session=%s task=%s job=%s",
         session_id[:24], task_id[:12], job.key,
     )
 

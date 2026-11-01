@@ -753,7 +753,7 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
 
     # ---- 后台异步执行：专家团队在后台线程跑，不阻塞主会话 ----
     # 与 Task 子代理共用 BackgroundTaskManager 回传链路：完成后 notify_done
-    # 推 SSE + 落盘完整结果 + 唤醒挂起的主循环收尾段，结果自动回灌上下文。
+    # 推 SSE + 落盘完整结果 + 唤醒挂起的主循环收尾段，结果自动回复上下文。
     import uuid as _uuid
     from . import get_background_manager, get_current_job, _restore_job_ctx
     _ctx_job = get_current_job()
