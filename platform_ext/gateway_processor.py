@@ -499,3 +499,29 @@ def _wait_tasks_stopped(ws, sid: str, timeout: float = 5.0) -> None:
             asyncio.sleep(0.15)
     except Exception as e:  # noqa: BLE001
         logger.warning("[gw-proc] 等待任务停止超时/失败: %s", e)
+
+
+async def _pre_lock_cancel_handler(channel_id: str, message) -> None:
+    """进入会话锁之前的取消钩子（连续对话关键路径）。
+
+    通道 worker 在处理新消息时，会先拿 session 锁。若上一条消息的对话
+    还在流式输出（可能持续数十分钟），新消息会一直排队等待锁，永远轮不到
+    processor 里那句"先取消再发新消息"——于是用户看到"发了没反应、旧任务
+    还在跑"。
+
+    这里在拿锁之前就取消该会话的运行中任务，让旧一轮尽快退出释放锁。
+    """
+    try:
+        channel_type = str(getattr(message, "channel_type", "") or "")
+        subject = getattr(message, "channel_subject", None)
+        subject_id = getattr(subject, "subject_id", None) or ""
+        if not channel_type or not subject_id:
+            return
+        sid = session_id_for(channel_type, subject_id)
+        try:
+            import web_server
+        except Exception:  # noqa: BLE001
+            return
+        _cancel_running_tasks_with(web_server.chat_jobs, web_server.agent_main, sid)
+    except Exception:  # noqa: BLE001
+        logger.debug("[gw-proc] pre-lock 取消失败（忽略）", exc_info=True)
