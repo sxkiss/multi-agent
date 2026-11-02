@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FutureTimeout
-from typing import Any, get_type_hints
+from typing import Any, Union, get_type_hints
 
 from .base import _xml_response, inject_tool_name, inject_duration, tool_result_for_model  # noqa: F401  (工具结果统一封装)
 
@@ -1335,6 +1335,20 @@ class ToolRegistry:
         }
 
     def _python_type_to_json_type(self, py_type) -> str:
+        # Optional[X] / X | None 归一：模型看到 "integer" 才会传数字，
+        # 否则 int | None 会被降级成 "string"，导致 timeout="30000" 这类字符串参数。
+        # 覆盖两种形态：typing.Union（旧）和 types.UnionType（PEP604，Python 3.10+）。
+        import types as _types
+        try:
+            args = list(getattr(py_type, "__args__", ()) or [])
+            origin = getattr(py_type, "__origin__", None)
+            if isinstance(py_type, _types.UnionType) or origin is Union or (
+                origin is not None and getattr(origin, "__name__", None) == "Union"
+            ):
+                non_none = [a for a in args if a is not type(None)]
+                py_type = non_none[0] if len(non_none) == 1 else str
+        except Exception:  # noqa: BLE001
+            pass
         if py_type == int:
             return "integer"
         elif py_type == float:

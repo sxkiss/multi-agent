@@ -183,6 +183,42 @@ def get_banned_commands() -> frozenset[str]:
 BANNED_COMMANDS = get_banned_commands()
 
 
+# --- Bash 工具默认超时（毫秒）---
+# 取值优先级：config.json 的 agent.bash_timeout（秒）→ 内置默认 30s。
+# 每次执行实时读取（2s 缓存），设置页保存后立即生效，无需重启。
+DEFAULT_BASH_TIMEOUT_MS = 30_000
+_BASH_TIMEOUT_CACHE: dict[str, Any] = {"ts": 0.0, "ms": DEFAULT_BASH_TIMEOUT_MS}
+_BASH_TIMEOUT_CACHE_TTL = 2.0
+
+
+def get_bash_timeout_ms() -> int:
+    """读取 config.json 的 agent.bash_timeout（秒），换算为毫秒返回。
+
+    缺失/非法时回退 30s。下限 1s、上限 3600s，避免误配成 0 或离谱值。
+    """
+    now = _time.time()
+    if now - _BASH_TIMEOUT_CACHE["ts"] < _BASH_TIMEOUT_CACHE_TTL:
+        return _BASH_TIMEOUT_CACHE["ms"]  # type: ignore[return-value]
+    ms = DEFAULT_BASH_TIMEOUT_MS
+    try:
+        cfg_path = _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+            "config.json",
+        )
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = _json.load(f)
+        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        raw = agent_cfg.get("bash_timeout", cfg.get("bash_timeout"))
+        if raw is not None and str(raw).strip() != "":
+            sec = float(raw)
+            ms = int(min(max(sec, 1.0), 3600.0) * 1000)
+    except Exception:  # noqa: BLE001
+        ms = DEFAULT_BASH_TIMEOUT_MS
+    _BASH_TIMEOUT_CACHE["ts"] = now
+    _BASH_TIMEOUT_CACHE["ms"] = ms
+    return ms
+
+
 def truncate_output(content: str, max_len: int = MAX_OUTPUT_LENGTH) -> str:
     """截断输出，保留前后各一半（参考 opencode）"""
     if len(content) <= max_len:

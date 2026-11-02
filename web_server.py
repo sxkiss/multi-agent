@@ -833,6 +833,9 @@ class AgentMain:
             "temperature": 0.9,
             "top_p": 0.8,
             "reasoning_effort": "max",
+            # Bash（执行命令/代码）工具的默认前台等待时间（秒）。
+            # 模型不传 timeout 时用它兜底，超过即转后台；设置页可调整，改完立即生效。
+            "bash_timeout": 30,
         },
         "context_window_kb": 512,
         "enable_mcp": True,

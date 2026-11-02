@@ -355,6 +355,12 @@
             <div class="form-section">
               <label class="form-label">工具超时 (秒)</label>
               <input type="number" class="form-input" id="set_tool_timeout" placeholder="120" />
+              <p style="color:var(--bt-text-2);font-size:12px;margin:4px 0 0">Agent 单轮内普通工具执行的前台等待上限。超过后工具转后台执行，结果稍后回灌到对话上下文。在「工具执行行为」区可独立配置 Bash 命令默认超时。</p>
+            </div>
+            <div class="form-section">
+              <label class="form-label">Bash 命令默认超时 (秒)</label>
+              <input type="number" class="form-input" id="set_bash_timeout" placeholder="30" />
+              <p style="color:var(--bt-text-2);font-size:12px;margin:4px 0 0">Bash（执行命令/代码）工具的默认前台等待时间（毫秒转秒）。优先于工具超时代码里硬编码的 15s，也优先于 AI_AGENT_TOOL_TIMEOUT 环境变量。模型可仍按自己的判断传 timeout 参数；本值只在模型不传或传空时兜底生效。建议 30~600。</p>
             </div>
             <div class="form-section">
               <label class="form-label">最大重试次数</label>
@@ -1363,6 +1369,7 @@
         $('set_top_p').value = ag.top_p || ''
         $('set_max_tool_iterations').value = ag.max_tool_iterations || ''
         $('set_tool_timeout').value = ag.tool_timeout || ''
+        $('set_bash_timeout').value = (ag.bash_timeout != null ? ag.bash_timeout : (ag.tool_timeout || 30))
         $('set_max_retries').value = ag.max_retries || ''
         $('set_api_max_retry').value = ag.api_max_retry || ''
         $('set_api_retry_base_wait').value = ag.api_retry_base_wait || ''
@@ -1424,6 +1431,7 @@
         top_p: parseFloat($('set_top_p').value) || 0.8,
         max_tool_iterations: parseInt($('set_max_tool_iterations').value) || 999999,
         tool_timeout: parseInt($('set_tool_timeout').value) || 120,
+        bash_timeout: parseInt($('set_bash_timeout').value) || 30,
         max_retries: parseInt($('set_max_retries').value) || 5,
         api_max_retry: parseInt($('set_api_max_retry').value) || 3,
         api_retry_base_wait: parseFloat($('set_api_retry_base_wait').value) || 1,

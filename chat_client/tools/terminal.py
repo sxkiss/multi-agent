@@ -8,7 +8,13 @@ import time
 import uuid
 
 from . import PROJECT_ROOT, register_tool
-from .base import _xml_response, truncate_output, SAFE_READONLY_COMMANDS, get_banned_commands
+from .base import (
+    _xml_response,
+    truncate_output,
+    SAFE_READONLY_COMMANDS,
+    get_banned_commands,
+    get_bash_timeout_ms,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,16 +156,26 @@ class Bash:
     - language="shell"（默认）：在项目目录运行命令；blocking=False 时后台运行，用 CheckCommandStatus/StopCommand 管理。
     - language="python"/"node"：代码写入临时文件用对应解释器执行；禁止通过 os.system/subprocess/child_process 逃逸到系统 shell（安全黑名单拦截）。
     参数：command 必填（命令或代码）；blocking/cwd/timeout 仅 shell 生效；args 仅 python/node 生效。
-    默认超时 15s；长任务（pip install / 大范围 grep / git 历史）请显式调大 timeout。
+    timeout 单位毫秒，省略时取主配置 agent.bash_timeout（默认 30 秒，可在设置页调整）；
+    长任务（pip install / 大范围 grep / git 历史）请显式调大 timeout。
     """
     def execute(self, command: str, language: str = "shell", blocking: bool = True,
-                cwd: str | None = None, timeout: int = 15000, description: str | None = None,
+                cwd: str | None = None, timeout: int | None = None, description: str | None = None,
                 args: list | None = None) -> str:
         import time as _time
         start_time = _time.time()
 
         if not command:
             return _xml_response("error", "command 参数不能为空")
+
+        # 超时兜底：未显式传 timeout（或模型传了 null）时，读主配置的默认值。
+        # 优先级：调用参数 > config.json 的 agent.bash_timeout > 内置 30s。
+        try:
+            timeout = int(timeout) if timeout not in (None, "", 0) else get_bash_timeout_ms()
+        except (TypeError, ValueError):
+            timeout = get_bash_timeout_ms()
+        if timeout <= 0:
+            timeout = get_bash_timeout_ms()
 
         # 安全检查：禁止危险命令（单Agent/破甲模式 is_allow_high()=True 时放行）
         base_cmd = command.split()[0].lower() if command.split() else ""
