@@ -182,3 +182,8 @@ background_tasks.sqlite
 
 # 本地脚本工具（不入库）
 scripts/
+
+# CodeArts agent 工具生成的本地文件（不入库）
+.codeartsdoer/
+codearts-guide.md
+docs/*CodeArts*.md
