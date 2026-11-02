@@ -145,11 +145,42 @@ SAFE_READONLY_COMMANDS = frozenset({
     "git config --list", "git describe", "git blame", "git grep", "git shortlog",
 })
 
-BANNED_COMMANDS = frozenset({
-    "alias", "curl", "curlie", "wget", "axel", "aria2c",
-    "nc", "telnet", "lynx", "w3m", "links", "httpie", "xh",
-    "http-prompt", "chrome", "firefox", "safari",
-})
+# 命令名黑名单：改为从 config.json 的 banned_commands 字段读取（默认空 = 不拦截任何命令）。
+# 配置项修改后无需重启（每次执行命令时实时读取，带 2s 缓存）。
+import json as _json
+import os as _os
+import time as _time
+
+_BANNED_CACHE: dict[str, Any] = {"ts": 0.0, "cmds": frozenset()}
+_BANNED_CACHE_TTL = 2.0
+
+
+def get_banned_commands() -> frozenset[str]:
+    """读取 config.json 的 banned_commands（命令名列表）。默认空集。"""
+    now = _time.time()
+    if now - _BANNED_CACHE["ts"] < _BANNED_CACHE_TTL:
+        return _BANNED_CACHE["cmds"]  # type: ignore[return-value]
+    cmds: frozenset[str] = frozenset()
+    try:
+        cfg_path = _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+            "config.json",
+        )
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = _json.load(f)
+        raw = cfg.get("banned_commands") or []
+        if isinstance(raw, str):
+            raw = [x.strip() for x in raw.replace(",", "\n").splitlines() if x.strip()]
+        cmds = frozenset(str(x).strip().lower() for x in raw if str(x).strip())
+    except Exception:  # noqa: BLE001
+        cmds = frozenset()
+    _BANNED_CACHE["ts"] = now
+    _BANNED_CACHE["cmds"] = cmds
+    return cmds
+
+
+# 兼容旧引用：模块加载时的快照（新代码请用 get_banned_commands() 实时读取）
+BANNED_COMMANDS = get_banned_commands()
 
 
 def truncate_output(content: str, max_len: int = MAX_OUTPUT_LENGTH) -> str:

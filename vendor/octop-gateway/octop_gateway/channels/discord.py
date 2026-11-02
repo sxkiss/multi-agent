@@ -266,7 +266,22 @@ class DiscordChannel(BaseChannel):
         mentioned = bool(bot and re.search(rf"<@!?{bot.id}>", text))
         if bot:
             text = re.sub(rf"<@!?{bot.id}>", "", text).strip()
-        parts: list[ContentPart] = [TextContent(text=text)] if text else []
+
+        # Extract quoted message from Discord reference
+        reference = getattr(message, "reference", None)
+        quoted_text = ""
+        if reference is not None:
+            cached = getattr(reference, "cached_message", None)
+            if cached is not None:
+                quoted_text = str(cached.content or "").strip()
+
+        parts: list[ContentPart] = []
+        if quoted_text:
+            parts.append(TextContent(text=f"[引用消息: {quoted_text}]"))
+        if text:
+            parts.append(TextContent(text=text))
+        elif not quoted_text:
+            parts.append(TextContent(text=""))
         for attachment in message.attachments:
             mime = attachment.content_type or mimetypes.guess_type(attachment.filename)[0] or "application/octet-stream"
             values = {"url": attachment.url, "mime_type": mime, "size": attachment.size}

@@ -50,6 +50,13 @@ class VideoItem(BaseModel):
     url: str = ""
 
 
+class QuoteItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    text: str = ""
+    from_user_id: str = Field(default="", alias="fromUserId")
+    message_id: int | None = Field(default=None, alias="messageId")
+
+
 class MessageItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     type: int = 0
@@ -58,6 +65,10 @@ class MessageItem(BaseModel):
     voice_item: VoiceItem | None = Field(default=None, alias="voiceItem")
     file_item: FileItem | None = Field(default=None, alias="fileItem")
     video_item: VideoItem | None = Field(default=None, alias="videoItem")
+    # 引用回复（type=6）。必须显式声明：pydantic 默认丢弃未声明字段，
+    # 否则 _dispatch_message 的 model_dump() 会把 quote_item 整块丢掉，
+    # parse_inbound 里的引用解析永远拿不到数据。
+    quote_item: QuoteItem | None = Field(default=None, alias="quoteItem")
 
 
 class WeixinMessage(BaseModel):

@@ -555,12 +555,13 @@ def _get_manager():
     if _manager is not None:
         return _manager
     from octop_gateway import ChannelManager
-    from platform_ext.gateway_processor import make_processor
+    from platform_ext.gateway_processor import make_processor, _pre_lock_cancel_handler
 
     _manager = ChannelManager(
         workers_per_channel=2,
         queue_maxsize=200,
         processor=make_processor(),
+        on_pre_lock=_pre_lock_cancel_handler,
     )
     return _manager
 

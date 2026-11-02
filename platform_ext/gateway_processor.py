@@ -145,7 +145,13 @@ def _find_channel_subject(channel_type: str, subject_hint: str):
 
 
 def _dispatch_push(channel: Any, subject: Any, text: str) -> bool:
-    """把 push 调用投递到 channel 所在事件循环执行。"""
+    """把 push 调用投递到 channel 所在事件循环执行。
+
+    注意：channel 内部的 aiohttp session 绑定在 gateway 主事件循环上，
+    不能在新建的 asyncio.run() 循环中使用，否则会报
+    ``Timeout context manager should be used inside a task``。
+    因此优先从 gateway._manager 拿主 loop 并投递；只有拿不到时才退回到当前线程循环。
+    """
     import asyncio
     import threading
 
@@ -153,29 +159,47 @@ def _dispatch_push(channel: Any, subject: Any, text: str) -> bool:
         await channel.push_text(subject, text)
 
     try:
-        loop = getattr(channel, "_main_loop", None)
-        if loop is None or loop.is_closed():
-            # 退化为当前线程若无循环则起临时循环（同步执行完即弃）
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                # 当前无 running loop：用 asyncio.run() 启动新循环
-                # 注意：channel.push_text 内部可能使用 asyncio.timeout()，
-                # 必须在协程/任务上下文中调用，不能直接包在 with asyncio.timeout() 里。
-                asyncio.run(_do_push())
-                return True
-            # 已在有 running loop 的线程中：不能再用 asyncio.run()，会冲突。
-            # 改为在当前 loop 上调度协程，用 run_coroutine_threadsafe 等待结果。
-            loop = asyncio.get_running_loop()
+        # 优先用 gateway 主事件循环（channel 的 aiohttp session 绑定在此）
+        loop: asyncio.AbstractEventLoop | None = None
+        try:
+            from platform_ext import gateway as gw_mod
+            mgr = getattr(gw_mod, "_manager", None)
+            if mgr is not None:
+                loop = getattr(mgr, "_loop", None)
+        except Exception:  # noqa: BLE001
+            pass
 
-        if loop.is_running() and threading.current_thread() is not threading.main_thread():
+        # 兜底：channel 自己是否暴露了 _main_loop
+        if (loop is None or loop.is_closed()) and hasattr(channel, "_main_loop"):
+            loop = channel._main_loop
+
+        # 再兜底：当前线程的 running loop
+        if loop is None or loop.is_closed():
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # 无 running loop 且没有主 loop：只能新建临时循环（通道推送可能不稳定）
+                try:
+                    asyncio.run(_do_push())
+                except Exception:  # noqa: BLE001
+                    logger.warning("[gw-proc] 推送到通道失败（临时循环）", exc_info=True)
+                return True
+
+        if not loop.is_running():
+            # loop 存在但未运行（极少见），用临时循环兜底
+            try:
+                asyncio.run(_do_push())
+            except Exception:  # noqa: BLE001
+                logger.warning("[gw-proc] 推送到通道失败（临时循环）", exc_info=True)
+            return True
+
+        # loop 正在运行：通过 run_coroutine_threadsafe 投递
+        try:
             fut = asyncio.run_coroutine_threadsafe(_do_push(), loop)
             fut.result(timeout=30)
-            return True
-        if loop.is_running():
-            asyncio.run_coroutine_threadsafe(_do_push(), loop)
-            return True
-        asyncio.run(_do_push())
+        except Exception:  # noqa: BLE001
+            logger.warning("[gw-proc] 推送到通道失败", exc_info=True)
+            return False
         return True
     except Exception:  # noqa: BLE001
         logger.warning("[gw-proc] 推送到通道失败", exc_info=True)
@@ -475,3 +499,29 @@ def _wait_tasks_stopped(ws, sid: str, timeout: float = 5.0) -> None:
             asyncio.sleep(0.15)
     except Exception as e:  # noqa: BLE001
         logger.warning("[gw-proc] 等待任务停止超时/失败: %s", e)
+
+
+async def _pre_lock_cancel_handler(channel_id: str, message) -> None:
+    """进入会话锁之前的取消钩子（连续对话关键路径）。
+
+    通道 worker 在处理新消息时，会先拿 session 锁。若上一条消息的对话
+    还在流式输出（可能持续数十分钟），新消息会一直排队等待锁，永远轮不到
+    processor 里那句"先取消再发新消息"——于是用户看到"发了没反应、旧任务
+    还在跑"。
+
+    这里在拿锁之前就取消该会话的运行中任务，让旧一轮尽快退出释放锁。
+    """
+    try:
+        channel_type = str(getattr(message, "channel_type", "") or "")
+        subject = getattr(message, "channel_subject", None)
+        subject_id = getattr(subject, "subject_id", None) or ""
+        if not channel_type or not subject_id:
+            return
+        sid = session_id_for(channel_type, subject_id)
+        try:
+            import web_server
+        except Exception:  # noqa: BLE001
+            return
+        _cancel_running_tasks_with(web_server.chat_jobs, web_server.agent_main, sid)
+    except Exception:  # noqa: BLE001
+        logger.debug("[gw-proc] pre-lock 取消失败（忽略）", exc_info=True)

@@ -397,6 +397,11 @@
               <label class="form-label">工具结果最大字符数</label>
               <input type="number" class="form-input" id="set_tool_result_max_chars" placeholder="8000" />
             </div>
+            <div class="form-section">
+              <label class="form-label">命令名黑名单（每行一个，留空 = 不拦截任何命令）</label>
+              <textarea class="form-textarea" id="set_banned_commands" rows="4" placeholder="例如：&#10;wget&#10;nc&#10;telnet"></textarea>
+              <p style="color:var(--bt-text-2);font-size:12px;margin:6px 0 0">Bash 工具会拒绝执行列表中的命令。默认空表示全部放行。修改保存后立即生效（无需重启）。</p>
+            </div>
           </div>
           <div class="card">
             <h3>多模态 API（识图回退）</h3>
@@ -1366,6 +1371,7 @@
         $('set_tool_parallel_max_workers').value = _cfg.tool_parallel_max_workers || ''
         $('set_tool_result_archive').checked = !!_cfg.tool_result_archive
         $('set_tool_result_max_chars').value = _cfg.tool_result_max_chars || ''
+        $('set_banned_commands').value = (_cfg.banned_commands || []).join('\n')
         $('set_enable_mcp').checked = !!_cfg.enable_mcp
         $('set_mcp_config_path').value = _cfg.mcp_config_path || ''
         $('set_global_kb_agent_id').value = _cfg.global_kb_agent_id || 'ai-agent'
@@ -1427,6 +1433,7 @@
       tool_parallel_max_workers: parseInt($('set_tool_parallel_max_workers').value) || 8,
       tool_result_archive: $('set_tool_result_archive').checked,
       tool_result_max_chars: parseInt($('set_tool_result_max_chars').value) || 8000,
+      banned_commands: $('set_banned_commands').value.split('\n').map(function(s){ return s.trim() }).filter(Boolean),
       enable_mcp: $('set_enable_mcp').checked,
       mcp_config_path: $('set_mcp_config_path').value.trim(),
       global_kb_agent_id: $('set_global_kb_agent_id').value.trim() || 'ai-agent',

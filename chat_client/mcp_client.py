@@ -183,7 +183,7 @@ class MCPClient:
     # ---------- 服务器连接 ----------
     async def _connect_http_server(self, name: str, cfg: dict):
         """异步连接一个 HTTP/SSE MCP 服务器并注册工具（remote + gateway 连接器）。"""
-        from connector_hub.http_mcp import amap_call, amap_list_tools
+        from connector_hub.http_mcp import amap_list_tools
         url = cfg.get("url") or cfg.get("baseUrl") or ""
         if not url:
             logger.warning(f"HTTP MCP 服务器 {name} 缺少 url，跳过")
@@ -199,15 +199,11 @@ class MCPClient:
         logger.info(f"HTTP MCP 服务器 {name} 已连接，发现 {len(tools)} 个工具")
         self._tool_servers_by_name[name] = {"url": url, "token": token, "transport": transport, "headers": headers}
 
-        def _make_http_call(_name, _url, _token, _transport, _headers):
+        def _make_http_call(_name, _url, _token, _transport, _headers, _server):
             def _call(**kwargs):
-                import asyncio as _aio
-                try:
-                    return _aio.run(
-                        amap_call(_url, _token, _name, kwargs, _transport, headers=_headers)
-                    )
-                except Exception as exc:
-                    return f"调用连接器工具 {_name} 失败: {exc}"
+                # 统一走 call_tool：复用后台事件循环，避免每次 asyncio.run 新建
+                # 事件循环（高频调用时开销大，且在已有 loop 的线程中会直接报错）。
+                return self.call_tool(_name, kwargs, server_name=_server)
             _call.__name__ = _name
             return _call
 
@@ -227,7 +223,7 @@ class MCPClient:
             safe_name = sanitize_tool_name(tool_name)
             if safe_name != tool_name:
                 self._tool_servers[safe_name] = name
-            func = _make_http_call(tool_name, url, token, transport, headers)
+            func = _make_http_call(tool_name, url, token, transport, headers, name)
             registry._register_func(func, tool_name, "mcp", f"MCP: {tool_name} ({name})", "medium")
 
     async def _connect_server(self, name: str, cfg: dict):
@@ -363,9 +359,13 @@ class MCPClient:
                     headers=http_cfg.get("headers"),
                 )
 
+            coro = _do_http_call()
             try:
-                return self._run_coro(_do_http_call(), timeout=TOOL_CALL_TIMEOUT)
+                return self._run_coro(coro, timeout=TOOL_CALL_TIMEOUT)
             except Exception as e:
+                # _run_coro 在事件循环未运行时会先抛错，此时 coro 从未被 await，
+                # 必须显式 close()，否则触发 "coroutine was never awaited" 警告并泄漏。
+                coro.close()
                 return f"[MCP 工具 {tool_name} 调用异常]: {e}"
 
         if server not in self._session_by_name:
@@ -386,9 +386,11 @@ class MCPClient:
                 return f"[MCP 工具 {tool_name} 执行错误]: " + "\n".join(parts)
             return "\n".join(parts) if parts else str(result)
 
+        coro = _do_call()
         try:
-            return self._run_coro(_do_call(), timeout=TOOL_CALL_TIMEOUT)
+            return self._run_coro(coro, timeout=TOOL_CALL_TIMEOUT)
         except Exception as e:
+            coro.close()
             return f"[MCP 工具 {tool_name} 调用异常]: {e}"
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
@@ -422,6 +424,9 @@ class MCPClient:
         self._session_by_name.clear()
         self._tool_schemas.clear()
         self._tool_servers.clear()
+        # HTTP/SSE 连接器配置必须一并清空：否则 reload() 后旧的 url/token 仍会被
+        # call_tool 命中，导致已移除的连接器继续可用、或切换到其他用户配置时串号。
+        self._tool_servers_by_name.clear()
         self._loaded = False
 
 

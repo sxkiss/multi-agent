@@ -429,7 +429,7 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
         f"<description>{description}</description>\n\n"
         f"【重要】\n"
         f"1. 不要用相同参数重复调用 Task——子代理已在运行。\n"
-        f"2. 结果完成后会自动回灌到对话上下文，无需轮询 TaskStatus。\n"
+        f"2. 结果完成后系统将自动通知，无需主动轮询 TaskStatus。\n"
         f"3. 主动查询用 TaskStatus(task_id=\"{bg_task_id}\")；"
         f"续聊同一子代理时把 task_id 设为 \"{session_id}\"。\n"
         f"4. 你可以继续派发其他子代理或处理其他工作。"
@@ -753,7 +753,7 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
 
     # ---- 后台异步执行：专家团队在后台线程跑，不阻塞主会话 ----
     # 与 Task 子代理共用 BackgroundTaskManager 回传链路：完成后 notify_done
-    # 推 SSE + 落盘完整结果 + 唤醒挂起的主循环收尾段，结果自动回灌上下文。
+    # 推 SSE + 落盘完整结果 + 唤醒挂起的主循环收尾段，结果自动回复上下文。
     import uuid as _uuid
     from . import get_background_manager, get_current_job, _restore_job_ctx
     _ctx_job = get_current_job()
@@ -877,7 +877,7 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
         f"<task_id>{bg_task_id}</task_id>\n\n"
         f"【重要】\n"
         f"1. 不要用相同目标重复调用 RunCrew——团队已在运行。\n"
-        f"2. 结果完成后会自动回灌到对话上下文，无需轮询 TaskStatus。\n"
+        f"2. 结果完成后系统将自动通知，无需主动轮询 TaskStatus。\n"
         f"3. 主动查询用 TaskStatus(task_id=\"{bg_task_id}\")。",
     )
 
