@@ -843,6 +843,9 @@ class AgentMain:
         "workspace": os.path.join(BASE_DIR, "workspace"),
         # 技能目录，优先从 config.json 读取，其次环境变量 AI_AGENT_SKILLS_DIR，兜底 ~/.claude/skills
         "skills_dir": "",
+        # 命令名黑名单：Bash 工具会拒绝执行这些命令（默认空 = 不拦截）。
+        # 例如 ["wget", "nc"]。可在前端「设置 → 工具执行行为」中配置。
+        "banned_commands": [],
     }
 
     def __init__(self):

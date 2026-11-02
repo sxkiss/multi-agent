@@ -8,7 +8,7 @@ import time
 import uuid
 
 from . import PROJECT_ROOT, register_tool
-from .base import _xml_response, truncate_output, SAFE_READONLY_COMMANDS, BANNED_COMMANDS
+from .base import _xml_response, truncate_output, SAFE_READONLY_COMMANDS, get_banned_commands
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,7 @@ class Bash:
         # 安全检查：禁止危险命令（单Agent/破甲模式 is_allow_high()=True 时放行）
         base_cmd = command.split()[0].lower() if command.split() else ""
         from . import is_allow_high
-        if base_cmd in BANNED_COMMANDS and not is_allow_high():
+        if base_cmd in get_banned_commands() and not is_allow_high():
             return _xml_response("error", f"命令 '{base_cmd}' 被安全策略禁止执行")
 
         lang = (language or "shell").lower()
