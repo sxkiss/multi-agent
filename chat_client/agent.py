@@ -448,6 +448,8 @@ class Agent:
 
     def __init__(self, session_id: str, config: dict[str, Any] | None = None):
         self.session_id = session_id
+        # 保存根会话 ID（gw_ 前缀），用于后台任务回灌路由
+        self._root_session_id = session_id if session_id.startswith("gw_") else (config.get("_parent_session_id") if config else None) or session_id
         self.config = config or {}
         
         # 提取配置
@@ -1871,7 +1873,8 @@ Here is some useful information about the environment you are running in:
                             agent_config.pop("system_prompt", None)
                             agent_config.pop("tools", None)
                             args["parent_config"] = agent_config
-                            args["parent_session_id"] = self.session_id
+                            # 使用根会话 ID（gw_ 前缀），确保后台任务回灌能路由到正确通道
+                            args["parent_session_id"] = getattr(self, '_root_session_id', self.session_id)
 
                         if func_name in ["TodoWrite", "TodoRead", "TaskSummary"]:
                             args["session_id"] = self.session_id
