@@ -448,9 +448,13 @@ class Agent:
 
     def __init__(self, session_id: str, config: dict[str, Any] | None = None):
         self.session_id = session_id
-        # 保存根会话 ID（gw_ 前缀），用于后台任务回灌路由
-        self._root_session_id = session_id if session_id.startswith("gw_") else (config.get("_parent_session_id") if config else None) or session_id
         self.config = config or {}
+        # 保存根会话 ID（gw_ 前缀），用于后台任务回灌路由
+        # 优先用自身（如果是 gw_ 前缀），否则从 config 中向上查找 parent_session_id
+        _root = session_id if session_id.startswith("gw_") else None
+        if not _root and self.config:
+            _root = self.config.get("parent_session_id")
+        self._root_session_id = _root or session_id
         
         # 提取配置
         self.api_key = self.config.get("api_key")
