@@ -182,8 +182,9 @@ def _dispatch_push(channel: Any, subject: Any, text: str) -> bool:
                 # 不能用 asyncio.run() 新建的独立 loop 执行（会报 Timeout context manager should be
                 # used inside a task）。只能放弃投递，返回 False。
                 logger.warning(
-                    "[gw-proc] 推送到通道失败：找不到活跃事件循环（gateway._manager._loop 未就绪），session=%s",
-                    getattr(text, "session_id", "")[:24] if hasattr(text, "session_id") else "",
+                    "[gw-proc] 推送到通道失败：找不到活跃事件循环"
+                    "（gateway._manager._loop 未就绪），text_len=%d",
+                    len(str(text or "")),
                 )
                 return False
 
