@@ -86,6 +86,33 @@ BINARY_EXTENSIONS = {
 # 现在 ChatJob 增加 cancel_event，Agent 主循环在本模块的检查点轮询。
 # ============================================================
 
+def _find_root_session_id(session_id: str, config: dict | None = None) -> str:
+    """查找根会话 ID（有 IM 通道路由的会话）。
+
+    逻辑：
+    1. 如果自身 session_id 已在 _SESSION_ROUTES 中有记录 → 就是根会话
+    2. 否则从 config 中向上查找 parent_session_id
+    3. 都找不到则返回自身（兜底）
+
+    这样无论 session_id 是什么格式（gw_、card_、ses_、UUID 等），
+    只要能找到有通道路由的会话 ID，就能正确回灌消息。
+    """
+    from platform_ext.gateway_processor import get_session_route
+
+    # 1. 检查自身是否有路由
+    if get_session_route(session_id) is not None:
+        return session_id
+
+    # 2. 从 config 中向上查找
+    if config:
+        parent_sid = config.get("parent_session_id")
+        if parent_sid and get_session_route(parent_sid) is not None:
+            return parent_sid
+
+    # 3. 兜底：返回自身
+    return session_id
+
+
 def _cancel_event():
     """取当前执行上下文（ChatJob）的取消事件；无任务上下文（如脚本直调 Agent）返回 None。"""
     from .tools import get_current_job
@@ -449,6 +476,9 @@ class Agent:
     def __init__(self, session_id: str, config: dict[str, Any] | None = None):
         self.session_id = session_id
         self.config = config or {}
+        # 保存根会话 ID：优先使用有通道路由的会话 ID
+        # 判断依据：session_id 在 _SESSION_ROUTES 中有记录（表示有 IM 通道关联）
+        self._root_session_id = _find_root_session_id(session_id, config)
         
         # 提取配置
         self.api_key = self.config.get("api_key")
@@ -1871,7 +1901,8 @@ Here is some useful information about the environment you are running in:
                             agent_config.pop("system_prompt", None)
                             agent_config.pop("tools", None)
                             args["parent_config"] = agent_config
-                            args["parent_session_id"] = self.session_id
+                            # 使用根会话 ID（gw_ 前缀），确保后台任务回灌能路由到正确通道
+                            args["parent_session_id"] = getattr(self, '_root_session_id', self.session_id)
 
                         if func_name in ["TodoWrite", "TodoRead", "TaskSummary"]:
                             args["session_id"] = self.session_id
