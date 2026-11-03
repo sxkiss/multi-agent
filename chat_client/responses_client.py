@@ -231,7 +231,9 @@ def build_request(
     if top_p is not None:
         payload["top_p"] = top_p
     if reasoning_effort:
-        payload["reasoning"] = {"effort": reasoning_effort}
+        _EFFORT_MAP = {"xhigh": "max", "minimal": "low"}
+        effort_val = _EFFORT_MAP.get(str(reasoning_effort).lower(), str(reasoning_effort))
+        payload["reasoning"] = {"effort": effort_val}
     if max_output_tokens:
         payload["max_output_tokens"] = max_output_tokens
     # OpenAI Responses prompt caching：稳定标识符 + 隐式断点

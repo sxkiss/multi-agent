@@ -1166,8 +1166,10 @@ Here is some useful information about the environment you are running in:
             "extra_body": {}
         }
         # 只在显式配置时才传 reasoning_effort，避免对所有模型强制最大思考深度
+        # xhigh/minimal 是 Codex CLI 的取值，上游 OpenAI 不接受；统一折叠到 max/low
         if self.reasoning_effort:
-            params["reasoning_effort"] = self.reasoning_effort
+            _EFFORT_MAP = {"xhigh": "max", "minimal": "low"}
+            params["reasoning_effort"] = _EFFORT_MAP.get(str(self.reasoning_effort).lower(), str(self.reasoning_effort))
         # 单次输出硬上限：防止模型退化后无限输出/无限思考
         if self.max_output_tokens and self.max_output_tokens > 0:
             params["max_tokens"] = self.max_output_tokens
