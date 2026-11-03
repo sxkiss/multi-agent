@@ -3803,7 +3803,7 @@ def _dispatch_orphan_job_after_append(session_id: str, task_id: str, tool: str, 
                                 else:
                                     c = str(data or "")
                                 if c:
-                                    reply_text = c
+                                    reply_text += c
                     orphan_job.append("message_end", None)
                     orphan_job.finish("done")
                 except Exception as e:
@@ -3947,7 +3947,7 @@ def _dispatch_orphan_job(session_id: str, task_id: str, tool: str, status: str, 
                         else:
                             c = str(data or "")
                         if c:
-                            reply_text = c
+                            reply_text += c
             job.append("message_end", None)
             job.finish("done")
         except Exception as e:
