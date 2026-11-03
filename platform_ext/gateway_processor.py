@@ -178,20 +178,20 @@ def _dispatch_push(channel: Any, subject: Any, text: str) -> bool:
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
-                # 无 running loop 且没有主 loop：只能新建临时循环（通道推送可能不稳定）
-                try:
-                    asyncio.run(_do_push())
-                except Exception:  # noqa: BLE001
-                    logger.warning("[gw-proc] 推送到通道失败（临时循环）", exc_info=True)
-                return True
+                # 无 running loop 且没有主 loop：channel 的 aiohttp session 绑定在 gateway 主 loop，
+                # 不能用 asyncio.run() 新建的独立 loop 执行（会报 Timeout context manager should be
+                # used inside a task）。只能放弃投递，返回 False。
+                logger.warning(
+                    "[gw-proc] 推送到通道失败：找不到活跃事件循环"
+                    "（gateway._manager._loop 未就绪），text_len=%d",
+                    len(str(text or "")),
+                )
+                return False
 
         if not loop.is_running():
-            # loop 存在但未运行（极少见），用临时循环兜底
-            try:
-                asyncio.run(_do_push())
-            except Exception:  # noqa: BLE001
-                logger.warning("[gw-proc] 推送到通道失败（临时循环）", exc_info=True)
-            return True
+            # loop 存在但未运行（极少见），channel 的 aiohttp session 无法跨 loop 使用
+            logger.warning("[gw-proc] 推送到通道失败：loop 未运行")
+            return False
 
         # loop 正在运行：通过 run_coroutine_threadsafe 投递
         try:
