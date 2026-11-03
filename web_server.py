@@ -558,7 +558,7 @@ class ChatJobManager:
                 j.request_stop()
                 j.finish("stopped")
                 try:
-                    if j.agent:
+                    if j.agent is not None and hasattr(j.agent, "close"):
                         j.agent.close()
                 except Exception:
                     logger.warning("ChatJobManager agent.close 失败，已记录", exc_info=True)
@@ -686,7 +686,7 @@ class ChatJobManager:
                     continue
                 # 释放大对象引用，帮助 GC 及时回收历史/事件缓存
                 try:
-                    if j.agent is not None:
+                    if j.agent is not None and hasattr(j.agent, "close"):
                         j.agent.close()
                 except Exception:
                     logger.warning("[ChatJob] 内存回收 agent.close 失败", exc_info=True)
@@ -2120,7 +2120,10 @@ class AgentMain:
         except Exception as e:
             yield self.sse_pack(event="error", data={"msg": f"聊天发生错误: {e!s}"})
         finally:
-            agent.close()
+            try:
+                agent.close()
+            except Exception:
+                logger.warning("chat agent.close 失败，已记录", exc_info=True)
 
     # ---------------- 后台任务式聊天（与前端连接解耦） ----------------
 
@@ -3468,7 +3471,7 @@ async def _lifespan(_app):
             for j in running:
                 try:
                     j.finish("stopped")
-                    if j.agent:
+                    if j.agent is not None and hasattr(j.agent, "close"):
                         j.agent.close()
                 except Exception:
                     logger.warning("[Shutdown] 停止任务失败，已记录", exc_info=True)
@@ -6080,7 +6083,7 @@ if __name__ == '__main__':
             for j in running:
                 j.finish("stopped")
                 try:
-                    if j.agent:
+                    if j.agent is not None and hasattr(j.agent, "close"):
                         j.agent.close()
                 except Exception:
                     logger.warning("[Shutdown] 停止任务失败，已记录", exc_info=True)
