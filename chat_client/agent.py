@@ -478,7 +478,7 @@ class Agent:
         self.config = config or {}
         # 保存根会话 ID：优先使用有通道路由的会话 ID
         # 判断依据：session_id 在 _SESSION_ROUTES 中有记录（表示有 IM 通道关联）
-        self._root_session_id = self._find_root_session_id(session_id, config)
+        self._root_session_id = _find_root_session_id(session_id, config)
         
         # 提取配置
         self.api_key = self.config.get("api_key")
