@@ -21,6 +21,12 @@ os.environ["BT_METRICS_DIR"] = _METRICS_TMP
 _BG_DB_TMP = tempfile.mktemp(prefix="bt_bgtasks_test_", suffix=".sqlite")
 os.environ["BT_BG_TASKS_DB"] = _BG_DB_TMP
 
+# 日志同理：web_server 模块级调用 _setup_app_logging()，一旦被测试 import，
+# 所有测试日志都会写进生产 logs/app.log，造成"生产日志里出现 object()/FakeAgent
+# 之类测试桩报错"的假象（排查时误判为线上 bug）。这里提前把日志目录指向临时目录。
+_LOG_TMP = tempfile.mkdtemp(prefix="bt_logs_test_")
+os.environ["BT_LOG_DIR"] = _LOG_TMP
+
 
 @pytest.fixture(autouse=True)
 def _isolate_metrics():

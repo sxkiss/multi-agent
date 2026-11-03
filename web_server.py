@@ -48,7 +48,8 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
 # ---- 应用日志配置（必须在任何 logger 创建之前调用）----
-_LOG_DIR = os.path.join(BASE_DIR, "logs")
+# BT_LOG_DIR 可由测试 conftest 覆盖，避免测试日志污染生产 logs/app.log
+_LOG_DIR = os.environ.get("BT_LOG_DIR") or os.path.join(BASE_DIR, "logs")
 os.makedirs(_LOG_DIR, exist_ok=True)
 
 _LOG_FMT = "[%(asctime)s] %(levelname)-8s %(name)s: %(message)s"
@@ -558,7 +559,7 @@ class ChatJobManager:
                 j.request_stop()
                 j.finish("stopped")
                 try:
-                    if j.agent:
+                    if j.agent is not None and hasattr(j.agent, "close"):
                         j.agent.close()
                 except Exception:
                     logger.warning("ChatJobManager agent.close 失败，已记录", exc_info=True)
@@ -686,7 +687,7 @@ class ChatJobManager:
                     continue
                 # 释放大对象引用，帮助 GC 及时回收历史/事件缓存
                 try:
-                    if j.agent is not None:
+                    if j.agent is not None and hasattr(j.agent, "close"):
                         j.agent.close()
                 except Exception:
                     logger.warning("[ChatJob] 内存回收 agent.close 失败", exc_info=True)
@@ -2120,7 +2121,10 @@ class AgentMain:
         except Exception as e:
             yield self.sse_pack(event="error", data={"msg": f"聊天发生错误: {e!s}"})
         finally:
-            agent.close()
+            try:
+                agent.close()
+            except Exception:
+                logger.warning("chat agent.close 失败，已记录", exc_info=True)
 
     # ---------------- 后台任务式聊天（与前端连接解耦） ----------------
 
@@ -3468,7 +3472,7 @@ async def _lifespan(_app):
             for j in running:
                 try:
                     j.finish("stopped")
-                    if j.agent:
+                    if j.agent is not None and hasattr(j.agent, "close"):
                         j.agent.close()
                 except Exception:
                     logger.warning("[Shutdown] 停止任务失败，已记录", exc_info=True)
@@ -6080,7 +6084,7 @@ if __name__ == '__main__':
             for j in running:
                 j.finish("stopped")
                 try:
-                    if j.agent:
+                    if j.agent is not None and hasattr(j.agent, "close"):
                         j.agent.close()
                 except Exception:
                     logger.warning("[Shutdown] 停止任务失败，已记录", exc_info=True)
