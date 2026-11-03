@@ -1773,6 +1773,7 @@ class AgentMain:
             from chat_client.agent import Agent
 
         user_input = get.get('message', '')
+        # message 允许是字符串 / JSON 字符串（list/dict）/ None；非字符串类型直接丢弃避免 json.loads 崩溃
         if isinstance(user_input, str):
             try:
                 parsed_input = json.loads(user_input)
@@ -1783,6 +1784,9 @@ class AgentMain:
                     user_input = [parsed_input]
             except json.JSONDecodeError:
                 logger.warning("user_input JSON 解析失败，已记录", exc_info=True)
+        elif user_input is not None:
+            logger.warning("user_input 非字符串类型: %r", user_input)
+            user_input = ''
 
         # ── 图片（多模态）：images 参数归一后追加到 user_input ────────────
         # 此前图片无处可进（message 只收文本），且历史里的图片块会被
