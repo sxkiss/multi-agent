@@ -48,7 +48,8 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
 # ---- 应用日志配置（必须在任何 logger 创建之前调用）----
-_LOG_DIR = os.path.join(BASE_DIR, "logs")
+# BT_LOG_DIR 可由测试 conftest 覆盖，避免测试日志污染生产 logs/app.log
+_LOG_DIR = os.environ.get("BT_LOG_DIR") or os.path.join(BASE_DIR, "logs")
 os.makedirs(_LOG_DIR, exist_ok=True)
 
 _LOG_FMT = "[%(asctime)s] %(levelname)-8s %(name)s: %(message)s"
