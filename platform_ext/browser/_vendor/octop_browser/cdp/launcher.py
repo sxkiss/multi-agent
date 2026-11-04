@@ -249,7 +249,15 @@ def _build_flags(profile: Profile, headless: bool) -> list[str]:
     # process aborts (SwiftShader's CreateCommandBuffer fails) and renderers
     # never start, leaving Page.enable hung. Defaults match Playwright.
     if _should_disable_gpu(headless):
-        flags.append("--disable-gpu")
+        # Xvfb/无 GPU 环境：改用 ANGLE + SwiftShader 软件渲染，
+        # 保证 WebGL / Three.js 场景可用（--disable-gpu 会导致 WebGL 为 null）。
+        flags.extend([
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--enable-unsafe-swiftshader",
+            "--enable-webgl",
+            "--ignore-gpu-blocklist",
+        ])
     if _should_disable_dev_shm():
         flags.append("--disable-dev-shm-usage")
     # Proxy support: 优先读取运行时持久化配置（proxy.json），回退到环境变量。
