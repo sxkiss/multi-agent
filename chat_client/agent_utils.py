@@ -11,6 +11,8 @@ import re
 import time
 from typing import Any
 
+from chat_client.tools.base import _xml_response
+
 logger = logging.getLogger(__name__)
 
 # L-1: tiktoken 编码器缓存在模块级，避免每次调用重复导入
