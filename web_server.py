@@ -1302,7 +1302,8 @@ class AgentMain:
         try:
             zip_bytes = base64.b64decode(zip_b64, validate=False)
         except Exception as e:
-            return public.returnMsg(False, f'base64 解码失败: {e!s}')
+            logger.warning("接口异常已脱敏对外返回", exc_info=True)
+            return public.returnMsg(False, 'base64 解码失败')
 
         if not zip_bytes:
             return public.returnMsg(False, '压缩包内容为空')
@@ -1447,7 +1448,8 @@ class AgentMain:
         try:
             self._crew_write(agents)
         except Exception as e:
-            return public.returnMsg(False, f"写入失败: {e!s}")
+            logger.warning("接口异常已脱敏对外返回", exc_info=True)
+            return public.returnMsg(False, '写入失败')
 
         from chat_client.tools.task import reload_custom_agents
         names = reload_custom_agents()
@@ -1462,7 +1464,8 @@ class AgentMain:
         try:
             self._crew_write(remaining)
         except Exception as e:
-            return public.returnMsg(False, f"写入失败: {e!s}")
+            logger.warning("接口异常已脱敏对外返回", exc_info=True)
+            return public.returnMsg(False, '写入失败')
         from chat_client.tools.task import reload_custom_agents
         reload_custom_agents()
         return public.return_data(True, data={"deleted": name})
@@ -1737,7 +1740,7 @@ class AgentMain:
                 # realpath 解析软链，防白名单根内的软链指向外部文件
                 p = os.path.realpath(url if os.path.isabs(url)
                                      else os.path.join(BASE_DIR, url))
-                roots = [os.path.realpath(r) for r in _SERVE_ROOTS]
+                roots = [os.path.realpath(r) for r in __import__("file_routes").get_serve_roots()]
                 if not any(p == r or p.startswith(r + os.sep) for r in roots):
                     logger.warning("[安全] 图片路径越界被拒: %s", url)
                     continue
@@ -2532,7 +2535,8 @@ class AgentMain:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
             os.replace(tmp, path)
         except Exception as e:
-            return public.returnMsg(False, f"保存配置失败: {e!s}")
+            logger.warning("接口异常已脱敏对外返回", exc_info=True)
+            return public.returnMsg(False, '保存配置失败')
         return public.return_data(True, data=self.config['opencode'])
 
     def opencode_status(self, get):
@@ -2630,7 +2634,8 @@ class AgentMain:
             os.chmod(_GLOBAL_AUTH_PATH, _stat.S_IRUSR | _stat.S_IWUSR)
             return public.return_data(True, data={"saved": True})
         except Exception as e:
-            return public.returnMsg(False, f"保存失败: {e!s}")
+            logger.warning("接口异常已脱敏对外返回", exc_info=True)
+            return public.returnMsg(False, '保存失败')
 
     def claude_get_config(self, get=None):
         """获取 Claude CLI 配置：effortLevel + env 环境变量"""
@@ -2678,7 +2683,8 @@ class AgentMain:
                 json.dump(existing, f, indent=2, ensure_ascii=False)
             return public.return_data(True, data=existing)
         except Exception as e:
-            return public.returnMsg(False, f"保存失败: {e!s}")
+            logger.warning("接口异常已脱敏对外返回", exc_info=True)
+            return public.returnMsg(False, '保存失败')
 
     # ── codex 管理面板：~/.codex/config.toml 读写 + 状态探测 ────────────────
     _CODEX_CFG_PATH = os.path.expanduser("~/.codex/config.toml")
@@ -2747,7 +2753,8 @@ class AgentMain:
             os.chmod(self._CODEX_CFG_PATH, _stat.S_IRUSR | _stat.S_IWUSR)
             return public.return_data(True, data={"saved": True, "backup": bak})
         except Exception as e:
-            return public.returnMsg(False, f"保存失败: {e!s}")
+            logger.warning("接口异常已脱敏对外返回", exc_info=True)
+            return public.returnMsg(False, '保存失败')
 
     def codex_get_status(self, get=None):
         """探测 codex 二进制状态"""
@@ -2775,7 +2782,8 @@ class AgentMain:
             ver = (proc.stdout or proc.stderr or "").strip().splitlines()[0] if (proc.stdout or proc.stderr) else ""
             return public.return_data(True, data={"version": ver, "returncode": proc.returncode})
         except Exception as e:
-            return public.returnMsg(False, f"codex 测试失败: {e!s}")
+            logger.warning("接口异常已脱敏对外返回", exc_info=True)
+            return public.returnMsg(False, 'codex 测试失败')
 
     def get_chat_historys(self, get):
         workspace_filter = str(get.get('workspace', '')).strip()
@@ -3068,7 +3076,8 @@ class AgentMain:
                                     msg['content'] = first_item.get('text', '')
                     return public.return_data(True, data=history)
                 except Exception as e:
-                    return public.returnMsg(False, f"读取会话记录失败: {e!s}")
+                    logger.warning("接口异常已脱敏对外返回", exc_info=True)
+                    return public.returnMsg(False, '读取会话记录失败')
             except Exception:
                 return public.return_data(True, data=[])
 
@@ -3126,7 +3135,8 @@ class AgentMain:
                         return public.returnMsg(False, "会话不存在")
                 return public.returnMsg(True, "删除成功")
             except Exception as e:
-                return public.returnMsg(False, f"删除失败: {e!s}")
+                logger.warning("接口异常已脱敏对外返回", exc_info=True)
+                return public.returnMsg(False, '删除失败')
 
         # ── claude 会话：从 ~/.claude/projects/ 删除对应 jsonl 文件 ──────
         if _is_claude_session_id(session_id):
@@ -3137,7 +3147,8 @@ class AgentMain:
                     os.remove(p)
                     return public.returnMsg(True, "删除成功")
                 except Exception as e:
-                    return public.returnMsg(False, f"删除失败: {e!s}")
+                    logger.warning("接口异常已脱敏对外返回", exc_info=True)
+                    return public.returnMsg(False, '删除失败')
             return public.returnMsg(False, "claude 会话文件不存在")
 
 # ── codex 会话：从 ~/.codex/sessions/ 删除对应 rollout jsonl ──────
@@ -3149,7 +3160,8 @@ class AgentMain:
                     os.remove(p)
                     return public.returnMsg(True, "删除成功")
                 except Exception as e:
-                    return public.returnMsg(False, f"删除失败: {e!s}")
+                    logger.warning("接口异常已脱敏对外返回", exc_info=True)
+                    return public.returnMsg(False, '删除失败')
             return public.returnMsg(False, "codex 会话文件不存在")
 
         # ── native 会话：删除本地 sessions 目录 ──────────────────────────
@@ -3163,7 +3175,8 @@ class AgentMain:
             shutil.rmtree(session_dir)
             return public.returnMsg(True, "删除成功")
         except Exception as e:
-            return public.returnMsg(False, f"删除失败: {e!s}")
+            logger.warning("接口异常已脱敏对外返回", exc_info=True)
+            return public.returnMsg(False, '删除失败')
 
     def del_chat_batch(self, get):
         ids = get.get('session_ids')
@@ -3220,7 +3233,8 @@ class AgentMain:
                 logger.warning("journal 清理失败: %s", jpath, exc_info=True)
             return public.returnMsg(True, "删除成功")
         except Exception as e:
-            return public.returnMsg(False, f"删除失败: {e!s}")
+            logger.warning("接口异常已脱敏对外返回", exc_info=True)
+            return public.returnMsg(False, '删除失败')
 
     def set_tool_show_status(self, get):
         """切换工具前端显示状态（按 id 或 category）"""
@@ -4290,7 +4304,8 @@ async def api_skills_export_package(request: Request):
     try:
         data = skill_manager.export_package(names, params.get("package_name", ""))
     except Exception as e:
-        return JSONResponse(public.returnMsg(False, f"导出失败: {e!s}"))
+        logger.warning("技能包导出失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "导出失败"))
     return JSONResponse(public.return_data(True, data={
         "package_name": params.get("package_name", "") or "skill-package",
         "size": len(data),
@@ -4310,7 +4325,8 @@ async def api_skills_import_package(request: Request):
     try:
         zip_bytes = base64.b64decode(raw)
     except Exception as e:
-        return JSONResponse(public.returnMsg(False, f"base64 解码失败: {e!s}"))
+        logger.warning("技能包 base64 解码失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "base64 解码失败"))
     res = skill_manager.import_package(zip_bytes, overwrite=bool(params.get("overwrite")))
     return JSONResponse(public.return_data(True, data=res) if res.get("status")
                         else public.returnMsg(False, res.get("msg", "导入失败")))
@@ -4686,7 +4702,8 @@ async def api_context_breakdown(session_id: str, context_window_tokens: int = 25
             BASE_DIR, session_id, context_window_tokens=context_window_tokens,
             system_prompt=sys_prompt, tool_definitions=tool_defs, skills=skills_txt)))
     except Exception as e:
-        return JSONResponse(public.returnMsg(False, f"分析上下文失败: {e!s}"))
+        logger.warning("上下文分析失败", exc_info=True)
+        return JSONResponse(public.returnMsg(False, "分析上下文失败"))
 
 
 # ── P7: 安全/能力增强（护栏规则/审批/斜杠/技能包/知识库任务/主动关怀）──
@@ -5634,164 +5651,11 @@ async def api_chat_delete_message(request: Request):
 
 
 # ============================================================
-# 文件能力：浏览器端文件选择 / 本地文件上传
+# 文件能力：已抽离到 file_routes.py（优-1 路由拆分第一阶段）
 # ============================================================
-# 允许浏览的根目录白名单（防目录穿越），用户请求的路径必须落在这些根之下
-_FILE_BROWSE_ROOTS = [
-    os.path.abspath(os.path.join(BASE_DIR, "workspace")),
-    os.path.abspath(os.path.expanduser("~")),
-    "/tmp",
-]
-
-
-def _safe_resolve(requested: str):
-    """将请求路径约束在白名单根目录内，返回真实绝对路径；越界返回 None"""
-    if not requested:
-        return _FILE_BROWSE_ROOTS[0]
-    # 必须 realpath 而非 abspath：abspath 不解析符号链接，白名单根内若存在
-    # 指向外部的软链即可越界读取。realpath 先把软链解析到真实位置再做前缀校验。
-    req = os.path.realpath(os.path.expanduser(requested))
-    for root in _FILE_BROWSE_ROOTS:
-        try:
-            r = os.path.realpath(root)
-            if req == r or req.startswith(r + os.sep):
-                return req
-        except Exception:
-            logger.warning("处理时跳过异常", exc_info=True)
-            continue
-    return None
-
-
-# 文件服务（/api/files/raw）允许访问的根目录：浏览白名单 + 上传目录
-_SERVE_ROOTS = _FILE_BROWSE_ROOTS + [os.path.abspath(os.path.join(BASE_DIR, "uploads"))]
-
-
-def _safe_resolve_serve(requested: str):
-    if not requested:
-        return None
-    # 同 _safe_resolve：用 realpath 解析软链后再做白名单前缀校验
-    req = os.path.realpath(os.path.expanduser(requested))
-    for root in _SERVE_ROOTS:
-        try:
-            r = os.path.realpath(root)
-            if req == r or req.startswith(r + os.sep):
-                return req
-        except Exception:
-            logger.warning("处理时跳过异常", exc_info=True)
-            continue
-    return None
-
-
-@app.get("/api/files/raw")
-async def api_files_raw(path: str = ""):
-    """安全提供文件内容（图片/视频/音频/文档预览下载）。path 必须为白名单内绝对/相对路径。"""
-    if not path:
-        return JSONResponse(public.returnMsg(False, "缺少 path"))
-    # 兼容前端传入相对 BASE_DIR 的路径
-    if not os.path.isabs(path):
-        cand = os.path.abspath(os.path.join(BASE_DIR, path))
-    else:
-        cand = path
-    real = _safe_resolve_serve(cand)
-    if real is None or not os.path.isfile(real):
-        return JSONResponse(public.returnMsg(False, "文件不存在或不在允许访问的范围内"))
-    try:
-        return FileResponse(real)
-    except Exception:
-        # L-4: 详细原因（含服务器绝对路径）只留在日志，对外返回通用提示避免信息泄露
-        logger.warning("读取文件失败（路径已脱敏），详见日志", exc_info=True)
-        return JSONResponse(public.returnMsg(False, "读取文件失败"))
-
-
-@app.get("/api/files/browse")
-async def api_files_browse(path: str = ""):
-    target = _safe_resolve(path)
-    if target is None:
-        return JSONResponse(public.returnMsg(False, "路径不在允许浏览的范围内"))
-    if not os.path.isdir(target):
-        # 若是文件，则定位到其父目录并预选该文件
-        parent = os.path.dirname(target)
-        preselect = os.path.basename(target) if os.path.isfile(target) else ""
-        target = parent if os.path.isdir(parent) else _FILE_BROWSE_ROOTS[0]
-    else:
-        preselect = ""
-    try:
-        entries = []
-        for name in sorted(os.listdir(target)):
-            if name.startswith("."):
-                continue
-            full = os.path.join(target, name)
-            try:
-                st = os.stat(full)
-            except Exception:
-                logger.warning("处理时跳过异常", exc_info=True)
-                continue
-            is_dir = os.path.isdir(full)
-            entries.append({
-                "name": name,
-                "type": "dir" if is_dir else "file",
-                "size": 0 if is_dir else st.st_size,
-                "mtime": int(st.st_mtime),
-            })
-        # 目录在前、文件在后
-        entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
-        parent = os.path.dirname(target)
-        return JSONResponse(public.return_data(True, data={
-            "path": target,
-            "parent": parent if parent != target else "",
-            "preselect": preselect,
-            "items": entries,
-        }))
-    except Exception:
-        # L-4: 详细原因（含服务器绝对路径）只留在日志，对外返回通用提示
-        logger.warning("浏览目录失败（详情不返回客户端），详见日志", exc_info=True)
-        return JSONResponse(public.returnMsg(False, "浏览失败"))
-
-
-@app.post("/api/files/upload")
-async def api_files_upload(file: UploadFile = File(...)):
-    MAX_UPLOAD_SIZE = int(os.environ.get("BT_MAX_UPLOAD_SIZE_MB", "100")) * 1024 * 1024  # 默认 100MB
-    upload_dir = os.path.join(BASE_DIR, "uploads")
-    try:
-        os.makedirs(upload_dir, exist_ok=True)
-    except Exception:
-        return JSONResponse(public.returnMsg(False, "无法创建上传目录"))
-    # 仅取基名，杜绝路径穿越
-    fname = os.path.basename(file.filename or "upload.bin")
-    # 避免重名覆盖
-    dest = os.path.join(upload_dir, fname)
-    if os.path.exists(dest):
-        base, ext = os.path.splitext(fname)
-        dest = os.path.join(upload_dir, f"{base}_{int(time.time())}{ext}")
-    # P1-4: 校验 Content-Length 头防大文件 OOM（未设限时仍允许但用流式读取）
-    content_length = file.size
-    if content_length is not None and content_length > MAX_UPLOAD_SIZE:
-        return JSONResponse(public.returnMsg(False, f"文件大小超过限制（{MAX_UPLOAD_SIZE // 1024 // 1024}MB）"))
-    try:
-        # 流式写入，避免一次性读入内存
-        size = 0
-        with open(dest, "wb") as out:
-            while True:
-                chunk = await file.read(8192)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > MAX_UPLOAD_SIZE:
-                    os.remove(dest)
-                    return JSONResponse(public.returnMsg(False, f"文件大小超过限制（{MAX_UPLOAD_SIZE // 1024 // 1024}MB）"))
-                out.write(chunk)
-        # 返回相对 BASE_DIR 的路径，供 agent 读取
-        rel = os.path.relpath(dest, BASE_DIR)
-        return JSONResponse(public.return_data(True, data={
-            "name": fname,
-            "path": rel,
-            "url": "/api/files/raw?path=" + urllib.parse.quote(rel),
-            "size": size,
-        }))
-    except Exception:
-        # L-4: 详细原因（含服务器绝对路径）只留在日志，对外返回通用提示
-        logger.warning("上传文件失败（详情不返回客户端），详见日志", exc_info=True)
-        return JSONResponse(public.returnMsg(False, "上传失败"))
+from file_routes import register_file_routes as _register_file_routes
+from file_routes import _safe_resolve, _safe_resolve_serve  # 兼容旧调用与回归测试
+_register_file_routes(app, BASE_DIR)
 
 
 # ==================== 知识库 API（文档管线） ====================

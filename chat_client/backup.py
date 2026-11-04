@@ -138,10 +138,19 @@ def restore_backup(base_dir: str, name: str, *, dry_run: bool = True) -> dict[st
     # 恢复前先给当前状态打个备份，防误操作
     pre = create_backup(base_dir, label="pre-restore", keep=20)
     try:
+        from security_utils import UnsafeArchiveError, safe_extract_tar
         with tarfile.open(path, "r:gz") as tf:
-            tf.extractall(base_dir)  # 备份由本模块生成，成员路径可信
+            try:
+                safe_extract_tar(tf, base_dir)
+            except UnsafeArchiveError as exc:
+                return {
+                    "status": False,
+                    "msg": f"备份校验失败，已拒绝恢复: {exc}",
+                    "pre_backup": pre.get("path"),
+                }
     except Exception as e:
-        return {"status": False, "msg": f"恢复失败: {e!s}", "pre_backup": pre.get("path")}
+        logger.warning("恢复备份失败", exc_info=True)
+        return {"status": False, "msg": "恢复失败", "pre_backup": pre.get("path")}
     return {"status": True, "restored": members, "count": len(members),
             "pre_backup": pre.get("path")}
 

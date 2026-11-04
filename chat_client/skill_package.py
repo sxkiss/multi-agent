@@ -94,12 +94,11 @@ def import_skill_package(base_dir: str, zip_path: str,
     tmp = tempfile.mkdtemp(prefix="skill-pkg-")
     try:
         with zipfile.ZipFile(zip_path) as zf:
-            # 防路径穿越：拒绝 ../ 或绝对路径成员
-            for info in zf.infolist():
-                name = info.filename.replace("\\", "/")
-                if name.startswith("/") or ".." in name.split("/"):
-                    return {"ok": False, "error": f"压缩包含非法路径: {name}"}
-            zf.extractall(tmp)
+            from security_utils import UnsafeArchiveError, safe_extract_zip
+            try:
+                safe_extract_zip(zf, tmp)
+            except UnsafeArchiveError as exc:
+                return {"ok": False, "error": f"压缩包校验失败: {exc}"}
         # 解析 manifest（可选）
         mf = os.path.join(tmp, MANIFEST_FILENAME)
         manifest = {}

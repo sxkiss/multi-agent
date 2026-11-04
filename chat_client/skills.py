@@ -513,34 +513,19 @@ class SkillManager:
             shutil.rmtree(target_dir, ignore_errors=True)
 
         os.makedirs(target_dir, exist_ok=True)
-        dest_real = os.path.realpath(target_dir)
         extracted = 0
-        written_total = 0   # 实际写入字节累计（ZIP 元数据可伪造，此处为运行时兜底防线）
         try:
-            for zi in zf.infolist():
-                # 目录占位条目跳过；符号链接成员一律拒绝（防止链接逃逸或指向敏感文件）
-                if zi.is_dir() or ((zi.external_attr >> 16) & 0o170000) == 0o120000:
-                    continue
-                rel = zi.filename[len(prefix):] if prefix else zi.filename
-                if not rel:
-                    continue
-                dest_path = os.path.realpath(os.path.join(dest_real, rel))
-                if not (dest_path == dest_real or dest_path.startswith(dest_real + os.sep)):
-                    return {"status": False, "msg": "成员越界（路径穿越），已中止并清理"}
-                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                with zf.open(zi) as src_f, open(dest_path, "wb") as out_f:
-                    while True:
-                        chunk = src_f.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        written_total += len(chunk)
-                        if written_total > self._MAX_TOTAL_UNCOMPRESSED:
-                            raise ValueError(
-                                f"实际解压写入总量超出 "
-                                f"{self._MAX_TOTAL_UNCOMPRESSED // 1024 // 1024}MB 限制（疑似 zip 炸弹）"
-                            )
-                        out_f.write(chunk)
-                extracted += 1
+            from security_utils import UnsafeArchiveError, safe_extract_zip
+            extracted = safe_extract_zip(
+                zf,
+                target_dir,
+                strip_prefix=prefix,
+                max_total_bytes=self._MAX_TOTAL_UNCOMPRESSED,
+                max_members=self._MAX_MEMBERS,
+            )
+        except UnsafeArchiveError as e:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            return {"status": False, "msg": f"解压校验失败已回滚: {e!s}"}
         except Exception as e:
             shutil.rmtree(target_dir, ignore_errors=True)
             return {"status": False, "msg": f"解压失败已回滚: {e!s}"}
@@ -655,38 +640,26 @@ class SkillManager:
 
         # 内网地址默认拒绝（防 SSRF）；设置 AI_AGENT_SKILL_ALLOW_PRIVATE=1 可放行内网技能仓库
         allow_private = os.environ.get("AI_AGENT_SKILL_ALLOW_PRIVATE", "").strip().lower() in ("1", "true", "yes")
-        try:
-            from urllib.parse import urlparse
-            host = urlparse(url).hostname or ""
-            if not allow_private and self._is_private_host(host):
-                return {"status": False, "msg": f"拒绝访问内网/本机地址: {host}（如需允许内网源，设置环境变量 AI_AGENT_SKILL_ALLOW_PRIVATE=1）"}
-        except Exception:
-            logger.warning("未处理的异常", exc_info=True)
         download_url = self._normalize_skill_source_url(url)
 
+        from security_utils import UnsafeURLError, fetch_public_url
         try:
-            resp = _requests.get(download_url, timeout=(10, 60), stream=True,
-                                 headers={"User-Agent": "ai-agent-skill-installer"})
+            data, final_url = fetch_public_url(
+                download_url,
+                timeout=(10, 60),
+                headers={"User-Agent": "ai-agent-skill-installer"},
+                max_bytes=self._MAX_DOWNLOAD_BYTES,
+                allow_private=allow_private,
+            )
+        except UnsafeURLError as e:
+            return {"status": False, "msg": str(e)}
         except _requests.Timeout:
             return {"status": False, "msg": "下载超时"}
         except Exception as e:
-            return {"status": False, "msg": f"下载失败: {e!s}"}
+            logger.warning("技能下载失败: %s", e, exc_info=True)
+            return {"status": False, "msg": "下载失败"}
 
-        if resp.status_code != 200:
-            return {"status": False, "msg": f"下载失败，HTTP {resp.status_code}: {download_url}"}
-
-        chunks = []
-        total = 0
-        try:
-            for chunk in resp.iter_content(chunk_size=65536):
-                total += len(chunk)
-                if total > self._MAX_DOWNLOAD_BYTES:
-                    return {"status": False, "msg": "文件超过 30MB 下载上限"}
-                chunks.append(chunk)
-        except Exception as e:
-            return {"status": False, "msg": f"下载中断: {e!s}"}
-
-        data = b"".join(chunks)
+        download_url = final_url
         if not data:
             return {"status": False, "msg": "下载内容为空"}
         # 简单校验确实是 ZIP（PK 头），避免把 HTML 错误页当包安装

@@ -60,11 +60,16 @@ def sync_catalog() -> dict[str, Any]:
             os.replace(tmp_zip, zip_path)
         logger.info("ZIP 已缓存: %s (%d bytes)", zip_path, os.path.getsize(zip_path))
 
-    # 2. 解压到临时目录
+    # 2. 解压到临时目录（校验全部成员，拒绝路径穿越/链接/特殊文件）
     tmp_dir = tempfile.mkdtemp(prefix="wb_conn_sync_")
     try:
+        from security_utils import UnsafeArchiveError, safe_extract_zip
         with zipfile.ZipFile(zip_path) as z:
-            z.extractall(tmp_dir)
+            try:
+                safe_extract_zip(z, tmp_dir)
+            except UnsafeArchiveError as exc:
+                logger.error("WorkBuddy 配置包校验失败: %s", exc)
+                return {"ok": False, "error": f"配置包校验失败: {exc}"}
         extracted = os.path.join(tmp_dir, "connectors-config")
         if not os.path.isdir(extracted):
             extracted = tmp_dir
