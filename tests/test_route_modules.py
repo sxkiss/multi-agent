@@ -50,6 +50,18 @@ EXPECTED = {
     ("GET", "/api/codex/status"),
     ("POST", "/api/codex/test"),
     ("GET", "/api/opencode/status"),
+    ("GET", "/api/guard/rules"),
+    ("POST", "/api/guard/reload"),
+    ("GET", "/api/hitl/pending"),
+    ("POST", "/api/hitl/decide"),
+    ("GET", "/api/slash/commands"),
+    ("POST", "/api/slash/run"),
+    ("GET", "/api/skills/packages"),
+    ("GET", "/api/kb/jobs"),
+    ("GET", "/api/proactive/status"),
+    ("GET", "/api/conversation/modes"),
+    ("GET", "/api/experts"),
+    ("GET", "/api/experts/{expert_id}"),
 }
 
 
