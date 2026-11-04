@@ -62,6 +62,12 @@ EXPECTED = {
     ("GET", "/api/conversation/modes"),
     ("GET", "/api/experts"),
     ("GET", "/api/experts/{expert_id}"),
+    ("GET", "/api/mp/profile"),
+    ("POST", "/api/mp/profile"),
+    ("POST", "/api/mp/bot/qrcode"),
+    ("GET", "/api/mp/bot/status"),
+    ("POST", "/api/mp/bot/disconnect"),
+    ("POST", "/api/service/token"),
 }
 
 
