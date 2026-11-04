@@ -68,6 +68,20 @@ EXPECTED = {
     ("GET", "/api/mp/bot/status"),
     ("POST", "/api/mp/bot/disconnect"),
     ("POST", "/api/service/token"),
+    ("POST", "/api/auth/card/verify"),
+    ("GET", "/api/card/admin/list"),
+    ("POST", "/api/card/admin/create"),
+    ("POST", "/api/card/admin/update"),
+    ("POST", "/api/card/admin/delete"),
+    ("GET", "/api/card/user/config"),
+    ("POST", "/api/card/user/config"),
+    ("GET", "/api/card/mcp/servers"),
+    ("POST", "/api/card/mcp/servers/add"),
+    ("POST", "/api/card/mcp/servers/remove"),
+    ("POST", "/api/card/mcp/servers/install"),
+    ("GET", "/api/card/skills"),
+    ("POST", "/api/card/skills/install"),
+    ("POST", "/api/card/skills/uninstall"),
 }
 
 
