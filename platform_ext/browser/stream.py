@@ -239,9 +239,11 @@ async def browser_stream_ws(
     width: int = Query(default=1280),
     height: int = Query(default=800),
 ) -> None:
-    # 若启用了鉴权则强制校验；未启用时放行（与 BT 全局中间件一致）
-    if token and not _verify_ws_token(token):
-        await websocket.close(code=4001, reason="invalid token")
+    # 强制校验 JWT：免鉴权页面 ≠ 免鉴权数据流。
+    # 未带 token 或 token 无效一律拒绝（页面 JS 会从 localStorage 取
+    # bt_agent_token 拼到 ?token= 上，已登录用户不受影响）。
+    if not token or not _verify_ws_token(token):
+        await websocket.close(code=4001, reason="unauthorized")
         return
     await websocket.accept()
 
