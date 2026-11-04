@@ -82,6 +82,9 @@ EXPECTED = {
     ("GET", "/api/card/skills"),
     ("POST", "/api/card/skills/install"),
     ("POST", "/api/card/skills/uninstall"),
+    ("GET", "/"),
+    ("GET", "/api/agent/run"),
+    ("POST", "/api/agent/run"),
 }
 
 

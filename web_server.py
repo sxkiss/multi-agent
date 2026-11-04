@@ -4081,20 +4081,9 @@ async def _params(request: Request) -> dict:
     return params
 
 
-@app.get("/")
-async def index(request: Request):
-    """Serve the main HTML page. 卡密用户重定向到卡密登录页。"""
-    from auth import extract_token, is_card_token
-    from fastapi.responses import RedirectResponse
-    token = extract_token(request)
-    if token and is_card_token(BASE_DIR, token):
-        # 真正的 HTTP 302 重定向，浏览器跳转卡密页面
-        return RedirectResponse(url="/static/card-login.html", status_code=302)
-
-    index_path = os.path.join(BASE_DIR, "index.html")
-    response = FileResponse(index_path, media_type="text/html")
-    response.headers["Cache-Control"] = "no-store"
-    return response
+# ── 首页与 Agent 入口路由（已抽离到 entry_routes.py）──────────────────
+from entry_routes import register_entry_routes as _register_entry_routes
+_register_entry_routes(app, BASE_DIR, agent_main)
 
 
 # ── 系统管理路由（已抽离到 admin_routes.py）──────────────────────────
@@ -4145,49 +4134,6 @@ _register_file_routes(app, BASE_DIR)
 from knowledge_routes import register_knowledge_routes as _register_knowledge_routes
 from knowledge_routes import _kb_instance  # 兼容旧调用
 _register_knowledge_routes(app, BASE_DIR)
-
-
-@app.get("/api/agent/run")
-async def api_agent_run_get(request: Request):
-    params = dict(request.query_params)
-    return StreamingResponse(
-        agent_main.run_agent(params),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    )
-
-
-@app.post("/api/agent/run")
-async def api_agent_run_post(request: Request):
-    params = dict(request.query_params)
-    try:
-        body = await request.json()
-        if isinstance(body, dict):
-            params.update(body)
-    except Exception:
-        logger.warning("plugin SSE streaming 参数提取异常", exc_info=True)
-    return StreamingResponse(
-        agent_main.run_agent(params),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    )
-
-
-# 装载失败不得影响主服务：包在 try 里，仅记录日志。
-try:
-    from connector_hub.connectors_api import router as _connector_hub_router
-    app.include_router(_connector_hub_router)
-    logger.info("[connector-hub] 连接器路由已挂载: /api/v2/connectors/*")
-
-    @app.get("/connectors")
-    async def _connector_hub_page():
-        """连接器管理可视化面板（免鉴权页面，内部 XHR 走 JWT）。"""
-        p = os.path.join(BASE_DIR, "static", "connectors.html")
-        if os.path.exists(p):
-            return FileResponse(p, media_type="text/html")
-        return JSONResponse(public.returnMsg(False, "连接器面板文件缺失"))
-except Exception:  # noqa: BLE001
-    logger.exception("[connector-hub] 连接器路由挂载失败（主服务继续运行）")
 
 
 # ── 平台扩展层（/api/v2/{teams,channels,storage,usage,gateway,memory}/*，不破坏现有 /api/*）──
