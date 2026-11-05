@@ -4,9 +4,9 @@
 聊天（chat_start）、SSE 事件流、任务状态与停止；通过 mixin 复用提示词构建
 （PromptMixin）与工作空间（WorkspaceMixin）方法。
 
-注意：方法体内除 self.* 外还引用了宿主模块的若干模块级辅助符号
-（SSE 片段映射、会话校验、任务管理器、终端渠道判定），它们在本模块末尾
-从 web_server / agent_session 反向导入，以保证方法体零改动、行为一致。
+注意：方法体内除 self.* 外还引用了 SSE 片段映射、终端渠道判定（定义在
+channel_utils.py）与会话校验、任务管理器（agent_session / chat_jobs），
+均为单向依赖，不再回指 web_server。
 """
 from __future__ import annotations
 
@@ -20,6 +20,13 @@ import time
 import public
 
 from agent_session import _validate_session_id
+from chat_jobs import chat_jobs
+from channel_utils import (
+    HIDDEN_EVENTS_FOR_TERMINAL,
+    _client_channel,
+    _is_terminal_channel,
+    _map_agent_chunk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -424,12 +431,3 @@ class ChatFlowMixin:
         return public.return_data(True, data={"stopped": len(targets)})
 
 
-
-# ── 宿主模块辅助符号（类定义之后绑定，兼容双向导入，避免循环导入）──────────
-from web_server import (  # noqa: E402
-    HIDDEN_EVENTS_FOR_TERMINAL,
-    _client_channel,
-    _is_terminal_channel,
-    _map_agent_chunk,
-    chat_jobs,
-)

@@ -452,3 +452,8 @@ class ChatJobManager:
 
 
 
+
+
+# 模块级单例：web_server 与 agent_chat_flow 共享同一任务管理器实例。
+# 实例化不依赖路径（__init__ 只用 dict/RLock），路径由 web_server 注入 provider。
+chat_jobs = ChatJobManager()

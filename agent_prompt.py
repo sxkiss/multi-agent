@@ -4,9 +4,8 @@
 RAG 上下文注入、图片内容块归一化与聊天 Agent 装配；通过 mixin 复用
 self.config / self.plugin_path 及 WorkspaceMixin / OrgSkillMixin 的方法。
 
-注意：方法体内除 self.* 外还引用了宿主模块的若干模块级辅助符号
-（终端渠道判定、小程序人设、SSE 片段映射等），它们在本模块末尾从
-web_server 反向导入，以保证方法体零改动、行为完全一致。
+注意：方法体内除 self.* 外还引用了渠道判定、小程序人设等模块级辅助符号，
+它们统一定义在 channel_utils.py，本模块单向依赖该模块。
 """
 from __future__ import annotations
 
@@ -18,6 +17,13 @@ import os
 import sys
 
 import public
+
+from channel_utils import (
+    _MINIPROGRAM_SINGLE_PERSONA,
+    _append_miniprogram_guard,
+    _client_channel,
+    _is_terminal_channel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -580,11 +586,3 @@ class PromptMixin:
         return agent, user_input, None
 
 
-
-# ── 宿主模块辅助符号（类定义之后绑定，兼容双向导入，避免循环导入）──────────
-from web_server import (  # noqa: E402
-    _MINIPROGRAM_SINGLE_PERSONA,
-    _append_miniprogram_guard,
-    _client_channel,
-    _is_terminal_channel,
-)
