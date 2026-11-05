@@ -89,6 +89,7 @@ class Agent:
     # 服务/容器类工具 → 资源键为服务名/容器名（同目标串行，异目标并行）
     _RESOURCE_TOOLS: dict[str, tuple[str, ...]] = {
         "ScheduleTask": ("name",),
+        "restart_service": ("service_name",),
 
     }
     # 只读工具：无写资源，自由并行

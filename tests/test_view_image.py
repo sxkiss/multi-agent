@@ -1,30 +1,29 @@
 #!/usr/bin/env python
 """
-ViewImage 看图工具测试
+ViewImage 识图工具测试
 
-覆盖：
-- 正常图片返回元信息 + Markdown data URL（前端可直接渲染）
-- return_base64=False 只返回元信息
-- 非法扩展名 / 文件不存在 / 目录 / 敏感路径 / 超大图片均报错
+对齐当前实现（c7c07fe 之后：ViewImage 改为真正的识图工具，调用多模态 API）：
+- 正常图片：校验通过后调用 API，返回识图结果与图片/模型/提示词元信息
+- 非法扩展名 / 文件不存在 / 目录 / 敏感路径 / 超大图片均本地报错（中文文案）
 - 相对路径按项目根解析
 
-运行：
-    .venv/bin/python -m pytest tests/test_view_image.py -q
+网络一律用 mock 桩替换，避免测试真实调用上游 API。
 """
 
-import base64
-import io
 import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+import requests  # noqa: E402
 from PIL import Image  # noqa: E402
 
+import chat_client.tools.view_image as vi  # noqa: E402
 from chat_client.tools.view_image import (  # noqa: E402
     IMAGE_EXTENSIONS,
     MAX_IMAGE_SIZE,
@@ -38,31 +37,65 @@ def _make_png(path: str, size=(4, 4), color=(255, 0, 0)) -> None:
     img.save(path, format="PNG")
 
 
+class _FakeResponse:
+    """requests.post 的最小桩，模拟 OpenAI 兼容的 chat/completions 响应。"""
+
+    def __init__(self, text="FAKE_RECOGNITION", status=200):
+        self._text = text
+        self.status_code = status
+        self.text = text
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(response=self)
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._text}}]}
+
+
 class ViewImageTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.png = os.path.join(self.tmp.name, "sample.png")
         _make_png(self.png)
+        # 固定 API 配置，避免依赖 config.json 或走多模态 fallback 端点
+        for patcher in (
+            mock.patch.object(vi, "_load_api_config",
+                              return_value=("http://fake.local/v1", "test-key", "fake-vl")),
+            mock.patch.object(vi, "_load_mm_config", return_value=("", "", "")),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
-    def test_valid_png_returns_markdown_data_url(self):
-        result = ViewImage(path=self.png)
+    def test_valid_png_returns_recognition_result(self):
+        with mock.patch("chat_client.tools.view_image.requests.post",
+                        return_value=_FakeResponse("测试识别结果")) as post:
+            result = ViewImage(path=self.png)
+
         self.assertIn("<toolcall_status>done</toolcall_status>", result)
-        self.assertIn("<size>4x4</size>", result)
-        self.assertIn("<format>PNG</format>", result)
-        # 默认 return_base64=False，输出相对路径 Markdown 图片链接
-        self.assertIn("![图片](", result)
+        self.assertIn("# 识图结果", result)
+        self.assertIn("**图片**", result)
+        self.assertIn("**模型**", result)
+        self.assertIn("测试识别结果", result)
+
+        # 当前实现把图片以 base64 data URL 发给视觉模型
+        payload = post.call_args.kwargs["json"]
+        image_url = payload["messages"][0]["content"][1]["image_url"]["url"]
+        self.assertTrue(image_url.startswith("data:image/png;base64,"))
+
+    def test_metadata_includes_path_and_model(self):
+        with mock.patch("chat_client.tools.view_image.requests.post",
+                        return_value=_FakeResponse("OK")):
+            result = ViewImage(path=self.png)
+
+        self.assertIn("<toolcall_status>done</toolcall_status>", result)
+        self.assertIn("# 识图结果", result)
+        self.assertIn("**图片**", result)
         self.assertIn("sample.png", result)
-        # 不含 data:image，因为默认不嵌入 base64
-        self.assertNotIn("data:image/png;base64,", result)
-
-    def test_metadata_includes_path_format_mode(self):
-        result = ViewImage(path=self.png, return_base64=False)
-        self.assertIn("<toolcall_status>done</toolcall_status>", result)
-        self.assertIn("<format>PNG</format>", result)
-        self.assertIn("<size>4x4</size>", result)
-        self.assertIn("<file_size>", result)
-        self.assertNotIn("data:image/", result)
+        self.assertIn("**模型**", result)
+        self.assertIn("fake-vl", result)
+        self.assertIn("**提示词**", result)
 
     def test_unsupported_extension_rejected(self):
         bad = os.path.join(self.tmp.name, "sample.txt")
@@ -70,17 +103,17 @@ class ViewImageTest(unittest.TestCase):
             f.write("not an image")
         result = ViewImage(path=bad)
         self.assertIn("<toolcall_status>error</toolcall_status>", result)
-        self.assertIn("Unsupported image extension", result)
+        self.assertIn("不支持的图片格式", result)
 
     def test_missing_file_rejected(self):
         result = ViewImage(path=os.path.join(self.tmp.name, "missing.png"))
         self.assertIn("<toolcall_status>error</toolcall_status>", result)
-        self.assertIn("File not found", result)
+        self.assertIn("文件不存在", result)
 
     def test_directory_rejected(self):
         result = ViewImage(path=self.tmp.name)
         self.assertIn("<toolcall_status>error</toolcall_status>", result)
-        self.assertIn("Not a file", result)
+        self.assertIn("不是文件", result)
 
     def test_sensitive_path_rejected(self):
         # /etc/shadow 无图片扩展名，扩展名校验已先拦截；结果必须是 error（安全）
@@ -95,10 +128,14 @@ class ViewImageTest(unittest.TestCase):
     def test_empty_path_rejected(self):
         result = ViewImage(path="")
         self.assertIn("<toolcall_status>error</toolcall_status>", result)
-        self.assertIn("File not found", result)
+        self.assertIn("文件不存在", result)
 
     def test_image_extensions_cover_common_formats(self):
-        self.assertTrue({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".ico"} <= IMAGE_EXTENSIONS)
+        # 当前实现支持的扩展名（已收敛，不含 .ico）
+        self.assertEqual(
+            IMAGE_EXTENSIONS,
+            {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif"},
+        )
 
     def test_safe_path_resolves_absolute(self):
         self.assertEqual(_safe_path(self.png), os.path.realpath(self.png))
@@ -112,12 +149,18 @@ class ViewImageTest(unittest.TestCase):
         self.assertEqual(_safe_path(rel), os.path.realpath(self.png))
 
     def test_corrupt_image_returns_error(self):
+        # 损坏/非图片文件应在本地校验阶段被拦截（PIL verify），根本不会发往上游 API。
+        with mock.patch("chat_client.tools.view_image.requests.post") as post:
+            result = ViewImage(path=self._corrupt_png())
+        self.assertIn("<toolcall_status>error</toolcall_status>", result)
+        self.assertIn("读取图片失败", result)
+        post.assert_not_called()
+
+    def _corrupt_png(self):
         bad = os.path.join(self.tmp.name, "corrupt.png")
         with open(bad, "wb") as f:
             f.write(b"not a real png")
-        result = ViewImage(path=bad)
-        self.assertIn("<toolcall_status>error</toolcall_status>", result)
-        self.assertIn("读取图片失败", result)
+        return bad
 
 
 class ViewImageSizeLimitTest(unittest.TestCase):
@@ -129,7 +172,7 @@ class ViewImageSizeLimitTest(unittest.TestCase):
                 f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * (MAX_IMAGE_SIZE + 1))
             result = ViewImage(path=big)
             self.assertIn("<toolcall_status>error</toolcall_status>", result)
-            self.assertIn("Image too large", result)
+            self.assertIn("图片过大", result)
 
 
 if __name__ == "__main__":

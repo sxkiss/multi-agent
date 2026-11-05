@@ -152,6 +152,12 @@ def _register_orphan_callback():
                  但会话维度稳定）。若主循环仍在运行则延迟重试，而非直接丢弃；
                  重试超限说明主循环已死，强制走孤儿 job 兜底回灌。
         """
+        # 防御：测试遗留的占位任务（如 t-pend-1/t-wake-1/t-full-1）不得回灌，
+        # 否则会形成「通知 → 新 job → 再通知」的死循环。
+        if task_id.startswith("t-") and str(result or "").strip() in ("", "OK", "DONE_RESULT"):
+            logger.info("[Background] 跳过测试遗留占位任务 task=%s", task_id[:12])
+            return
+
         retries = _ORPHAN_RETRY_COUNTER.get(task_id, 0)
         try:
             # R4 修复：检查是否正在派发中

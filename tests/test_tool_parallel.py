@@ -156,11 +156,18 @@ class TestResourceConflictParallel:
             assert ag._tool_resource_key(t, {}) == "·exclusive", t
 
     def test_service_resource_key(self):
+        """restart_service 按 service_name 细分资源键：异服务可并行、同名互斥。"""
         ag = self._agent()
-        assert ag._tool_resource_key("restart_service", {"service_name": "nginx"}) != \
-               ag._tool_resource_key("restart_service", {"service_name": "mysql"})
-        assert ag._tool_resource_key("restart_service", {"service_name": "nginx"}) == \
-               ag._tool_resource_key("restart_service", {"service_name": "nginx"})
+        nginx = ag._tool_resource_key("restart_service", {"service_name": "nginx"})
+        mysql = ag._tool_resource_key("restart_service", {"service_name": "mysql"})
+        # 不同 service_name → 不同资源键（可并行）
+        assert nginx != mysql
+        assert nginx != "·exclusive" and mysql != "·exclusive"
+        # 相同 service_name → 相同资源键（互斥串行）
+        again = ag._tool_resource_key("restart_service", {"service_name": "nginx"})
+        assert again == nginx
+        # 缺 service_name → 保守独占
+        assert ag._tool_resource_key("restart_service", {}) == "·exclusive"
 
     def test_grouping_mixed(self):
         """混合场景分组：异文件 Edit 并入同组并行，同文件落后续组。"""

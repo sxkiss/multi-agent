@@ -1840,6 +1840,23 @@ except Exception:  # noqa: BLE001
     logger.exception("[platform-ext] 浏览器路由挂载失败（主服务继续运行）")
 
 
+# ── 连接器中心（/api/v2/connectors/*）──
+try:
+    from connector_hub.connectors_api import router as _connector_hub_router
+    app.include_router(_connector_hub_router)
+    logger.info("[connector-hub] 连接器路由已挂载: /api/v2/connectors/*")
+
+    @app.get("/connectors")
+    async def _connector_hub_page():
+        """连接器管理可视化面板（免鉴权页面，内部 XHR 走 JWT）。"""
+        p = os.path.join(BASE_DIR, "static", "connectors.html")
+        if os.path.exists(p):
+            return FileResponse(p, media_type="text/html")
+        return JSONResponse(public.returnMsg(False, "连接器面板文件缺失"))
+except Exception:  # noqa: BLE001
+    logger.exception("[connector-hub] 连接器路由挂载失败（主服务继续运行）")
+
+
 # Static files
 static_dir = os.path.join(BASE_DIR, "static")
 if os.path.exists(static_dir):

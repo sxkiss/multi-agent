@@ -2,6 +2,7 @@ import glob
 import os
 import re
 import shutil
+import subprocess
 from datetime import datetime
 
 from . import PROJECT_ROOT, register_tool

@@ -356,15 +356,42 @@ def InstallExpert(name: str, department: str = "experts", member_name: str = "",
         identity: 可选身份补充（名字/定位/风格），会作为身份层拼进成员系统提示词
     """
     import re as _re
-    # 1. 取专家提示词 + 元数据
-    try:
-        key, prompt_text = fetch_expert_prompt(name)
-    except ValueError as e:
-        return _xml_response("error", str(e))
-    except Exception as e:
-        return _xml_response("error", f"获取专家提示词失败: {e!s}")
+    key = (name or "").strip()
+    if not key:
+        return _xml_response("error", "需要提供 name（专家标识）")
 
-    meta = find_expert_meta(key) or find_expert_meta(name)
+    # 1. 取专家提示词 + 元数据：本地专家库优先（离线可用、无需联网）
+    local_expert = None
+    try:
+        from .. import experts as _experts
+        _base = os.path.dirname(_MARKET_CACHE_DIR)  # bt 项目根目录
+        local_expert = _experts.get_catalog(_base).get(key)
+    except Exception as e:  # noqa: BLE001 - 本地库异常不影响市场回退
+        logger.debug("本地专家库查询失败（回退市场）: %s", e)
+        local_expert = None
+
+    local_tools: List[str] = []
+    if local_expert is not None:
+        key = local_expert.id or key
+        prompt_text = (local_expert.soul or "").strip()
+        if local_expert.identity.strip():
+            prompt_text = (prompt_text + "\n\n" + local_expert.identity.strip()).strip()
+        if not prompt_text:
+            prompt_text = (local_expert.description or local_expert.label or key).strip()
+        local_tools = list(local_expert.tools or [])
+        meta: Dict[str, Any] = {
+            "displayName": local_expert.label,
+            "description": local_expert.description,
+            "category": local_expert.category,
+        }
+    else:
+        try:
+            key, prompt_text = fetch_expert_prompt(key)
+        except ValueError as e:
+            return _xml_response("error", str(e))
+        except Exception as e:
+            return _xml_response("error", f"获取专家提示词失败: {e!s}")
+        meta = find_expert_meta(key) or find_expert_meta(name)
     display = _expert_field(meta, "displayName", "name", "Name", "title") if meta else ""
     desc = _expert_field(meta, "description", "desc", "summary", "intro") if meta else ""
     category = _expert_field(meta, "categoryName", "category", "group", "type") if meta else ""
@@ -390,7 +417,7 @@ def InstallExpert(name: str, department: str = "experts", member_name: str = "",
         "Read", "Glob", "Grep", "Write", "Edit", "Bash",
         "WebSearch", "WebFetch", "TodoWrite", "Skills",
     ]
-    grant = tools if tools else default_tools
+    grant = tools if tools else (local_tools or default_tools)
 
     # 5. 落地：复用 task.py 的部门/成员持久化逻辑（延迟导入避免循环依赖）
     from .task import _CREW_LOCK, _crew_load_file, _crew_save_file, reload_custom_agents
