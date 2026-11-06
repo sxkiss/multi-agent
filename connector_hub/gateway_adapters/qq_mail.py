@@ -6,7 +6,10 @@ import contextlib
 import email
 import imaplib
 import json
+import queue
 import smtplib
+import threading
+import time
 from email import policy
 from email.mime.text import MIMEText
 from typing import Any
@@ -104,7 +107,7 @@ def _safe_header(msg: email.message.Message, field: str) -> str:
 def _email_search(creds: dict[str, Any], args: dict[str, Any]) -> str:
     query = str(args.get("query") or "ALL")
     limit = int(args.get("limit") or 10)
-    imap = _imap_login(creds)
+    imap = _imap_session(creds)
     try:
         imap.select("INBOX")
         # NetEase rejects CHARSET UTF-8 on UID SEARCH; omit charset for compatibility.
@@ -129,15 +132,14 @@ def _email_search(creds: dict[str, Any], args: dict[str, Any]) -> str:
             )
         return json.dumps(out, ensure_ascii=False, indent=2)
     finally:
-        with contextlib.suppress(Exception):
-            imap.logout()
+        _release(creds, imap)
 
 
 def _email_read(creds: dict[str, Any], args: dict[str, Any]) -> str:
     uid = str(args.get("uid") or "").strip()
     if not uid:
         raise ValueError("uid is required")
-    imap = _imap_login(creds)
+    imap = _imap_session(creds)
     try:
         imap.select("INBOX")
         _typ, msg_data = imap.uid("fetch", uid, "(RFC822)")
@@ -157,8 +159,7 @@ def _email_read(creds: dict[str, Any], args: dict[str, Any]) -> str:
             indent=2,
         )
     finally:
-        with contextlib.suppress(Exception):
-            imap.logout()
+        _release(creds, imap)
 
 
 def _email_send(creds: dict[str, Any], args: dict[str, Any]) -> str:
@@ -206,16 +207,153 @@ def _imap_login(creds: dict[str, Any]) -> imaplib.IMAP4_SSL:
     return imap
 
 
+# ---------------------------------------------------------------------------
+# IMAP 连接池 + 登录重试
+#
+# 背景：QQ 邮箱 IMAP 对频繁登录有风控（AUTHENTICATIONFAILED / Login fail...
+# login frequency limited）。旧实现每次工具调用都新建+登出连接，连续两次调用
+# （如 search 后立刻 read）就会触发限制，只能靠人工等待恢复。
+#
+# 方案：
+# 1) 连接池复用已登录连接，同一邮箱的操作共用连接，减少登录次数；
+# 2) 登录失败时带退避重试（覆盖瞬时风控），重试仍失败才抛出。
+# 池子按 (user, host, port) 键缓存；凭据变化时旧连接作废。空闲连接超过
+# _POOL_IDLE_TTL 或被服务器断开时自动丢弃重建。
+# ---------------------------------------------------------------------------
+
+_POOL_IDLE_TTL = 240.0  # 秒；QQ 邮箱 IMAP 空闲超时较短，复用窗口保守取值
+_LOGIN_RETRIES = 3
+_LOGIN_RETRY_DELAYS = (2.0, 8.0)  # 第一次重试前等 2s，第二次等 8s
+
+_pool_lock = threading.Lock()
+_pool: dict[tuple[str, str, int], "queue.Queue[tuple[float, imaplib.IMAP4_SSL]]"] = {}
+_pool_creds_sig: dict[tuple[str, str, int], str] = {}
+
+
+def _creds_sig(creds: dict[str, Any]) -> str:
+    return json.dumps(
+        [str(creds.get("email") or ""), str(creds.get("password") or ""),
+         str(creds.get("imap_host") or ""), str(creds.get("imap_port") or "")],
+        ensure_ascii=False,
+    )
+
+
+def _pool_get(user: str, host: str, port: int, sig: str) -> imaplib.IMAP4_SSL | None:
+    key = (user, host, port)
+    with _pool_lock:
+        if _pool_creds_sig.get(key) != sig:
+            # 凭据已变化：清空该键下的旧连接
+            old = _pool.pop(key, None)
+            _pool_creds_sig.pop(key, None)
+            if old is not None:
+                _drain(old)
+            return None
+        q = _pool.get(key)
+        if not q:
+            return None
+        try:
+            born, imap = q.get_nowait()
+        except queue.Empty:
+            return None
+    if time.monotonic() - born > _POOL_IDLE_TTL:
+        _safe_logout(imap)
+        return None
+    # NOOP 既保活也校验连接仍可用；失败则丢弃
+    try:
+        if imap.noop()[0] != "OK":
+            raise imaplib.IMAP4.error("NOOP not OK")
+    except Exception:
+        _safe_logout(imap)
+        return None
+    return imap
+
+
+def _pool_put(user: str, host: str, port: int, sig: str, imap: imaplib.IMAP4_SSL) -> None:
+    key = (user, host, port)
+    with _pool_lock:
+        stored = _pool_creds_sig.get(key)
+        if stored is not None and stored != sig:
+            _safe_logout(imap)
+            return
+        _pool_creds_sig[key] = sig
+        q = _pool.setdefault(key, queue.Queue(maxsize=2))
+        try:
+            q.put_nowait((time.monotonic(), imap))
+        except queue.Full:
+            _safe_logout(imap)
+
+
+def _drain(q: "queue.Queue[tuple[float, imaplib.IMAP4_SSL]]") -> None:
+    while True:
+        try:
+            _born, imap = q.get_nowait()
+        except queue.Empty:
+            return
+        _safe_logout(imap)
+
+
+def _safe_logout(imap: imaplib.IMAP4_SSL) -> None:
+    with contextlib.suppress(Exception):
+        imap.logout()
+
+
+def _release(creds: dict[str, Any], imap: imaplib.IMAP4_SSL) -> None:
+    """Return a pooled connection after a tool call, or drop it if broken."""
+    user = str(creds.get("email") or "")
+    try:
+        if imap.socket() is None:
+            raise imaplib.IMAP4.error("connection already closed")
+        if imap.noop()[0] != "OK":
+            raise imaplib.IMAP4.error("NOOP not OK")
+        host = getattr(imap, "host", "") or ""
+        port = int(getattr(imap, "port", 0) or 0)
+        _pool_put(user, host, port, _creds_sig(creds), imap)
+    except Exception:
+        _safe_logout(imap)
+
+
+def _is_login_rate_limit_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "authenticationfailed" in text or "login fail" in text or "frequency" in text
+
+
+def _imap_session(creds: dict[str, Any]) -> imaplib.IMAP4_SSL:
+    """Return a logged-in IMAP connection: pool first, fresh login with retry otherwise."""
+    user = str(creds.get("email") or "")
+    host = correct_netease_imap_host(user, creds.get("imap_host"))
+    port = int(creds.get("imap_port") or 993)
+    sig = _creds_sig(creds)
+
+    imap = _pool_get(user, host, port, sig)
+    if imap is not None:
+        return imap
+
+    last_exc: BaseException | None = None
+    for attempt in range(_LOGIN_RETRIES):
+        try:
+            fresh = _imap_login(creds)
+            try:
+                if fresh.select("INBOX")[0] != "OK":
+                    raise imaplib.IMAP4.error("SELECT INBOX failed on fresh login")
+            except Exception:
+                _safe_logout(fresh)
+                raise
+            _pool_put(user, host, port, sig, fresh)
+            return fresh
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < _LOGIN_RETRIES - 1 and _is_login_rate_limit_error(exc):
+                time.sleep(_LOGIN_RETRY_DELAYS[min(attempt, len(_LOGIN_RETRY_DELAYS) - 1)])
+                continue
+            raise
+    raise last_exc  # pragma: no cover
+
+
 def probe_credentials(creds: dict[str, Any]) -> None:
     """Validate mailbox credentials via IMAP login + INBOX select."""
-    imap = _imap_login(creds)
-    try:
-        typ, _data = imap.select("INBOX")
-        if typ != "OK":
-            raise imaplib.IMAP4.error(f"SELECT INBOX failed: {_data}")
-    finally:
-        with contextlib.suppress(Exception):
-            imap.logout()
+    # _imap_session already SELECTs INBOX on fresh logins and raises on failure;
+    # pooled connections are kept alive for reuse instead of being logged out.
+    _imap_session(creds)
 
 
 def _decode_payload(part: email.message.Message, payload: bytes) -> str:
