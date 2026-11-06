@@ -244,8 +244,8 @@ class TestKnowledge:
 class TestViewImage:
     def test_view_image_nonexistent(self):
         from chat_client.tools.view_image import ViewImage
-        result = ViewImage(path="/nonexistent/image.png", return_base64=False)
-        assert "error" in str(result).lower() or "not found" in str(result).lower()
+        result = ViewImage(path="/nonexistent/image.png")
+        assert "error" in str(result).lower() or "文件不存在" in str(result)
 
     def test_view_image_safe_path(self):
         from chat_client.tools.view_image import _safe_path

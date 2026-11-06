@@ -36,6 +36,8 @@ class _FakeJob:
     """极简 fake job：记录 append，供 _persist_result 落盘调用。"""
 
     def __init__(self):
+        # 对齐 ChatJob 接口：task.py 注册后台任务时会读取 parent_job.key
+        self.key = "fake-job"
         self.events = []
         self.closed = False
 
@@ -50,6 +52,8 @@ def fake_job():
     job = _FakeJob()
     set_current_job(job)
     yield job
+    # 清理线程级 job，避免 _FakeJob 泄漏到后续测试（Task 会读取 parent_job.key）
+    set_current_job(None)
 
 
 class TestBackgroundResultPersistence:
@@ -93,17 +97,22 @@ class TestBackgroundResultPersistence:
         assert waited < 2.0, f"wake event 未被及时 set，等待了 {waited:.2f}s"
         assert bg.pending_count(sid) == 0, "任务完成后 pending_count 应归零"
 
-    def test_pending_count_zero_after_done(self):
-        """任务 done/failed 后 pending_count 归零，主循环可收尾。"""
+    def test_pending_count_zero_after_done(self, fake_job):
+        """任务 done/failed 后 pending_count 归零，主循环可收尾。
+
+        注意：必须使用测试专属的 session_id / task_id，且挂 fake_job。
+        早期版本直接用 "pending-session" / "t-pend-1"，会写进生产使用中的
+        同名会话与任务记录，导致真实会话被反复注入「后台任务完成」通知。
+        """
         from chat_client.tools import get_background_manager
 
         bg = get_background_manager()
-        sid = "pending-session"
-        bg.register("t-pend-1", "RunCrew", (), None, sid)
+        sid = "unittest-pending-session"
+        bg.register("t-unittest-pend-1", "RunCrew", (), None, sid)
         # register 后状态为 pending，pending_count 只数 running，所以是 0
         assert bg.pending_count(sid) == 0
 
-        bg.notify_done("t-pend-1", "OK")
+        bg.notify_done("t-unittest-pend-1", "OK")
         # notify_done 后 status 变为 done，仍不是 running，所以还是 0
         assert bg.pending_count(sid) == 0
 
@@ -162,7 +171,7 @@ class TestRunCrewAsync:
         from chat_client.tools.task import RunCrew
 
         t0 = time.time()
-        out = RunCrew(objective="快速验证目标", agents="coder", max_steps=1, parallel=False)
+        out = RunCrew(objective="快速验证目标", agents=["coder"], max_steps=1, parallel=False)
         elapsed = time.time() - t0
 
         assert elapsed < 0.5, f"RunCrew 未立即返回，耗时 {elapsed:.2f}s"

@@ -86,11 +86,28 @@ def _safe_path(path: str) -> str:
     return os.path.realpath(os.path.abspath(p))
 
 
+def _verify_image(image_path: str) -> None:
+    """本地校验图片完整性；损坏/非图片抛 ValueError，避免白烧上游调用。
+
+    注：PIL 不可用时降级为不校验（交给上游判断），不阻塞正常流程。
+    """
+    try:
+        from PIL import Image
+    except Exception:  # noqa: BLE001 - Pillow 缺失时降级
+        return
+    try:
+        with Image.open(image_path) as im:
+            im.verify()  # verify 后对象不可再用，故只做校验
+    except Exception as e:  # noqa: BLE001 - 任何解码异常都视为损坏
+        raise ValueError(f"不是有效的图片文件（{e.__class__.__name__}）") from e
+
+
 def _read_image_as_base64(image_path: str) -> tuple[str, str]:
     """读取图片并转为base64 data URL，返回(mime_type, data_url)"""
     mime = mimetypes.guess_type(image_path)[0] or "image/jpeg"
     with open(image_path, "rb") as f:
         raw = f.read()
+    _verify_image(image_path)
     b64 = base64.b64encode(raw).decode("ascii")
     data_url = f"data:{mime};base64,{b64}"
     return mime, data_url

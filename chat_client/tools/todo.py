@@ -25,6 +25,21 @@ class TodoPriority(str, Enum):
     LOW = "low"
 
 
+def _coerce_enum(value: Any, enum_cls: type, default):
+    """枚举值容错：合法值直接使用，非法/缺失回退默认值，绝不抛异常。
+
+    兼容传入枚举成员本身（merge 分支会传 TodoStatus/TodoPriority 对象）。
+    """
+    if isinstance(value, enum_cls):
+        return value
+    if isinstance(value, str):
+        try:
+            return enum_cls(value)
+        except ValueError:
+            return default
+    return default
+
+
 class TodoItem:
     def __init__(self, content: str, status: TodoStatus = TodoStatus.PENDING,
                  id: str | None = None, priority: TodoPriority = TodoPriority.MEDIUM):
@@ -43,11 +58,18 @@ class TodoItem:
     
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> 'TodoItem':
+        # data 可能不是 dict（模型脏数据），防御 .get
+        if not isinstance(data, dict):
+            raise ValueError("todo 条目不是对象")
+        content = data.get("content")
+        # content 缺失/为空/非字符串 → 视为非法，绝不造出无意义的空 todo
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("todo 条目缺少 content")
         return cls(
-            content=data["content"],
-            status=TodoStatus(data.get("status", "pending")),
+            content=content,
+            status=_coerce_enum(data.get("status"), TodoStatus, TodoStatus.PENDING),
             id=data.get("id"),
-            priority=TodoPriority(data.get("priority", "medium"))
+            priority=_coerce_enum(data.get("priority"), TodoPriority, TodoPriority.MEDIUM)
         )
 
 
@@ -84,6 +106,10 @@ class TodoManager:
         self.session_id = safe
         self.session_dir = os.path.join(sessions_dir, safe)
         self.file_path = os.path.join(self.session_dir, "todos.json")
+        # 最近一次 update_todos 的脏数据诊断信息，供 TodoWrite 组装可读提示
+        self.last_errors: list[str] = []
+        self.last_input_invalid: bool = False
+        self.last_accepted: int = 0
         self._ensure_sessions_dir()
     
     def _ensure_sessions_dir(self):
@@ -96,11 +122,21 @@ class TodoManager:
     def get_todos(self) -> list[TodoItem]:
         if not os.path.exists(self.file_path):
             return []
-        
+
         try:
             with open(self.file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                return [TodoItem.from_dict(item) for item in data]
+            if not isinstance(data, list):
+                return []
+            todos = []
+            for item in data:
+                # 逐条容错：历史文件里若有缺 content 的脏条目，只跳过该条，
+                # 保留其余合法条目，不让整个读取退化为空列表
+                try:
+                    todos.append(TodoItem.from_dict(item))
+                except (ValueError, TypeError, KeyError):
+                    logger.warning("读取 todo 时跳过非法条目: %r", item)
+            return todos
         except Exception:
             return []
     
@@ -112,27 +148,59 @@ class TodoManager:
         except Exception:
             logger.warning("未处理的异常", exc_info=True)
     def update_todos(self, new_todos_data: list[dict[str, Any]], merge: bool = False) -> list[TodoItem]:
+        # 每次调用重置诊断信息
+        self.last_errors = []
+        self.last_input_invalid = False
+        self.last_accepted = 0
+
+        # 整体输入非法（dict/None/字符串等）：不动现有数据，返回明确失败信号
+        if not isinstance(new_todos_data, list):
+            self.last_input_invalid = True
+            self.last_errors.append(
+                f"todos 应为数组(list)，实际为 {type(new_todos_data).__name__}，本次写入已忽略"
+            )
+            return self.get_todos()
+
         if merge:
             current_todos = self.get_todos()
             current_map = {t.id: t for t in current_todos}
-            
-            for item_data in new_todos_data:
-                item_id = item_data.get("id")
-                if item_id and item_id in current_map:
-                    # Update existing
-                    existing = current_map[item_id]
-                    existing.content = item_data.get("content", existing.content)
-                    existing.status = TodoStatus(item_data.get("status", existing.status))
-                    existing.priority = TodoPriority(item_data.get("priority", existing.priority))
-                else:
-                    # Add new
-                    new_item = TodoItem.from_dict(item_data)
-                    current_todos.append(new_item)
-            
+
+            for idx, item_data in enumerate(new_todos_data, 1):
+                try:
+                    if not isinstance(item_data, dict):
+                        raise ValueError("todo 条目不是对象")
+                    item_id = item_data.get("id")
+                    if item_id and item_id in current_map:
+                        # 更新已有条目：content 非法时保留原值；枚举非法回退原值，
+                        # 避免把脏数据覆盖进合法条目
+                        existing = current_map[item_id]
+                        content = item_data.get("content")
+                        if isinstance(content, str) and content.strip():
+                            existing.content = content
+                        existing.status = _coerce_enum(
+                            item_data.get("status", existing.status),
+                            TodoStatus, existing.status)
+                        existing.priority = _coerce_enum(
+                            item_data.get("priority", existing.priority),
+                            TodoPriority, existing.priority)
+                    else:
+                        new_item = TodoItem.from_dict(item_data)
+                        current_todos.append(new_item)
+                        current_map[new_item.id] = new_item
+                    self.last_accepted += 1
+                except (ValueError, TypeError, KeyError) as e:
+                    self.last_errors.append(f"第 {idx} 条已跳过：{e}")
+
             final_todos = current_todos
         else:
-            final_todos = [TodoItem.from_dict(item) for item in new_todos_data]
-        
+            final_todos = []
+            for idx, item in enumerate(new_todos_data, 1):
+                try:
+                    final_todos.append(TodoItem.from_dict(item))
+                    self.last_accepted += 1
+                except (ValueError, TypeError, KeyError) as e:
+                    self.last_errors.append(f"第 {idx} 条已跳过：{e}")
+
         self.save_todos(final_todos)
         return final_todos
 
@@ -233,20 +301,30 @@ def TodoWrite(todos: list[dict[str, Any]], merge: bool = False, summary: str | N
     sessions_dir = kwargs.get("sessions_dir", "sessions")
     if not session_id:
         return _xml_response("error", "Session ID not found in context.")
-        
-    manager = TodoManager(session_id, sessions_dir=sessions_dir)
-    updated_todos = manager.update_todos(todos, merge=merge)
-    
-    pending_count = len([t for t in updated_todos if t.status != "completed"])
-    
-    output = {
-        "title": f"{pending_count} todos",
-        "output": json.dumps([t.to_dict() for t in updated_todos], indent=2, ensure_ascii=False),
-        "metadata": {
-            "todos": [t.to_dict() for t in updated_todos]
-        }
-    }
-    
-    result_str = output['output']
-        
-    return _xml_response("done", result_str)
+
+    try:
+        manager = TodoManager(session_id, sessions_dir=sessions_dir)
+        updated_todos = manager.update_todos(todos, merge=merge)
+
+        # 整体输入非法（todos 不是 list）：明确失败信号，绝不当作成功
+        if manager.last_input_invalid:
+            msg = "; ".join(manager.last_errors) or "todos 参数格式非法"
+            return _xml_response("error", msg)
+
+        pending_count = len([t for t in updated_todos if t.status != "completed"])
+        result_str = json.dumps(
+            [t.to_dict() for t in updated_todos], indent=2, ensure_ascii=False)
+
+        # 脏条目提示：明确告知模型写入了多少条、跳过了多少条及原因，
+        # 不静默丢弃，避免模型对 todo 状态产生困惑
+        if manager.last_errors:
+            reasons = "; ".join(manager.last_errors)
+            note = (f"\n\n[提示] 已写入 {manager.last_accepted} 条，"
+                    f"跳过 {len(manager.last_errors)} 条非法条目：{reasons}")
+            result_str += note
+
+        return _xml_response("done", result_str)
+    except Exception as e:
+        # 兜底：任何未预期异常都转成可读 error，绝不外抛拖垮 Agent.chat
+        logger.warning("TodoWrite 未预期异常（已降级）", exc_info=True)
+        return _xml_response("error", f"TodoWrite 执行失败（已降级）：{type(e).__name__}: {e}")

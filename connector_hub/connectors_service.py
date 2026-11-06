@@ -381,20 +381,30 @@ def sync_to_mcp_config(dry_run: bool = False) -> dict[str, Any]:
 
 
 # ── CRUD ───────────────────────────────────────────────────
-def list_instances(owner: str = "", include_secrets: bool = False) -> list[dict[str, Any]]:
+def _owner_matches(inst: dict[str, Any], owner: str | None) -> bool:
+    """None = 受信内部调用（不按租户过滤）；空串 = 未声明身份，默认拒绝；
+    ``*`` = 管理员全量。HTTP API 必须传具体 owner 或 ``*``。"""
+    if owner is None:
+        return True
+    if not owner:
+        return False
+    return owner == "*" or inst.get("owner") == owner
+
+
+def list_instances(owner: str | None = None, include_secrets: bool = False) -> list[dict[str, Any]]:
     out = []
     for inst in _instances():
-        if owner and inst.get("owner") != owner:
+        if not _owner_matches(inst, owner):
             continue
         d = _redact(inst, include_secrets)
         out.append(d)
     return out
 
 
-def get_instance(instance_id: str, owner: str = "", include_secrets: bool = False) -> dict[str, Any] | None:
+def get_instance(instance_id: str, owner: str | None = None, include_secrets: bool = False) -> dict[str, Any] | None:
     for inst in _instances():
         if inst["instance_id"] == instance_id:
-            if owner and inst.get("owner") != owner:
+            if not _owner_matches(inst, owner):
                 return None
             return _redact(inst, include_secrets)
     return None
@@ -548,11 +558,11 @@ def create_instance(kind: str, name: str, creds: dict[str, Any], enabled: bool =
 def update_instance(instance_id: str, *, name: str | None = None,
                     creds: dict[str, Any] | None = None,
                     enabled: bool | None = None,
-                    owner: str = "") -> dict[str, Any] | None:
+                    owner: str | None = None) -> dict[str, Any] | None:
     instances = _instances()
     for inst in instances:
         if inst["instance_id"] == instance_id:
-            if owner and inst.get("owner") != owner:
+            if not _owner_matches(inst, owner):
                 return None
             if name is not None:
                 inst["name"] = name
@@ -585,13 +595,14 @@ def update_instance(instance_id: str, *, name: str | None = None,
     return None
 
 
-def delete_instance(instance_id: str, owner: str = "") -> bool:
+def delete_instance(instance_id: str, owner: str | None = None) -> bool:
     instances = _instances()
+    target = next((i for i in instances if i["instance_id"] == instance_id), None)
+    if target is None:
+        return False
+    if not _owner_matches(target, owner):
+        return False
     new = [i for i in instances if i["instance_id"] != instance_id]
-    if len(new) == len(instances):
-        return False
-    if owner and instances and any(i.get("owner") != owner for i in instances if i["instance_id"] == instance_id):
-        return False
     _save_instances(new)
     # 清理 OAuth2 token_cache，防止旧凭据被新实例复用
     try:

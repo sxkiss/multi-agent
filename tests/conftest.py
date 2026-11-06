@@ -32,10 +32,13 @@ os.environ["BT_LOG_DIR"] = _LOG_TMP
 def _isolate_metrics():
     """每个测试前后重置 metrics 单例，保证路径隔离生效且用例互不干扰。"""
     from chat_client import metrics as metrics_mod
-    from chat_client.tools import bg_repo
+    from chat_client.tools import bg_repo, set_current_job
 
     metrics_mod.reset_metrics()
     bg_repo.close_repo()
+    # job 上下文是线程级全局状态，测试桩（FakeJob/J 等）若不清理会泄漏到后续
+    # 测试，导致 Task 读取 parent_job.key 时报 AttributeError。这里统一隔离。
+    set_current_job(None)
     yield
     try:
         metrics_mod._registry and metrics_mod._registry.flush()
@@ -43,3 +46,4 @@ def _isolate_metrics():
         pass
     metrics_mod.reset_metrics()
     bg_repo.close_repo()
+    set_current_job(None)

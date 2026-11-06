@@ -96,29 +96,39 @@ class TestExpertCatalog:
 
 class TestInstallFromLocal:
     def test_install_prefers_local_library(self, tmp_path, monkeypatch):
-        """InstallExpert 应优先从本地库取专家（无需联网）。"""
+        """本地专家库已有同名专家时，InstallExpert 应优先读取本地，
+        不触发网络取词（fetch_expert_prompt）。"""
         from chat_client.tools import task as TK
         from chat_client.tools import market as M
-        from chat_client import experts as EX
 
         base = str(tmp_path)
-        _mk_expert(base, "local-expert", label="本地专家", tools=["Read", "Bash"])
+        # 本地库里放一个同名专家，验证它会被 InstallExpert 直接使用
+        _mk_expert(base, "local-expert", label="本地专家",
+                   desc="本地库专家", tools=["Read", "Bash"])
         crew_file = str(tmp_path / "crew_agents.json")
         monkeypatch.setattr(TK.AgentRegistry, "CUSTOM_AGENTS_FILE", crew_file)
-        # 让 InstallExpert 里的 get_catalog 指向测试目录
-        monkeypatch.setattr(EX, "get_catalog", lambda b: EX.ExpertCatalog(base))
-        # 若误走网络应报错——借此验证走了本地分支
-        def _boom(n):
-            raise RuntimeError("should not hit network")
-        monkeypatch.setattr(M, "fetch_expert_prompt", _boom)
+        monkeypatch.setattr(M, "_MARKET_CACHE_DIR", os.path.join(base, "market_cache"))
+
+        # 记录调用：本地命中时绝不应触发市场取词
+        calls = []
+        def _fetch(n):
+            calls.append(n)
+            return n, "市场专家提示词"
+        monkeypatch.setattr(M, "fetch_expert_prompt", _fetch)
+        monkeypatch.setattr(M, "find_expert_meta", lambda n: {"displayName": "市场专家"})
 
         out = M.InstallExpert(name="local-expert")
         assert "已安装为团队成员" in out, out
+        assert calls == [], "本地命中时不应调用 fetch_expert_prompt（网络取词）"
+
         data = json.load(open(crew_file, encoding="utf-8"))
         member = data["agents"][0]
         assert member["name"] == "local-expert"
-        assert "测试专家" in member["backstory"]  # backstory = SOUL + IDENTITY 内容
-        assert member["tools"] == ["Read", "Bash"]  # 用本地专家推荐工具
+        # backstory 来自本地 SOUL.md（"你是测试专家。"），而非市场提示词
+        assert "测试专家" in member["backstory"]
+        assert "市场专家提示词" not in member["backstory"]
+        # 使用本地专家推荐工具，而非通用默认工具集
+        assert member["tools"] == ["Read", "Bash"]
 
     def test_install_falls_back_to_market(self, tmp_path, monkeypatch):
         """本地没有时回退到市场。"""

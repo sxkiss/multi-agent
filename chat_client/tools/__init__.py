@@ -450,6 +450,13 @@ class BackgroundTaskManager:
                     continue
                 if t.status not in ("done", "failed"):
                     continue
+                # 防御：测试遗留的占位任务（t-pend-1/t-wake-1/t-full-1 等）
+                # 不得注入任何会话，否则会形成「通知 → 新 job → 再通知」死循环。
+                if (
+                    t.task_id.startswith("t-")
+                    and str(t.result or "").strip() in ("", "OK", "DONE_RESULT")
+                ):
+                    continue
                 # 检查 DB 状态：已 ready 说明已被消费过
                 try:
                     from .bg_repo import get_repo, STATUS_READY

@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from typing import Any
@@ -36,21 +37,46 @@ logger = logging.getLogger("connector-hub-api")
 router = APIRouter(prefix="/api/v2/connectors", tags=["connectors"])
 
 
-def _card_prefix(request: Request) -> str | None:
-    """从请求中提取卡密前缀，非卡密用户返回 None。"""
+def _caller_owner(request: Request) -> str | None:
+    """返回当前调用者的 owner 作用域。
+
+    - 管理员：``*``（可访问全部实例）
+    - 卡密：卡密前缀（沿用历史落库格式，避免老数据失配）
+    - 微信：``wx:<openid 派生键>``（不落原始 openid）
+    - 其他/无效 token：None，调用方必须拒绝
+    """
     try:
-        from auth import extract_token, verify_token, is_card_token
+        from auth import extract_token, verify_token
         from web_server import BASE_DIR as _BASE
         token = extract_token(request)
-        if not token or not is_card_token(_BASE, token):
+        if not token:
             return None
         payload = verify_token(_BASE, token)
-        sub = str(payload.get("sub") or "")
-        if not sub.startswith("card:"):
+        if not payload:
             return None
-        return sub[5:]
-    except Exception:
+        sub = str(payload.get("sub") or "")
+        if sub == "admin":
+            return "*"
+        if sub.startswith("card:") and len(sub) > 5:
+            return sub[5:]
+        if sub.startswith("wx:") and len(sub) > 3:
+            return "wx:" + hashlib.sha256(sub[3:].encode("utf-8")).hexdigest()[:24]
         return None
+    except Exception:
+        logger.warning("解析连接器调用者身份失败", exc_info=True)
+        return None
+
+
+def _owner_or_deny(request: Request) -> tuple[str | None, JSONResponse | None]:
+    owner = _caller_owner(request)
+    if not owner:
+        return None, _err("无权访问连接器实例")
+    return owner, None
+
+
+def _stored_owner(scope: str) -> str:
+    """管理员新建的实例落成 admin，租户按各自作用域落库。"""
+    return "admin" if scope == "*" else scope
 
 
 async def _sse_keepalive():
@@ -99,12 +125,17 @@ async def api_catalog(request: Request):
 # ── 实例 CRUD ───────────────────────────────────────────────
 @router.get("/instances")
 async def api_list_instances(request: Request):
-    prefix = _card_prefix(request)
-    return _ok({"instances": svc.list_instances(owner=prefix or "")})
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
+    return _ok({"instances": svc.list_instances(owner=owner)})
 
 
 @router.post("/instances")
 async def api_create_instance(request: Request):
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
     body = await _body(request)
     kind = str(body.get("kind") or "").strip()
     name = str(body.get("name") or "").strip() or kind
@@ -114,14 +145,15 @@ async def api_create_instance(request: Request):
         return _err("缺少 kind")
     if not isinstance(creds, dict):
         return _err("credentials 必须是对象")
-    prefix = _card_prefix(request)
     try:
-        inst = svc.create_instance(kind, name, creds, enabled, owner=prefix or "")
+        inst = svc.create_instance(
+            kind, name, creds, enabled, owner=_stored_owner(owner)
+        )
     except ValueError as exc:
         return _err(str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("create connector instance failed")
-        return _err(f"创建失败: {exc}")
+        return _err("创建失败")
     return _ok(inst, "已创建")
 
 
@@ -133,8 +165,10 @@ async def api_get_instance(instance_id: str, request: Request):
     "***"），只有非 secret 字段（app_id / name / email 等）返回明文。
     这样既能「回填已有凭证」，又不会把密钥明文下发到浏览器。
     """
-    prefix = _card_prefix(request)
-    inst = svc.get_instance(instance_id, owner=prefix or "", include_secrets=True)
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
+    inst = svc.get_instance(instance_id, owner=owner, include_secrets=True)
     if not inst:
         return _err(f"实例不存在: {instance_id}")
     # 按 catalog 的 secret 标记脱敏
@@ -150,20 +184,22 @@ async def api_get_instance(instance_id: str, request: Request):
 
 @router.patch("/instances/{instance_id}")
 async def api_update_instance(instance_id: str, request: Request):
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
     body = await _body(request)
     creds = body.get("credentials") or body.get("creds")
-    prefix = _card_prefix(request)
     try:
         inst = svc.update_instance(
             instance_id,
             name=body.get("name"),
             creds=creds if isinstance(creds, dict) else None,
             enabled=body.get("enabled"),
-            owner=prefix or "",
+            owner=owner,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("update connector instance failed")
-        return _err(f"更新失败: {exc}")
+        return _err("更新失败")
     if not inst:
         return _err(f"实例不存在: {instance_id}")
     return _ok(inst, "已更新")
@@ -171,15 +207,19 @@ async def api_update_instance(instance_id: str, request: Request):
 
 @router.delete("/instances/{instance_id}")
 async def api_delete_instance(instance_id: str, request: Request):
-    prefix = _card_prefix(request)
-    ok = svc.delete_instance(instance_id, owner=prefix or "")
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
+    ok = svc.delete_instance(instance_id, owner=owner)
     return _ok({"deleted": ok}, "已删除") if ok else _err(f"实例不存在: {instance_id}")
 
 
 @router.post("/instances/{instance_id}/test")
 async def api_test_instance(instance_id: str, request: Request):
-    prefix = _card_prefix(request)
-    inst = svc.get_instance(instance_id, owner=prefix or "", include_secrets=True)
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
+    inst = svc.get_instance(instance_id, owner=owner, include_secrets=True)
     if not inst:
         return _err(f"实例不存在: {instance_id}")
     res = await asyncio.to_thread(svc.test_instance, instance_id)
@@ -294,6 +334,11 @@ async def api_oauth2_refresh(request: Request):
     kind = str(body.get("kind") or "").strip()
     if not instance_id:
         return _err("缺少 instance_id")
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
+    if not svc.get_instance(instance_id, owner=owner, include_secrets=True):
+        return _err("实例不存在")
 
     creds = oauth.get_credentials(kind, instance_id) if kind else None
     if creds is None:
@@ -330,6 +375,9 @@ async def api_oauth2_manual_token(request: Request):
     from connector_hub import oauth_manager as oauth
     from connector_hub import connectors_service as svc2
 
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
     body = await _body(request)
     kind = str(body.get("kind") or "").strip()
     token = str(body.get("token") or body.get("access_token") or "").strip()
@@ -351,6 +399,7 @@ async def api_oauth2_manual_token(request: Request):
             name=name,
             creds={"manual_token": token},
             enabled=True,
+            owner=_stored_owner(owner),
         )
         instance_id = inst["instance_id"]
         # 保存凭据到 token_cache（含 manual_token）
@@ -430,7 +479,9 @@ async def api_reset_catalog_cache():
 
 @router.post("/catalog/sync-workbuddy")
 async def api_sync_workbuddy(request: Request):
-    """从 WorkBuddy CDN 拉取最新连接器目录并更新 catalog.json。"""
+    """从 WorkBuddy CDN 拉取最新连接器目录并更新 catalog.json（管理员）。"""
+    if _caller_owner(request) != "*":
+        return _err("仅管理员可操作")
     try:
         from connector_hub.sync_workbuddy import sync_catalog
         res = sync_catalog()
@@ -438,12 +489,14 @@ async def api_sync_workbuddy(request: Request):
         return _ok(res, "同步完成")
     except Exception as exc:  # noqa: BLE001
         logger.exception("sync-workbuddy failed")
-        return _err(f"同步失败: {exc}")
+        return _err("同步失败")
 
 
 # ── 同步到 mcp/config.json ──────────────────────────────────
 @router.post("/sync")
 async def api_sync(request: Request):
+    if _caller_owner(request) != "*":
+        return _err("仅管理员可操作")
     body = await _body(request)
     dry = bool(body.get("dry_run", False))
     res = svc.sync_to_mcp_config(dry_run=dry)
@@ -613,11 +666,14 @@ async def api_cli_auth_start(kind: str, request: Request):
     请求: {"instance_id": "xxx"} 或 {"app_id": "...", "app_secret": "..."}
     响应: {"verification_uri": "...", "qrcode_image": "data:image/png;base64,...", "device_code": "..."}
     """
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
     body = await _body(request)
     instance_id = str(body.get("instance_id") or "").strip()
     creds: dict[str, Any] = {}
     if instance_id:
-        inst = svc.get_instance(instance_id, include_secrets=True)
+        inst = svc.get_instance(instance_id, owner=owner, include_secrets=True)
         if not inst:
             return _err("实例不存在")
         creds = inst.get("creds") or inst.get("creds_decoded") or {}
@@ -656,7 +712,10 @@ async def api_cli_auth_poll(kind: str, request: Request):
     device_code = str(body.get("device_code") or "").strip()
     if not instance_id:
         return _err("缺少 instance_id")
-    inst = svc.get_instance(instance_id, include_secrets=True)
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
+    inst = svc.get_instance(instance_id, owner=owner, include_secrets=True)
     if not inst:
         return _err("实例不存在")
     creds = inst.get("creds") or inst.get("creds_decoded") or {}
@@ -669,9 +728,12 @@ async def api_cli_auth_poll(kind: str, request: Request):
 
 
 @router.get("/cli/{kind}/auth/status")
-async def api_cli_auth_status(kind: str, instance_id: str = Query(...)):
+async def api_cli_auth_status(kind: str, request: Request, instance_id: str = Query(...)):
     """查询 CLI 授权状态（bot / user 身份是否就绪）。"""
-    inst = svc.get_instance(instance_id, include_secrets=True)
+    owner, denied = _owner_or_deny(request)
+    if denied:
+        return denied
+    inst = svc.get_instance(instance_id, owner=owner, include_secrets=True)
     if not inst:
         return _err("实例不存在")
     creds = inst.get("creds") or inst.get("creds_decoded") or {}

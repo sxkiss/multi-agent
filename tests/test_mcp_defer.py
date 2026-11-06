@@ -144,6 +144,7 @@ class ToolSearchTest(unittest.TestCase):
 
         class J:
             session_id = "ts_unit"
+            key = "ts_unit"  # 对齐 ChatJob 接口（Task 注册后台任务会读取 job.key）
         self._old_job = getattr(self.job_local, "job", None)
         self.job_local.job = J()
 

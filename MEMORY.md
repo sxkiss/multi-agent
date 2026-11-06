@@ -40,3 +40,4 @@
   - 工具执行层安全防线可被完整绕过：`risk_level` 已注册但从未被检查。
   - 前端 SSE 解析器存在多处跨 chunk 边界缺陷（消息拆分时可能丢数据）。
 - **opencode 集成**：按 `PLAN_opencode_integration.md` 推进接入（下一步需用户确认优先级）。
+- **僵尸后台任务 t-pend-1（2026-11-02 发现）**：`background_tasks.sqlite` 中残留测试任务（tool=RunCrew, status=ready, session=pending-session, args={}, result=DONE_RESULT/OK, updated 2026-11-01 18:44），被孤儿回调反复注入，日志高频 "非法迁移 pending -> ready" 刷屏。待 boss 确认后删除该行，并排查测试库隔离（BT_BG_TASKS_DB）与孤儿回调去重逻辑。§
