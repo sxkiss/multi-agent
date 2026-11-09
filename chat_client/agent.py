@@ -28,6 +28,7 @@ except ImportError:
     httpx2 = None
 
 from chat_client.api_retry import is_retryable_api_err
+from _chat_error_signal import mark_fatal
 from chat_client.memory import MemoryManager
 from chat_client.retrieval import ExternalRAGService, RAGService, Mem0Service
 
@@ -1337,13 +1338,13 @@ Here is some useful information about the environment you are running in:
                         if not current_response_content and not tool_call_chunks:
                             if attempt <= api_max_retry:
                                 logger.warning(
-                                    f"[AI-Retry] 空回复（第 {attempt}/{api_max_retry + 1} 次），{api_retry_base_wait}s 后重试..."
+                                    f"[AI-Retry] sid={self.session_id} 空回复（第 {attempt}/{api_max_retry + 1} 次），{api_retry_base_wait}s 后重试..."
                                 )
                                 if _sleep_interruptible(api_retry_base_wait):
                                     return  # 等待期间被 chat_stop 请求停止
                                 continue  # 重试本轮
                             else:
-                                logger.warning("[AI-Retry] 多次空回复，放弃重试")
+                                logger.warning("[AI-Retry] sid=%s 多次空回复，放弃重试", self.session_id)
                                 break
 
                         break
@@ -1371,7 +1372,7 @@ Here is some useful information about the environment you are running in:
                             raise
                         wait_s = min(api_retry_base_wait * (2 ** (attempt - 1)), api_retry_max_wait)
                         logger.warning(
-                            f"[AI-Retry] 接口流异常 {type(api_err).__name__}，{wait_s}s 后第 {attempt}/{api_max_retry} 次重试: {str(api_err)[:200]}"
+                            f"[AI-Retry] sid={self.session_id} 接口流异常 {type(api_err).__name__}，{wait_s}s 后第 {attempt}/{api_max_retry} 次重试: {str(api_err)[:200]}"
                         )
                         if _sleep_interruptible(wait_s):
                             logger.info("[AI-Retry] 等待重试期间任务被停止")
@@ -1872,16 +1873,19 @@ Here is some useful information about the environment you are running in:
                 yield {"type": "warning", "data": "已达到最大工具调用次数限制，建议继续新对话 error_code:max_tool_iterations"}
                  
         except openai.AuthenticationError as e:
-            yield {"type": "error", "data": f"API密钥错误或无效，请检查密钥是否正确:{e}", "error_code": 401}
+            yield mark_fatal({"type": "error", "data": f"API密钥错误或无效，请检查密钥是否正确:{e}", "error_code": 401})
         except openai.RateLimitError as e:
-            yield {"type": "error", "data": f"接口调用频率超限，请稍后再试或提升配额:{e}", "error_code": 429}
+            yield mark_fatal({"type": "error", "data": f"接口调用频率超限，请稍后再试或提升配额:{e}", "error_code": 429})
         except openai.APIConnectionError as e:
-            yield {"type": "error", "data": f"无法连接到API服务器（{self.base_url}），请检查网络或地址是否正确:{e}", "error_code": getattr(e, 'status_code', 502)}
+            yield mark_fatal({"type": "error", "data": f"无法连接到API服务器（{self.base_url}），请检查网络或地址是否正确:{e}", "error_code": getattr(e, 'status_code', 502)})
         except openai.APIError as e:
-            yield {"type": "error", "data": f"API返回错误：{e!s}", "error_code": getattr(e, 'status_code', 500)}
+            yield mark_fatal({"type": "error", "data": f"API返回错误：{e!s}", "error_code": getattr(e, 'status_code', 500)})
         except Exception as e:
-            logger.error(f"Unexpected error in Agent.chat: {traceback.format_exc()}")
-            yield {"type": "error", "data": f"调用AI接口时发生未知错误：{e!s}"}
+            logger.error(
+                "Unexpected error in Agent.chat sid=%s: %s",
+                getattr(self, "session_id", ""), traceback.format_exc(),
+            )
+            yield mark_fatal({"type": "error", "data": f"调用AI接口时发生未知错误：{e!s}"})
         finally:
             set_session_allow_high(self.session_id, False)
     
@@ -1937,8 +1941,18 @@ Here is some useful information about the environment you are running in:
                 time.sleep(check_interval)
 
             # 工具执行完成，检查结果
+            # 2026-11-09：单工具异常不再向上抛（会打断整轮且天然不进 API 重试循环），
+            # 收敛成 tool_result(error) 回灌给模型自我纠正，与无 cancel_event 分支一致。
             if result_holder["error"]:
-                raise result_holder["error"]
+                _te = result_holder["error"]
+                logger.warning(
+                    "[Tool-Error] sid=%s 工具 %s 执行异常，已收敛为错误结果回灌: %s",
+                    getattr(ctx_job, "session_id", "") if ctx_job is not None else "",
+                    func_name, str(_te)[:200],
+                )
+                return inject_tool_name(
+                    _xml_response("error", f"Error executing tool: {_te!s}"),
+                    func_name)
             return result_holder["result"]
         else:
             # 无 cancel_event（非 chat 场景），直接执行

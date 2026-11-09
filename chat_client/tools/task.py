@@ -370,7 +370,11 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
                 logger.info("[Task] 子代理完成，notify_done bg_task_id=%s", bg_task_id[:12])
                 bg_manager.notify_done(bg_task_id, f.result())
             else:
-                logger.warning("[Task] 子代理失败，notify_failed bg_task_id=%s error=%s", bg_task_id[:12], str(exc)[:100])
+                logger.warning(
+                    "[Task] 子代理失败，notify_failed bg_task_id=%s parent_session_id=%s parent_job=%s error=%s",
+                    bg_task_id[:12], (parent_session_id or "")[:40],
+                    (parent_job.key if parent_job is not None else ""), str(exc)[:100],
+                )
                 bg_manager.notify_failed(bg_task_id, str(exc))
         except Exception:
             logger.warning("子代理完成回调失败 bg_task=%s", bg_task_id, exc_info=True)
