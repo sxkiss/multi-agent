@@ -20,10 +20,13 @@
 @position: Tools layer — 外部市场发现（与本地 Skills 目录互补）
 """
 
+import io
 import json
 import logging
 import os
+import posixpath
 import re
+import tarfile
 import time
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +42,108 @@ SKILLHUB_BASE = "https://api.skillhub.cn"
 MCP_MARKET = "https://cnb.cool/codebuddy/mcp-market"
 
 REQUEST_TIMEOUT = 20
+
+# 2026-11-09：专家提示词上游有两种发布形态。早期专家在 COS 上有散装
+# /plugins/{name}/agents/{name}.md；新增/改版专家只发整包
+# /bundles/{plugin}.tar.gz，清单里的 promptFile 只是「解压后包内相对路径」。
+# 单包上限 20MB、单文件上限 2MB，防止外部 tar.gz 撑爆内存。
+_BUNDLE_MAX_BYTES = 20 * 1024 * 1024
+_BUNDLE_MEMBER_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _safe_tar_member(name: str) -> str | None:
+    """校验 tar 成员路径：拒绝绝对路径、上跳、盘符、非法字符。
+
+    返回规范化后的安全相对路径；不安全返回 None。外部包不可信，绝不落盘到
+    目标目录之外（路径穿越 / zip-slip 防护）。
+    """
+    n = (name or "").replace("\\", "/")
+    if not n or n.startswith("/") or "\x00" in n:
+        return None
+    parts = [p for p in n.split("/") if p not in ("", ".")]
+    if not parts or ".." in parts or ":" in parts[0]:
+        return None
+    return "/".join(parts)
+
+
+def _extract_bundle_prompt(raw: bytes) -> tuple[str, dict[str, bytes]]:
+    """从 bundles/<plugin>.tar.gz 中提取主提示词 + skills/ 文件（全内存、不落盘）。
+
+    返回 (prompt_text, skills_files)，skills_files 的键为相对 skills/ 的
+    安全路径。找不到 agents/*.md 时抛 ValueError。
+    """
+    if len(raw) > _BUNDLE_MAX_BYTES:
+        raise ValueError("专家包超过大小上限")
+    try:
+        tf = tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz")
+    except (tarfile.TarError, OSError) as e:
+        raise ValueError(f"专家包解压失败: {e!s}") from e
+
+    prompt = ""
+    skills: dict[str, bytes] = {}
+    with tf:
+        for m in tf.getmembers():
+            safe = _safe_tar_member(m.name)
+            if not safe or not m.isfile():
+                continue
+            if m.size > _BUNDLE_MEMBER_MAX_BYTES:
+                continue
+            # 主提示词：优先 agents/{name}.md，其次任意 agents/*.md
+            if not prompt and safe.startswith("agents/") and safe.endswith(".md"):
+                f = tf.extractfile(m)
+                if f is not None:
+                    prompt = f.read(_BUNDLE_MEMBER_MAX_BYTES).decode("utf-8", "replace")
+            # 专家自带技能（skills/<技能名>/...），原样保留相对结构
+            if safe.startswith("skills/"):
+                rel = posixpath.relpath(safe, "skills")
+                if rel and rel != "." and not rel.startswith(".."):
+                    f = tf.extractfile(m)
+                    if f is not None:
+                        skills[rel] = f.read(_BUNDLE_MEMBER_MAX_BYTES)
+    if not prompt:
+        raise ValueError("专家包内未找到 agents/*.md 提示词")
+    return prompt, skills
+
+
+def _cache_bundle_assets(key: str, skills: dict[str, bytes]) -> int:
+    """把 bundle 内的 skills/ 落到 expert_market/<id>/skills/，返回写入文件数。
+
+    与 experts.cache_market_expert 的落盘目录一致（专家自动发现会扫描该目录）；
+    任何落盘异常都只记录、不影响提示词取用（技能是增强项，非必需）。
+    """
+    if not skills:
+        return 0
+    try:
+        from .. import experts as _experts
+        base = os.path.dirname(_MARKET_CACHE_DIR)
+        catalog = _experts.get_catalog(base)
+        root = catalog.market_dir
+        if not root:
+            return 0
+        # 复用 cache_market_expert 的标识消毒规则，避免自行实现产生不一致
+        safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in key).strip("-")[:64]
+        if not safe:
+            return 0
+        dest_root = os.path.join(root, safe, "skills")
+        written = 0
+        for rel, data in skills.items():
+            safe_rel = _safe_tar_member(rel)
+            if not safe_rel or written >= 200:
+                continue
+            dest = os.path.join(dest_root, *safe_rel.split("/"))
+            # 双保险：确保最终路径仍在 dest_root 之内
+            if os.path.commonpath([os.path.abspath(dest_root), os.path.abspath(dest)]) != os.path.abspath(dest_root):
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(data)
+            written += 1
+        if written:
+            catalog.scan(force=True)
+        return written
+    except Exception as e:  # noqa: BLE001 - 技能落盘失败不应阻断取词
+        logger.warning("专家包技能落盘失败（忽略）: %s", e)
+        return 0
 
 # ============================================================
 # 统一市场缓存层（内存 + 落盘）
@@ -293,27 +398,79 @@ def fetch_expert_prompt(name: str) -> tuple[str, str]:
     """拉取专家提示词原文（供 GetExpertPrompt / InstallExpert 复用）。
 
     返回 (key, text)；失败时抛异常，由调用方转成用户可读错误。
+
+    2026-11-09 上游双形态兼容：
+    - 早期专家：COS 上有散装 plugins/{name}/agents/{name}.md → 优先直取（快、省流量）；
+    - 新增/改版专家：只发整包 bundles/{plugin}.tar.gz，清单 promptFile 只是包内
+      相对路径 → 散装 404 时查清单拿 plugin 字段、下包解压取 agents/*.md，
+      并把包内 skills/ 落地到专家缓存目录供自动发现。
+    bundle 名必须用 plugin 字段（与 agentName 不一定相同，如团队专家）。
     """
     key = (name or "").strip()
     if not key:
         raise ValueError("需要提供 name（专家标识）")
-    # 若传的是完整路径（如 /plugins/content-creator/agents/...），提取相对路径
+
+    # 1) 散装 .md 优先：兼容既有逻辑与"传完整路径/URL"的用法
     prompt_path = key
     if key.startswith("/"):
         prompt_path = key.lstrip("/")
     elif key.startswith(EXPERT_BASE):
         prompt_path = key[len(EXPERT_BASE):].lstrip("/")
     resp = requests.get(f"{EXPERT_BASE}/{prompt_path}", timeout=REQUEST_TIMEOUT)
-    if resp.status_code != 200:
-        # 回退：直接用 key 拼标准路径
-        fallback = f"{EXPERT_BASE}/plugins/{key}/agents/{key}.md"
-        resp = requests.get(fallback, timeout=REQUEST_TIMEOUT)
-    if resp.status_code != 200:
-        raise RuntimeError(
-            f"未取到专家提示词（HTTP {resp.status_code}）：{key}。"
-            "可先用 ExpertMarket 确认准确的 name，或传完整 promptFile 路径。"
-        )
-    return key, resp.text
+    if resp.status_code != 200 and prompt_path == key:
+        # 传的是纯标识时，再试标准散装路径
+        resp = requests.get(
+            f"{EXPERT_BASE}/plugins/{key}/agents/{key}.md", timeout=REQUEST_TIMEOUT)
+    if resp.status_code == 200:
+        return key, resp.text
+
+    # 2) 散装不存在 → 走 bundle。查清单拿 plugin（bundle 真实名）与 promptFile
+    meta = find_expert_meta(key)
+    bundle_name = ""
+    if isinstance(meta, dict):
+        # plugin 是 bundle 名；缺则用清单里的 agentName / key 兜底
+        plugin = _expert_field(meta, "plugin")
+        bundle_name = plugin or _expert_field(meta, "agentName") or key
+        # 若清单给了 promptFile，可从 /plugins/<x>/... 里提取更可靠的包名
+        pf = meta.get("promptFile")
+        if isinstance(pf, str) and pf.startswith("/plugins/"):
+            seg = pf.split("/")
+            if len(seg) > 2 and seg[2]:
+                bundle_name = seg[2]
+    if not bundle_name:
+        bundle_name = key
+
+    # 3) 下载整包（候选：清单包名 → 标识本身），解压取提示词
+    tried = []
+    last_err = f"散装 .md HTTP {resp.status_code}"
+    for bn in dict.fromkeys([bundle_name, key]):
+        if not bn:
+            continue
+        tried.append(bn)
+        try:
+            br = requests.get(
+                f"{EXPERT_BASE}/bundles/{bn}.tar.gz", timeout=REQUEST_TIMEOUT)
+        except Exception as e:  # noqa: BLE001
+            last_err = f"bundle 请求异常: {e!s}"
+            continue
+        if br.status_code != 200:
+            last_err = f"bundle HTTP {br.status_code}"
+            continue
+        try:
+            text, skills = _extract_bundle_prompt(br.content)
+        except ValueError as e:
+            last_err = str(e)
+            continue
+        # 4) 技能落盘（增强项，失败不影响取词）
+        if skills:
+            _cache_bundle_assets(bundle_name, skills)
+        logger.info("[Expert] 通过 bundle 取到提示词 %s（候选 %s）", key, bn)
+        return key, text
+
+    raise RuntimeError(
+        f"未取到专家提示词：{key}。已尝试散装 .md 及 bundle 候选 {tried}；"
+        f"最后原因：{last_err}。可先用 ExpertMarket 确认准确的 name。"
+    )
 
 
 def find_expert_meta(name: str) -> Dict[str, Any]:
