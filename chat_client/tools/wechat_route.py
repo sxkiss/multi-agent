@@ -59,6 +59,10 @@ _SEND_MEDIA = _SKILL_DIR / "scripts" / "send_869_media.py"
 # 应回落自动取当前会话，而不是当真实 wxid 发。
 _PLACEHOLDER_KEYS = {"", "null", "none", "undefined", "nil", "n/a", "unknown"}
 
+# 875 独立技能 CLI（与 869 完全隔离：独立配置/独立依赖/失败互不影响）
+_SKILL875_DIR = Path(PROJECT_ROOT) / "skills" / "wechat-875-route"
+_SEND_875 = _SKILL875_DIR / "scripts" / "send_875.py"
+
 
 def _resolve_scripts() -> tuple[Path, Path]:
     """确认发送脚本存在，返回 (text_script, media_script)。"""
@@ -166,6 +170,56 @@ def _target_arg(to_wxid: str | None) -> str:
     return uk
 
 
+def _dispatch_875(
+    mt: str, uk: str, *, content: str, path: str | None, title: str, desc: str,
+    url: str, thumb_url: str, singer: str, cover_url: str, lyric: str,
+    card_type: str, at_wxids: list[str] | None, at_names: list[str] | None,
+    voice_format: str, seconds: int, file_name: str,
+) -> dict:
+    """把 WeChatRoute 参数转发给独立技能 wechat-875-route 的 CLI。
+
+    与 869 路径完全隔离：不读 869 配置、不依赖 869 脚本、不共享转码依赖。
+    """
+    if not _SEND_875.exists():
+        return {"status": False, "msg": f"未找到 875 技能 CLI（{_SEND_875}）"}
+
+    cmd = ["python3", str(_SEND_875), mt, "--to", uk]
+    if mt == "text":
+        cmd += ["--text", content]
+        for w in (at_wxids or []):
+            cmd += ["--at", str(w)]
+        for n in (at_names or []):
+            cmd += ["--at-name", str(n)]
+    elif mt in ("image", "video", "voice", "file"):
+        if not path or not os.path.exists(path):
+            return {"status": False, "msg": f"{mt} 消息需要有效的 path 参数"}
+        cmd += ["--path", path]
+        if mt == "voice":
+            cmd += ["--format", voice_format, "--seconds", str(seconds)]
+        elif mt == "video":
+            cmd += ["--seconds", str(seconds)]
+        elif mt == "file" and file_name:
+            cmd += ["--name", file_name]
+    elif mt == "link":
+        if not url:
+            return {"status": False, "msg": "link 消息需要 url 参数"}
+        cmd += ["--url", url, "--title", title, "--desc", desc, "--thumb-url", thumb_url]
+    elif mt == "card":
+        if not content or not title:
+            return {"status": False, "msg": "card 需要 content=<对方wxid> 与 title=<昵称>"}
+        cmd += ["--card-wxid", content, "--card-nickname", title]
+    elif mt == "music":
+        if not url or not title:
+            return {"status": False, "msg": "music 需要 url=<音乐直链> 与 title=<歌名>"}
+        cmd += [
+            "--music-url", url, "--title", title, "--singer", singer,
+            "--cover-url", cover_url, "--lyric", lyric, "--card-type", card_type,
+        ]
+    else:
+        return {"status": False, "msg": f"875 不支持 msg_type={mt}"}
+    return _run(cmd, timeout=120)
+
+
 @register_tool(category="微信", name_cn="发送微信消息", risk_level="medium")
 def WeChatRoute(
     msg_type: str,
@@ -185,6 +239,8 @@ def WeChatRoute(
     voice_format: str = "amr",
     seconds: int = 2,
     file_name: str = "",
+    *,
+    route: str,
 ) -> str:
     """
     - **必须调用此工具发送所有微信消息**，不要在对话流中直接输出完整结果。
@@ -220,17 +276,44 @@ def WeChatRoute(
         voice_format: 语音格式 amr/wav/mp3（默认 amr）
         seconds: 语音时长（秒，默认 2）
         file_name: 文件名（file 类型可选，默认取 path 文件名）
+        route: 发送后端，**必填**。必须显式传 "869" 或 "875"：
+            - "869" 走 wechat-869-media-sender；
+            - "875" 转发给独立技能 wechat-875-route（独立配置/独立依赖，互不干扰）。
+            不设默认值，杜绝"忘了传就悄悄走 869"的隐式行为。
 
     Returns:
         发送结果：成功含消息类型与接收方；失败给出明确原因。
     """
+    mt = (msg_type or "").strip().lower()
+    _route = str(route or "").strip().lower()
+    if _route not in ("869", "875"):
+        return _xml_response(
+            "error",
+            f"route 必填且只能为 '869' 或 '875'，实际收到 {route!r}",
+        )
+    # 875 走独立技能，与下面整段 869 逻辑完全隔离
+    if _route == "875":
+        try:
+            uk875 = _target_arg(to_wxid)
+        except Exception as exc:
+            return _xml_response("error", str(exc))
+        res = _dispatch_875(
+            mt, uk875, content=content, path=path, title=title, desc=desc,
+            url=url, thumb_url=thumb_url, singer=singer, cover_url=cover_url,
+            lyric=lyric, card_type=card_type, at_wxids=at_wxids, at_names=at_names,
+            voice_format=voice_format, seconds=seconds, file_name=file_name,
+        )
+        if res.get("status") is False:
+            return _xml_response("error", res.get("msg") or "875 发送失败")
+        return _xml_response("success", f"已通过 875 发送 {mt} 消息到 {uk875}",
+                             {"msg_type": mt, "to": uk875, "route": "875"})
+
     try:
         send_text, send_media = _resolve_scripts()
         uk = _target_arg(to_wxid)
     except Exception as exc:
         return _xml_response("error", str(exc))
 
-    mt = (msg_type or "").strip().lower()
     py = "python3"
 
     try:

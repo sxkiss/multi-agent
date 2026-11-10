@@ -27,6 +27,7 @@ from channel_utils import (
     _is_terminal_channel,
     _map_agent_chunk,
 )
+from _chat_error_signal import is_fatal
 
 logger = logging.getLogger(__name__)
 
@@ -282,13 +283,25 @@ class ChatFlowMixin:
         """后台线程：运行 agent.chat() 并把 chunk 写入 job 事件缓存"""
         from chat_client.tools import set_current_job
         set_current_job(job)  # 工具内可通过 emit_progress 推送实时进度
+        fatal = False
         try:
             for chunk in agent.chat(user_input):
+                # 2026-11-09：agent 外层兜底把异常 yield 成 error 事件而非 raise，
+                # 生成器"正常"结束会照常 finish("done") → "带 error 事件但状态 done"
+                # 的伪成功轮，上层误判本轮正常结束、不再补救。这里识别致命标记，
+                # 让本轮落成 error；message_end 仍照发（SSE 流需要它收尾）。
+                if is_fatal(chunk):
+                    fatal = True
                 # 工具调用/结果等透传事件需要完整 chunk
                 for ev, data in _map_agent_chunk(chunk):
                     job.append(ev, data)
             job.append("message_end", None)
-            job.finish("done")
+            job.finish("error" if fatal else "done")
+            if fatal:
+                logger.warning(
+                    "[ChatJob] 本轮以失败收尾（agent 致命错误已作为 error 事件发出）"
+                    " session_id=%s job=%s", job.session_id, job.key,
+                )
         except Exception as e:
             job.append("error", {"msg": f"聊天发生错误: {e!s}"})
             job.append("message_end", None)

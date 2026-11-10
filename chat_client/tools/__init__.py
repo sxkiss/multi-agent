@@ -801,8 +801,8 @@ class ToolRegistry:
         meta = self._metadata.get(name)
         return meta.get("risk_level", "low") if meta else "low"
 
-    def _validate_args(self, name: str, kwargs: dict[str, Any]) -> str | None:
-        """按生成的 Schema 前置校验参数（类型/必填），返回错误说明或 None"""
+    def _validate_args(self, name: str, kwargs: dict[str, Any], func: Callable | None = None) -> str | None:
+        """按生成的 Schema 前置校验参数（类型/必填/未知参数），返回错误说明或 None"""
         schema = next((s for s in self._schemas if s["function"]["name"] == name), None)
         if not schema:
             return None
@@ -819,7 +819,7 @@ class ToolRegistry:
         for k, v in kwargs.items():
             spec = props.get(k)
             if not spec:
-                continue  # 未知参数交给工具自行处理
+                continue  # 未知参数：交给下面"签名是否接受 **kwargs"统一判定
             want = spec.get("type")
             py_t = type_map.get(want)
             if not py_t:
@@ -830,6 +830,33 @@ class ToolRegistry:
                     f"参数 {k} 类型错误：应为 {want}，实际收到 {type(v).__name__}（值: {str(v)[:80]}）。"
                     f"请修正参数类型后重试。"
                 )
+
+        # 2026-11-09：模型幻觉出的"签名里不存在的参数"（如 Grep(output_mode=...)）
+        # 会在 func(**kwargs) 处直接触发 TypeError；该异常发生在工具执行阶段，
+        # 天然不进 API 重试循环，还会把整轮打断（历史故障）。这里前置拦截成可
+        # 自我纠正的错误结果。仅当工具签名明确不接受 **kwargs 时才拦，避免误伤
+        # 主循环注入的 parent_config/session_id/cwd 等运行期参数（Task/TodoWrite/
+        # Bash 等靠 **kwargs 或显式参数接收，一律放行）。
+        if func is not None:
+            try:
+                _sig = inspect.signature(func)
+                _accepts_kwargs = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in _sig.parameters.values()
+                )
+            except (TypeError, ValueError):
+                _accepts_kwargs = True  # 拿不到签名则保守放行，不误伤
+            if not _accepts_kwargs:
+                # 双保险：参数必须既不在 schema properties、也不在函数签名里，
+                # 才判定为幻觉参数。避免 MCP/类工具 schema 与签名不完全一致时误伤。
+                _sig_params = set(_sig.parameters)
+                unknown = [k for k in kwargs if k not in props and k not in _sig_params]
+                if unknown:
+                    allowed = ", ".join(sorted(props)) or "(无)"
+                    return (
+                        f"未知参数: {', '.join(unknown)}（该工具不接受这些参数）。"
+                        f"可用参数: {allowed}。请移除未知参数后重新调用。"
+                    )
         return None
 
     def _audit(self, tool_id: str, risk: str, kwargs: dict, duration_ms: int, status: str, result_head: str):
@@ -926,8 +953,12 @@ class ToolRegistry:
             logger.info("[RiskGuard] 执行 medium 风险工具: %s", tool_label)
 
         # 4. 参数前置校验：不合法直接拦截并给出修正指引（不执行、不崩溃）
-        verr = self._validate_args(name, kwargs)
+        verr = self._validate_args(name, kwargs, func=func)
         if verr:
+            logger.warning(
+                "[Tool-Args] 参数校验拦截 tool=%s kwargs=%s reason=%s",
+                tool_label, sorted(kwargs), verr[:200],
+            )
             self._audit(tool_label, risk, audit_kwargs, 0, "invalid-params", verr)
             return _risk_denied_response(f"参数校验未通过：{verr}", tool_name=tool_label)
 
