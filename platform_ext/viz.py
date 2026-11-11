@@ -1,6 +1,6 @@
 """双模式大屏聚合点 —— GET /api/v2/viz/state
 
-设计约束（见 docs/viz-dashboard-implementation.md）：
+设计约束：
 - 新路径 /api/v2/* 隔离，不改动任何旧 /api/* 路由与响应壳；
 - **只读**遍历 chat_jobs._jobs，不重放 last_id 游标（绕开 _MAX_EVENTS=2000
   截断、compact_summary / stream_reset 回滚语义）；

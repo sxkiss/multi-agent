@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -169,6 +170,55 @@ class AgentRegistry:
             department="dev"
         ))
 
+# 成员代理只继承的「连接/运行期」字段白名单。
+# 背景：主会话把 self.config.copy() 整包作为 parent_config 传入，旧逻辑只剔除
+# tools/system_prompt，导致 mode / strict_tools / enable_agents_md 等主会话专属
+# 标志被成员继承，Agent.__init__ 会据此二次注入经理 SOUL、技能铁律、
+# 专家派发铁律、AGENTS.md，甚至把 41 个全量工具覆盖成员专属工具集。
+# 白名单之外的任何字段（尤其 mode/strict_tools/enable_agents_md）一律不继承。
+_MEMBER_INHERIT_KEYS = (
+    "api_key", "base_url", "model_name", "small_model_name", "default_headers",
+    "api_protocol", "api_timeout", "max_retries", "temperature", "top_p",
+    "reasoning_effort", "thinking", "web_search", "base_dir", "workspace",
+    "sessions_dir", "sliding_window_size", "rag_trigger_threshold",
+    "rag_retrieval_count", "rag_final_count", "context_window_kb",
+    "use_global_rag", "use_external_kb", "use_document_kb",
+    "embedding_api_key", "embedding_base_url", "embedding_model_name",
+    "global_kb_agent_id", "mem0_api_url", "enable_mcp", "mcp_config_path",
+    "tool_parallel_force", "tool_parallel_deny", "tool_gate_enabled",
+    "tool_extra_gate", "session_mode", "hitl", "hitl_tools",
+)
+
+
+def _member_base_config(parent_config: dict, *, max_tool_iterations: int) -> dict:
+    """构造成员代理的 config 底座：白名单继承 + 强制成员模式隔离。
+
+    强制项（覆盖白名单，绝不允许 parent 传入）：
+      mode="member"              → 关闭 group 的 AGENTS.md 二次加载、
+                                   single/codex_x 的 SOUL/USER/MEMORY 读取、
+                                   技能/专家/记忆铁律注入
+      strict_tools=True          → 关闭 registry 全量工具 extend 与 MCP 自动挂载
+      enable_agents_md=False     → 双保险，成员不加载任何全局 AGENTS.md
+      code_mode=True             → 保留环境信息（成员干活需要知道 cwd）
+    """
+    config = {
+        "model_name": "",
+        "cwd": PROJECT_ROOT,
+        "code_mode": True,
+        "max_tool_iterations": max_tool_iterations,
+    }
+    pc = parent_config or {}
+    for k in _MEMBER_INHERIT_KEYS:
+        if k in pc:
+            config[k] = pc[k]
+    config.update({
+        "mode": "member",
+        "strict_tools": True,
+        "enable_agents_md": False,
+    })
+    return config
+
+
 # Global registry instance
 agent_registry = AgentRegistry()
 
@@ -287,30 +337,18 @@ assistant: "I'm going to use the Task tool to launch the with the greeting-respo
     parent_config = kwargs.get("parent_config", {})
     parent_session_id = kwargs.get("parent_session_id")
     
-    # Start with default base config
-    config = {
-        "model_name": "", # 由 parent_config 继承实际模型
-        "cwd": cwd,
-        "code_mode": True, 
-        "max_tool_iterations": 20
-    }
-    
-    # Merge parent config (if any), but be careful not to overwrite critical agent-specific fields yet
-    if parent_config:
-        # Update config with parent config, but exclude 'tools' and 'system_prompt' which are specific to the subagent
-        # We also want to preserve 'cwd' if parent has it
-        for k, v in parent_config.items():
-            if k not in ["tools", "system_prompt"]:
-                config[k] = v
-        
-        # Determine sessions_dir
-        # If we have a parent session, the sub-agent session should be stored inside it
-        if parent_session_id:
-            parent_sessions_dir = parent_config.get("sessions_dir", "sessions")
-            # Structure: sessions/parent_id
-            # The Agent class will append its session_id: sessions/parent_id/sub_id
-            # So we set sessions_dir to: sessions/parent_id
-            config["sessions_dir"] = os.path.join(parent_sessions_dir, parent_session_id)
+    # 成员代理配置：白名单继承连接参数 + 强制成员模式隔离（不再继承主会话的
+    # mode/strict_tools/enable_agents_md，避免经理人格与全量工具二次注入）
+    config = _member_base_config(parent_config, max_tool_iterations=20)
+
+    # Determine sessions_dir
+    # If we have a parent session, the sub-agent session should be stored inside it
+    if parent_session_id:
+        parent_sessions_dir = parent_config.get("sessions_dir", "sessions")
+        # Structure: sessions/parent_id
+        # The Agent class will append its session_id: sessions/parent_id/sub_id
+        # So we set sessions_dir to: sessions/parent_id
+        config["sessions_dir"] = os.path.join(parent_sessions_dir, parent_session_id)
     
     # Force agent-specific configuration
     _sp = agent_def.system_prompt_template
@@ -567,6 +605,55 @@ def _crew_synthesis(parent_config, objective: str, transcript: list[dict[str, st
     return resp.choices[0].message.content or ""
 
 
+def _viz_plan_topology(steps: list) -> tuple[dict, dict]:
+    """[viz] 只读推导每步的 depends_on / level，仅供 crew_* 事件补可选字段。
+
+    与后台 _run_crew_body 中真正用于调度的 _deps/_level **完全独立**：
+    这里不参与任何执行决策，只把「计划里写了什么依赖」如实导出给大屏画关系图。
+    返回 (deps_by_index, level_by_index)，index 为 1-based 步骤号。
+    解析口径与后台 :772-793 对齐（步骤号/成员名/数字），但更宽松、不抛异常。
+    """
+    name_to_idx = {str(s.get("agent", "")).strip(): i
+                   for i, s in enumerate(steps, 1) if isinstance(s, dict)}
+    deps: dict[int, set] = {}
+    for i, step in enumerate(steps, 1):
+        raw = (step.get("depends_on") or step.get("depends") or []) if isinstance(step, dict) else []
+        if isinstance(raw, str):
+            raw = [raw]
+        cur = set()
+        for d in raw:
+            d = str(d).strip()
+            if d in ("", "无", "none", "null", "[]", "无依赖"):
+                continue
+            if d.isdigit():
+                di = int(d)
+            elif d in name_to_idx:
+                di = name_to_idx[d]
+            else:
+                m = re.search(r"\d+", d)
+                di = int(m.group()) if m else None
+            if di and 1 <= di < i:
+                cur.add(di)
+        deps[i] = cur
+    level: dict[int, int] = {}
+    def _calc(i, _seen=None):
+        _seen = _seen or set()
+        if i in level:
+            return level[i]
+        if i in _seen:  # 防御性：环 → 降级为 0，绝不让事件补字段抛异常
+            return 0
+        _seen = set(_seen); _seen.add(i)
+        ds = deps.get(i, set())
+        level[i] = 0 if not ds else 1 + max(_calc(x, _seen) for x in ds)
+        return level[i]
+    for i in range(1, len(steps) + 1):
+        try:
+            _calc(i)
+        except Exception:  # noqa: BLE001
+            level[i] = 0
+    return deps, level
+
+
 @register_tool(category="Agent", name_cn="集团模式(经理+团队)", risk_level="medium", timeout=1800)
 def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5, parallel: bool = True, **kwargs) -> str:
     """
@@ -637,13 +724,26 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
     # 实时推送计划到前端
     dept_of = {a.name: a.department for a in agent_registry.list_agents()}
     dept_title = {d["name"]: d["title"] for d in getattr(agent_registry, "departments", [])}
+    # [viz] 只读推导依赖/层级，供大屏画关系图；不改后台调度逻辑，失败不影响计划
+    try:
+        _viz_deps, _viz_level = _viz_plan_topology(steps)
+    except Exception:  # noqa: BLE001
+        _viz_deps, _viz_level = {}, {}
     plan_summary = []
     for i, st in enumerate(steps):
         sn = str(st.get("agent","")).strip()
-        plan_summary.append({
+        _s = {
             "agent": sn, "dept": dept_title.get(dept_of.get(sn,""), sn),
             "task": str(st.get("task",""))[:80], "step": i+1, "status": "pending",
-        })
+        }
+        # [viz] 追加可选字段（只加不删）：老前端取已知 5 字段、忽略新增字段
+        try:
+            _s["depends_on"] = sorted(_viz_deps.get(i+1, set()))
+            _s["level"] = int(_viz_level.get(i+1, 0))
+            _s["ts"] = time.time()
+        except Exception:  # noqa: BLE001
+            pass
+        plan_summary.append(_s)
     emit_progress("crew_plan", {"steps": plan_summary, "objective": objective[:120]})
 
     valid_names = {a.name for a in roster}
@@ -660,15 +760,9 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
         agent_def = agent_registry.get(sname)
         session_id = str(uuid.uuid4())
 
-        config = {
-            "model_name": "",
-            "cwd": PROJECT_ROOT,
-            "code_mode": True,
-            "max_tool_iterations": 15,
-        }
-        for k, v in parent_config.items():
-            if k not in ("tools", "system_prompt"):
-                config[k] = v
+        # 成员代理配置：白名单继承 + 强制成员模式隔离（同 Task，避免主会话
+        # 的 mode/strict_tools 让 Agent.__init__ 二次注入经理人格与全量工具）
+        config = _member_base_config(parent_config, max_tool_iterations=15)
         if parent_session_id:
             base_dir = parent_config.get("sessions_dir", os.path.join(PROJECT_ROOT, "sessions"))
             config["sessions_dir"] = os.path.join(base_dir, parent_session_id)
@@ -729,29 +823,37 @@ def RunCrew(objective: str, agents: list[str] | None = None, max_steps: int = 5,
         if seout:
             full_prompt += f"\n\n[Expected Output] {seout}"
 
+        # [viz] 追加可选字段（只加不删）：拓扑层级/依赖边/服务端时间戳
+        _viz_step = {"level": int(_viz_level.get(i, 0) or 0),
+                     "depends_on": sorted(_viz_deps.get(i, set()) or set()),
+                     "ts": time.time()}
         # 推送步骤开始
         emit_progress("crew_step", {"agent": sname, "dept": dept_title.get(_dept_of.get(sname, ""), sname),
-                                     "status": "running", "step": i, "task": stask[:60]})
+                                     "status": "running", "step": i, "task": stask[:60], **_viz_step})
 
         agent = Agent(session_id=session_id, config=config)
         step_out = ""
+        _step_failed = False
         try:
             for chunk in agent.chat(full_prompt):
                 if chunk.get("type") == "content":
                     step_out += chunk.get("response", "")
                 elif chunk.get("type") == "error":
                     step_out = f"[执行错误] {chunk.get('data')}"
+                    _step_failed = True
                     break
         except Exception as e:
             step_out = f"[执行异常] {e!s}"
+            _step_failed = True
         finally:
             try:
                 agent.close()
             except Exception:
                 logger.warning("未处理的异常", exc_info=True)
-        # 推送步骤完成
+        # 推送步骤完成；异常步骤补 status:"fail"（原来误报 done），供大屏告警
+        _viz_step["ts"] = time.time()
         emit_progress("crew_step", {"agent": sname, "dept": dept_title.get(_dept_of.get(sname, ""), sname),
-                                     "status": "done", "step": i})
+                                     "status": "fail" if _step_failed else "done", "step": i, **_viz_step})
 
         return i, sname, stask, step_out
 
@@ -909,15 +1011,7 @@ def ConsultPeer(target_agent: str, question: str, context: str = "", **kwargs) -
     parent_config = kwargs.get("parent_config", {}) or {}
     parent_session_id = kwargs.get("parent_session_id")
 
-    config = {
-        "model_name": "",
-        "cwd": PROJECT_ROOT,
-        "code_mode": True,
-        "max_tool_iterations": 8,
-    }
-    for k, v in parent_config.items():
-        if k not in ("tools", "system_prompt"):
-            config[k] = v
+    config = _member_base_config(parent_config, max_tool_iterations=8)
     if parent_session_id:
         config["sessions_dir"] = os.path.join(
             parent_config.get("sessions_dir", "sessions"), parent_session_id

@@ -354,28 +354,45 @@ class Agent:
             logger.debug(f"current_dir in config: {self.current_dir}")
             self.system_prompt += self._get_environment_info()
         
+        # 【修复】mode 必须在 enable_agents_md 判断块之外定义：后面 SOUL 读取、
+        # 技能注入、工具扩展多处依赖它，而成员代理强制 enable_agents_md=False
+        # 会跳过该块，若只在块内定义会触发 NameError。
+        mode = self.config.get("mode", "group")
         # 加载 AGENTS.md 层级指令
         # 集团模式下始终加载；单 Agent 模式下仅在未指定系统提示词时加载
         # 单 Agent 模式下自动过滤集团模式相关内容（如 RunCrew 调度规则），减少 token 消耗
         if self.config.get("enable_agents_md", True):
-            mode = self.config.get("mode", "group")
             # 单 Agent 模式已指定预设提示词时跳过 AGENTS.md
             should_load_md = mode == "group" or not self.system_prompt
             if should_load_md:
                 agents_md = self._load_agents_md()
-                if agents_md:
+                # 【修复去重】集团主会话的 _load_agent_context_prompt() 已把
+                # BASE_DIR/AGENTS.md 全文以「## 行为准则与能力（AGENTS）」为标题
+                # 注入 system_prompt；cwd 又是项目根时这里会再加载同一份，
+                # 导致 AGENTS 规则出现两遍。层级加载返回的是带包装的拼接文本，
+                # 不能用整段字符串比对，改判注入标记。
+                # 外部工作区里内容不同的项目级 AGENTS.md 仍照常追加。
+                _agents_ctx_injected = (
+                    "## 行为准则与能力（AGENTS）" in self.system_prompt
+                    or "## 身份与行为准则（SOUL）" in self.system_prompt
+                )
+                if agents_md and not _agents_ctx_injected:
                     # single 模式也加载 AGENTS.md（含团队委派规则），不再过滤
                     # 如需纯单 agent 模式，可通过 config 设置 skip_agents_md=True
-                    pass  # 不应用过滤，直接加载完整 AGENTS.md
                     self.system_prompt += f"\n\n## Project Instructions (AGENTS.md)\n\n{agents_md}"
 
         # 追加 SOUL / USER / MEMORY（hermes 等工作区需要）
         # 单 Agent / Codex-X 模式下始终加载，不受 should_load_md 影响
-        if mode in ("single", "codex_x"):
+        # 【修复】但 cwd 恰好是项目根目录时，那里放的是「经理 SOUL.md」
+        # （Multi-agent 集团总经理人设，集团模式专用），绝不能灌进单 Agent
+        # 主会话让它自称总经理。只有外部/隔离工作区才读其目录下自带的 SOUL。
+        _ctx_cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else os.getcwd()
+        _ctx_is_project_root = os.path.realpath(_ctx_cwd) == os.path.realpath(PROJECT_ROOT)
+        if mode in ("single", "codex_x") and not _ctx_is_project_root:
             # 只在 cwd 和 cwd/memories/ 下查找，不往上爬目录树
             _ctx_parts = []
             _missing_soul_hint = None
-            cwd = self.current_dir if hasattr(self, 'current_dir') and self.current_dir else os.getcwd()
+            cwd = _ctx_cwd
             for fname, title in [("SOUL.md", "身份与行为准则（SOUL）"),
                                  ("USER.md", "用户信息（USER）"),
                                  ("MEMORY.md", "记忆与历史（MEMORY）")]:
