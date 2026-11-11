@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>双模式大屏 · 独立验证页（bt /api/v2/viz/state）</title>
+<style>
+  :root{--bg:#07080d;--fg:#eef0f7;--mut:#7d8298;--line:#1c2030;--ok:#45e6f5;--warn:#f5b942;--err:#ff5c6c}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,'Noto Sans SC',monospace;padding:20px}
+  h1{font-size:16px;margin:0 0 4px} .sub{color:var(--mut);margin-bottom:16px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-bottom:16px}
+  .card{background:#0d0f18;border:1px solid var(--line);border-radius:8px;padding:12px}
+  .card .name{font-weight:700} .card .dept{color:var(--mut);font-size:11px}
+  .st{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;margin-top:6px;border:1px solid}
+  .running{color:var(--ok);border-color:var(--ok)} .done{color:#8fe08f;border-color:#8fe08f}
+  .pending{color:var(--mut);border-color:var(--mut)} .fail,.error{color:var(--err);border-color:var(--err)}
+  .idle{color:var(--mut);border-color:var(--line)}
+  .bar{margin:10px 0;padding:10px 12px;background:#0d0f18;border:1px solid var(--line);border-radius:8px}
+  .tag{color:var(--warn)} code{color:var(--ok)}
+  ul{font-size:12px;color:var(--mut);padding-left:18px}
+  pre{background:#0a0c14;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto;max-height:340px;font-size:11.5px}
+  .pill{display:inline-block;padding:2px 10px;border-radius:12px;background:#141826;border:1px solid var(--line)}
+</style>
+</head>
+<body>
+  <h1>双模式大屏 · 独立验证页</h1>
+  <div class="sub">数据源 <code>GET /api/v2/viz/state</code> ｜ 独立静态页，不触发 Vite 构建、不改 frontend/src。<br>
+  flag 默认 <code>VIZ_ENABLED=False</code>，本页会显示禁用态；打开 flag + admin/service 身份后才有真实数据。</div>
+
+  <div class="bar">
+    状态：<span id="status" class="pill">loading…</span>
+    &nbsp; 模式：<span id="mode" class="pill">-</span>
+    &nbsp; 通道：<span id="channel" class="pill">-</span>
+    &nbsp; <span id="reason" class="tag"></span>
+  </div>
+
+  <div id="nodes" class="grid"></div>
+  <div id="solo" class="bar" style="display:none"></div>
+  <div id="edges" class="bar"></div>
+
+  <h1 style="font-size:13px;margin-top:18px">宿主钩子调用序列（adapter.plan 输出）</h1>
+  <pre id="calls">等待数据…</pre>
+
+  <h1 style="font-size:13px;margin-top:18px">原始 VizState</h1>
+  <pre id="raw">等待数据…</pre>
+
+  <ul>
+    <li>group → HQ 多节点（<code>__task</code> + 依赖边部门链）；single/solo → PARK 直写（<code>__ws</code>/<code>__ctl</code>）+ 工具流水条。</li>
+    <li>single <b>不伪造 request_id</b>；edges 为空显示「单节点·无协作依赖」占位而非坏掉。</li>
+    <li>README 三坑已处理：名单挂载前预取、哈希 <code>(n&gt;&gt;&gt;0)%len</code>、headless <code>document.hidden</code> 提供 <code>VizAdapter.boot(...).tick()</code> 手动推帧。</li>
+    <li>本页仅做逻辑验证；第三方主题本体（hq/index.html）本阶段不跨仓库复制，见 docs 推迟项。</li>
+  </ul>
+
+  <!-- adapter.js 已移除：本页为废弃的 VizState 逻辑验证页，数据大屏请用 /static/viz/hq/index.html -->
+  <script>
+    (function () {
+      if (!window.VizAdapter) return;  /* 废弃验证页：adapter.js 已移除，避免调试脚本报错 */
+      var A = window.VizAdapter || {};
+      function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
+      function render(state, seq) {
+        document.getElementById('raw').textContent = JSON.stringify(state, null, 2);
+        document.getElementById('calls').textContent = JSON.stringify(seq ? seq.calls : [], null, 2);
+        document.getElementById('status').textContent = state.job_status || '-';
+        document.getElementById('mode').textContent = state.mode || '-';
+        document.getElementById('channel').textContent = seq ? seq.channel : '-';
+        document.getElementById('reason').textContent = state.reason || (state.enabled === false ? state.msg || '禁用态' : '');
+        var nodes = state.nodes || [];
+        document.getElementById('nodes').innerHTML = nodes.map(function (n) {
+          return '<div class="card"><div class="name">' + esc(n.name) + '</div>' +
+            '<div class="dept">' + esc(n.dept) + (n.level != null ? ' · L' + n.level : '') + '</div>' +
+            '<div class="st ' + esc(n.state) + '">' + esc(n.state) + '</div>' +
+            '<div style="margin-top:6px;font-size:11px">' + esc(n.task) + '</div></div>';
+        }).join('') || '<div class="card">（无节点 / 空窗期 idle）</div>';
+        var solo = document.getElementById('solo');
+        if (state.mode !== 'group' && (state.tool_pipeline || []).length) {
+          solo.style.display = 'block';
+          solo.innerHTML = '<b>单工位 · 工具流水条</b>（' + (state.metrics && state.metrics.tool_calls || 0) + ' 次调用）<br>' +
+            state.tool_pipeline.map(function (p) {
+              return '<span class="' + (p.state === 'running' ? 'running' : 'done') + '">' +
+                esc(p.tool) + ':' + esc(p.state) + '</span>';
+            }).join(' → ');
+        } else { solo.style.display = 'none'; }
+        var edges = state.edges || [];
+        document.getElementById('edges').innerHTML = edges.length
+          ? '<b>依赖边</b>：' + edges.map(function(e){return esc(e.from)+' → '+esc(e.to)}).join('　')
+          : (state.mode === 'group' ? '<b>依赖边</b>：空' : '<b>依赖边</b>：单节点 · 无协作依赖（占位）');
+      }
+      // browser 侧 boot：自动轮询 + 提供 window.__viz.tick() 供 headless 手动推帧
+      window.__viz = A.boot ? A.boot({
+        url: '/api/v2/viz/state',
+        auto: true, pollMs: 3000,
+        onState: render,
+        hosts: []   // 主题未复制，暂不驱动宿主；逻辑验证走 plan()/calls
+      }) : { tick: function(){} };
+      // 首帧立刻拉一次
+      if (window.__viz.frame) window.__viz.frame().catch(function (e) {
+        document.getElementById('raw').textContent = 'fetch 失败：' + e;
+      });
+    })();
+  </script>
+</body>
+</html>

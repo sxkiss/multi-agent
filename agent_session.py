@@ -190,17 +190,26 @@ class SessionMixin:
             # CLI 会话 ID 前缀（这些是 opencode/claude/codex 模式，不应混入 native 历史）
             _cli_prefixes = ('ses_', 'agent-', 'rollout-')
 
+            def _read_session_meta(session_path) -> dict:
+                try:
+                    with open(os.path.join(session_path, 'meta.json'), 'r', encoding='utf-8') as f:
+                        return json.load(f) or {}
+                except Exception:
+                    return {}
+
             def _is_crew_session(sid: str, history, session_path) -> bool:
-                """严格识别集团会话：必须有 CreateDepartment/RecruitMember（建立部门结构）或 meta.json source=crew"""
-                # 1) meta.json source=crew（最可靠）
-                mf = os.path.join(session_path, 'meta.json')
-                if os.path.exists(mf):
-                    try:
-                        if json.load(open(mf)).get('source') == 'crew':
-                            return True
-                    except Exception:
-                        pass
-                # 2) history 里有 CreateDepartment 或 RecruitMember（建立部门结构的关键工具）
+                """判断集团会话。优先用 meta.mode（chat_start 持久化，最可靠）；
+                旧会话无 mode 字段时回退到工具启发式。"""
+                meta = _read_session_meta(session_path)
+                mm = str(meta.get('mode') or '').strip().lower()
+                if mm == 'group':
+                    return True
+                if mm in ('single', 'opencode', 'claude', 'codex'):
+                    return False
+                # 旧会话兼容：meta.json source=crew（最可靠）
+                if meta.get('source') == 'crew':
+                    return True
+                # 旧会话兼容：history 里有 CreateDepartment 或 RecruitMember
                 if history:
                     for m in history:
                         for tc in (m.get('tool_calls') or []):
@@ -245,15 +254,10 @@ class SessionMixin:
                                             content = ''
                                         title = content[:20] + '...' if len(content) > 20 else content
                                         break
-                            # 从 meta.json 读 workspace（chat_start 时持久化）
-                            ws = ''
-                            meta_file = os.path.join(session_path, 'meta.json')
-                            if os.path.exists(meta_file):
-                                try:
-                                    with open(meta_file, 'r', encoding='utf-8') as mf:
-                                        ws = (json.load(mf) or {}).get('workspace', '') or ''
-                                except Exception:
-                                    ws = ''
+                            # 从 meta.json 读 workspace / mode（chat_start 时持久化）
+                            _meta = _read_session_meta(session_path)
+                            ws = str(_meta.get('workspace', '') or '')
+                            _sess_mode = str(_meta.get('mode') or '').strip().lower()
                             item = {
                                 "session_id": session_id,
                                 "title": title,
@@ -262,6 +266,8 @@ class SessionMixin:
                                 "workspace": ws,
                                 "source": "single",
                                 "is_group": _is_crew_session(session_id, history, session_path),
+                                # '' = 存量会话（修复前未记 mode）；两种 native 模式都显示，不丢历史
+                                "session_mode": _sess_mode,
                             }
                             sessions.append(item)
                         except Exception:
@@ -359,13 +365,24 @@ class SessionMixin:
                     seen[sid] = s
         sessions = list(seen.values())
 
-        # 按 mode 二次过滤：native 模式下按 is_group / source 切分，CLI 模式只留自己 source
+        # 按 mode 二次过滤：native 模式下按 session_mode / is_group / source 切分
         if mode == 'group':
-            # group 只要：集团主对话(is_group=True) + 集团子代理(source=crew)
-            sessions = [s for s in sessions if (s.get('source') == 'crew') or (s.get('source') == 'single' and s.get('is_group'))]
+            # group：集团子代理(source=crew) + 明确标记为 group 的主对话 +
+            # 存量无 mode 标记的 native 主对话（修复前不写 mode，不能丢历史）。
+            # 明确属于 single 主对话的排除，避免串模式。
+            sessions = [s for s in sessions if (
+                s.get('source') == 'crew'
+                or (s.get('source') == 'single' and s.get('is_group'))
+                or (s.get('source') == 'single' and s.get('session_mode') == 'group')
+                or (s.get('source') == 'single' and not s.get('session_mode'))
+            )]
         elif mode == 'single':
-            # single 只要：单 Agent 主对话（source=single 且 !is_group）
-            sessions = [s for s in sessions if s.get('source') == 'single' and not s.get('is_group')]
+            # single：明确标记 single 的主对话 + 存量无 mode 标记的 native 主对话。
+            sessions = [s for s in sessions if (
+                s.get('source') == 'single'
+                and (s.get('session_mode') in ('', 'single'))
+                and not s.get('is_group')
+            )]
         else:
             # CLI 模式（opencode/claude/codex）：只留对应 source
             sessions = [s for s in sessions if s.get('source') == mode]

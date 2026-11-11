@@ -50,10 +50,19 @@ def _capture(holder, code=0, msg="成功"):
 
 
 def _post_capture(sub, argv, code=0):
-    """跑 _build + _post（mock urlopen），返回 (path, holder)。"""
+    """跑 _build + _post（mock urlopen），返回 (path, holder)。
+
+    _build 对 music 返回 (path, body, meta)，其余返回 (path, body)；兼容两种。
+    meta 会挂到 holder["meta"] 供断言卡片id。
+    """
     ns = send875._parser().parse_args([sub] + argv)
-    path, body = send875._build(sub, ns)
-    holder = {}
+    built = send875._build(sub, ns)
+    if len(built) == 3:
+        path, body, meta = built
+    else:
+        path, body = built
+        meta = {}
+    holder = {"meta": meta}
     with patch.object(send875.urllib.request, "urlopen", _capture(holder, code=code)):
         resp = send875._post(CFG, path, body)
     holder["resp"] = resp
@@ -111,9 +120,23 @@ def test_card(blob):
 def test_music(blob):
     path, h = _post_capture("music", ["--to", "u1", "--music-url", "https://a.mp3",
                                       "--title", "歌", "--singer", "手", "--cover-url", "https://c"])
-    assert path == "/Msg/SendAppMessage"
-    item = h["body"]["items"][0]
-    assert item["kind"] == "music" and item["music"]["audioUrl"] == "https://a.mp3"
+    # 现在走 /Msg/SendApp 原始 XML 端点，显式带 appid（卡片id）
+    assert path == "/Msg/SendApp"
+    assert h["body"]["ToWxid"] == "u1" and h["body"]["Type"] == 3
+    xml = h["body"]["Xml"]
+    assert "<type>3</type>" in xml and "https://a.mp3" in xml
+    meta = h["meta"]
+    assert meta["pickedCardId"]
+    assert ('appid="' + meta["pickedCardId"] + '"') in xml
+    assert meta["cardIdPool"].endswith("card_ids.txt")
+
+
+def test_music_explicit_card_id(blob):
+    path, h = _post_capture("music", ["--to", "u1", "--music-url", "https://a.mp3",
+                                      "--title", "歌", "--card-id", "wxTEST123456"])
+    assert path == "/Msg/SendApp"
+    assert h["meta"]["pickedCardId"] == "wxTEST123456"
+    assert 'appid="wxTEST123456"' in h["body"]["Xml"]
 
 
 @pytest.mark.parametrize("fmt,t", [("amr", 0), ("mp3", 2), ("wav", 3), ("silk", 4)])

@@ -368,8 +368,12 @@ def _fetch_third_party_prompt(meta: dict) -> str:
         tried.append(c)
         try:
             r = requests.get(u, timeout=REQUEST_TIMEOUT)
-            if r.status_code == 200 and r.text.strip():
-                return r.text
+            if r.status_code == 200 and r.content.strip():
+                # 【修复乱码】COS/GitHub raw 的 .md 响应常不带 charset，
+                # requests 按 RFC 默认 latin-1 解 resp.text，中文/emoji 会变成
+                # 「ð\x9f\x8f\x97ï¸\x8f」并固化进 crew_agents.json 的 backstory。
+                # 统一显式按 UTF-8 解码（与 _extract_bundle_prompt 口径一致）。
+                return r.content.decode("utf-8", "replace")
         except Exception:
             continue
     raise RuntimeError(
@@ -605,7 +609,9 @@ def fetch_expert_prompt(name: str) -> tuple[str, str]:
         # 传的是纯标识时，再试标准散装路径
         resp = _expert_get(f"plugins/{key}/agents/{key}.md")
     if resp is not None and resp.status_code == 200:
-        return key, resp.text
+        # 【修复乱码】显式 UTF-8 解码，避免 requests 对无 charset 的 .md
+        # 按 latin-1 解出 mojibake（详见 _fetch_third_party_prompt 注释）。
+        return key, resp.content.decode("utf-8", "replace")
 
     # 2) 散装不存在 → 走 bundle。查清单拿 plugin（bundle 真实名）与 promptFile
     bundle_name = ""
