@@ -76,6 +76,15 @@ class ChatFlowMixin:
                 f"该会话并行任务已满（{chat_jobs.MAX_PARALLEL}），等待任一任务完成后自动继续派发",
             )
 
+        # [viz] 记录本次任务的工作模式，供 /api/v2/viz/state 聚合点按 mode 分流。
+        # 新增属性，不修改 ChatJob 构造/事件结构，也不触碰 /api/chat/start 响应壳。
+        # mode 缺省（如空字符串）时按 group 处理（与既有日志口径 :274 一致）。
+        # viz 侧另备降级：job 无此属性时扫 events 判 group/solo。
+        try:
+            job.mode = mode or "group"
+        except Exception:  # noqa: BLE001 - 挂属性失败绝不影响聊天主流程
+            pass
+
         # ── per-thread HITL 审批模式（P1，2026-10-15）──────────────────
         # 请求可携带 hitl（ask/allow_all/allow_tools）+ hitl_tools（allow_tools 白名单）。
         # 会话级覆盖，作用于本次及后续该会话的高风险工具放行判断。
@@ -253,6 +262,11 @@ class ChatFlowMixin:
                         _meta_data = {}
                 _meta_data['workspace'] = _ws
                 _meta_data['source'] = 'single'
+                # 【修复历史】记录本次会话的真实工作模式，供历史列表按 mode 归类。
+                # 此前不写 mode，get_chat_historys 只能靠「是否调用过
+                # CreateDepartment/RecruitMember」猜 is_group，普通集团对话
+                # 从不调这两个工具，导致集团模式历史列表一条都不显示。
+                _meta_data['mode'] = mode or 'group'
                 with open(_meta_file, 'w', encoding='utf-8') as _mf:
                     json.dump(_meta_data, _mf, ensure_ascii=False)
         except Exception:

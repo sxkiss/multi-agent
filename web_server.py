@@ -733,6 +733,13 @@ try:
     app.include_router(_gateway_router, prefix="/api/v2")
     from platform_ext.card_gateway import router as _card_gateway_router
     app.include_router(_card_gateway_router, prefix="/api/v2")
+    # [viz] 双模式大屏聚合点 GET /api/v2/viz/state（删此行即回滚；flag 默认 off）
+    # 注意：viz.router 自带 prefix="/api/v2"（同 api.py），此处不可再传 prefix，否则双前缀
+    from platform_ext.viz import router as _viz_router
+    app.include_router(_viz_router)
+    # [viz-stream] 逐条消息兼容端点 /api/console/{agents,events,stream}（删此行即回滚）
+    from platform_ext.viz_stream import router as _viz_stream_router
+    app.include_router(_viz_stream_router)
     logger.info("[platform-ext] 平台扩展路由已挂载: /api/v2/{teams,channels,storage,usage,gateway,card}/*")
 except Exception:  # noqa: BLE001
     logger.exception("[platform-ext] 平台扩展路由挂载失败（主服务继续运行）")
