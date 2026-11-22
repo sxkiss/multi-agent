@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from typing import Any, AsyncIterator
 
@@ -220,6 +221,119 @@ def _extract_text(message) -> str:
             return ""
 
 
+def _extract_images(message) -> list[dict[str, Any]]:
+    """从 InboundMessage 提取图片，转成 chat_start 的 ``images`` 参数。
+
+    chat_start/_normalize_image_blocks 接受三类来源：data URI、http(s) URL、
+    服务器本地路径。这里把通道入站的 ImageContent（及 mime 为 image 的
+    FileContent）映射成这些形状；没有图片时返回空列表。
+    """
+    images: list[dict[str, Any]] = []
+    try:
+        parts = getattr(message, "content", []) or []
+    except Exception:  # noqa: BLE001
+        return images
+    for part in parts:
+        ptype = str(getattr(part, "type", "") or "").lower()
+        mime = str(getattr(part, "mime_type", "") or "").lower()
+        is_image = ptype == "image" or type(part).__name__ == "ImageContent" or mime.startswith("image/")
+        if not is_image:
+            continue
+        data = getattr(part, "data", None)
+        if data:
+            mt = mime or "image/png"
+            images.append({"url": f"data:{mt};base64,{data}"})
+            continue
+        url = str(getattr(part, "url", "") or "").strip()
+        if url:
+            images.append({"url": url})
+            continue
+        local_path = str(getattr(part, "local_path", "") or "").strip()
+        if local_path:
+            images.append({"path": local_path})
+    return images
+
+
+def _extract_non_image_files(message) -> list[Any]:
+    """从 InboundMessage 提取非图片附件 part（pdf/docx/xlsx/zip/txt…）。"""
+    files: list[Any] = []
+    try:
+        parts = getattr(message, "content", []) or []
+    except Exception:  # noqa: BLE001
+        return files
+    for part in parts:
+        ptype = str(getattr(part, "type", "") or "").lower()
+        mime = str(getattr(part, "mime_type", "") or "").lower()
+        is_image = ptype == "image" or type(part).__name__ == "ImageContent" or mime.startswith("image/")
+        if is_image:
+            continue
+        if ptype in ("file", "video", "audio") or type(part).__name__ in (
+            "FileContent", "VideoContent", "AudioContent"
+        ) or mime:
+            # 有 url/data/local_path 之一才算附件
+            if any(getattr(part, k, None) for k in ("url", "data", "local_path")):
+                files.append(part)
+    return files
+
+
+async def _materialize_file_blocks(parts: list[Any], session_id: str) -> list[dict[str, Any]]:
+    """把非图片附件落盘到 workspace/inbound/<session>/，转成 chat_start 的 file 块。
+
+    chat_start 支持 message 里的 {"type":"file","path":"..."} 块：
+    _process_user_input_files 会调用 Read 读取文件内容给 agent。这里负责先把
+    远程 url / base64 的附件落成真实本地文件。二进制文件 agent 会用工具处理。
+    """
+    blocks: list[dict[str, Any]] = []
+    if not parts:
+        return blocks
+    try:
+        from chat_client.inbound_media import save_inbound_media
+    except Exception:  # noqa: BLE001
+        logger.warning("[gw-proc] inbound_media 不可用，附件跳过", exc_info=True)
+        return blocks
+
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for idx, part in enumerate(parts):
+        data = getattr(part, "data", None)
+        local_path = str(getattr(part, "local_path", "") or "").strip()
+        url = str(getattr(part, "url", "") or "").strip()
+        filename = str(getattr(part, "filename", "") or "").strip()
+        ext = os.path.splitext(filename)[1] if filename else ""
+        raw: bytes | str | None = None
+        if data:
+            raw = data  # base64 字符串
+        elif local_path and os.path.isfile(local_path):
+            raw = local_path  # 已是本地文件，直接引用（不再复制）
+            blocks.append({"type": "file", "path": local_path})
+            continue
+        elif url:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    raw = resp.content
+                if not ext:
+                    from urllib.parse import urlparse
+                    ext = os.path.splitext(urlparse(url).path)[1]
+            except Exception:  # noqa: BLE001
+                logger.warning("[gw-proc] 下载附件失败: %s", url, exc_info=True)
+                continue
+        if raw is None:
+            continue
+        try:
+            res = save_inbound_media(raw, base_dir=base_dir, session_id=session_id,
+                                     ext=ext, filename=filename)
+        except Exception:  # noqa: BLE001
+            logger.warning("[gw-proc] 附件落盘失败", exc_info=True)
+            continue
+        if res.get("ok"):
+            blocks.append({"type": "file", "path": res["path"]})
+        else:
+            logger.warning("[gw-proc] 附件落盘被拒: %s", res.get("error"))
+    return blocks
+
+
 def _parse_sse_data(data_payload: str) -> Any:
     """解析 chat_events SSE 的 data 行（JSON 字符串）。
 
@@ -379,13 +493,27 @@ def make_processor(agent_main=None, chat_jobs=None, gateway=None):
         from octop_gateway.models import MessageEvent
 
         text = _extract_text(message)
-        if not text.strip():
+        images = _extract_images(message)
+        file_parts = _extract_non_image_files(message)
+        if not text.strip() and not images and not file_parts:
+            # 无文本、无图片、无附件，没有可发送给 agent 的内容。
             return
 
         channel_type = str(getattr(message, "channel_type", "") or "unknown")
         subject = getattr(message, "channel_subject", None)
         subject_id = getattr(subject, "subject_id", None) or "anon"
         sid = session_id_for(channel_type, subject_id)
+
+        # 非图片附件落盘，转成 chat_start message 里的 file 块。
+        file_blocks = await _materialize_file_blocks(file_parts, sid) if file_parts else []
+        # message 支持混合内容：文本块 + file 块（图片走单独的 images 参数）。
+        outbound_message: Any = text
+        if file_blocks:
+            parts: list[dict[str, Any]] = []
+            if text.strip():
+                parts.append({"type": "text", "text": text})
+            parts.extend(file_blocks)
+            outbound_message = parts
 
         ag = _get_agent_main()
         if ag is None:
@@ -423,9 +551,12 @@ def make_processor(agent_main=None, chat_jobs=None, gateway=None):
         # 启动后台对话任务（复用 BT 现有 agent 体系）
         start_params: dict[str, Any] = {
             "session_id": sid,
-            "message": text,
+            "message": outbound_message,
             "mode": mode,
         }
+        if images:
+            # 通道入站图片 → chat_start 的 images 参数（多模态），agent 才看得见图。
+            start_params["images"] = images
         if tpl:
             start_params["template"] = tpl
         if workspace:

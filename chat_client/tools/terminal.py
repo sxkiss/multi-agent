@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import threading
@@ -17,6 +18,36 @@ from .base import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 后台命令最长存活时间（秒）：超时仍未退出的整组进程会被强制回收，防止
+# 前台超时转后台后变成无人看管的 CPU 黑洞。可用环境变量覆盖，0 表示关闭。
+BG_MAX_RUNTIME_SEC = int(os.environ.get("AGENT_BG_MAX_RUNTIME_SEC", "1800"))
+
+
+def _kill_process_tree(process, grace: float = 2.0):
+    """按进程组杀进程（POSIX），确保 shell 的孙进程（如 python3 卡死脚本）一并回收。"""
+    try:
+        if os.name != "nt":
+            pgid = os.getpgid(process.pid)
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
+            try:
+                process.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        else:
+            process.terminate()
+    except Exception:
+        logger.warning("杀进程组失败，回退 terminate", exc_info=True)
+        try:
+            process.terminate()
+        except Exception:
+            pass
 
 
 # --- Command Manager for Non-blocking Commands ---
@@ -42,7 +73,8 @@ class CommandManager:
                 bufsize=1,
                 encoding='utf-8',
                 errors='replace',
-                shell=False if os.name == 'nt' else True 
+                shell=False if os.name == 'nt' else True,
+                start_new_session=(os.name != 'nt'),
             )
         except Exception as e:
             return None, str(e)
@@ -64,8 +96,60 @@ class CommandManager:
         t = threading.Thread(target=self._read_output, args=(cmd_id, process))
         t.daemon = True
         t.start()
-        
+        self._maybe_start_watchdog()
+
         return cmd_id, None
+
+    def adopt(self, process, command: str, cwd: str) -> str:
+        """接管一个已在运行的进程（前台超时转后台）。不重跑命令，避免副本叠加。"""
+        cmd_id = str(uuid.uuid4())
+        cmd_info = {
+            "id": cmd_id,
+            "process": process,
+            "output": [],
+            "status": "running",
+            "start_time": time.time(),
+            "cwd": cwd,
+            "command": command,
+            "adopted": True,
+        }
+        with self.lock:
+            self.commands[cmd_id] = cmd_info
+        t = threading.Thread(target=self._read_output, args=(cmd_id, process))
+        t.daemon = True
+        t.start()
+        self._maybe_start_watchdog()
+        return cmd_id
+
+    def _maybe_start_watchdog(self):
+        """惰性启动后台命令寿命巡检：跑太久的整组进程强制回收。"""
+        if BG_MAX_RUNTIME_SEC <= 0:
+            return
+        if getattr(self, "_watchdog_started", False):
+            return
+        self._watchdog_started = True
+
+        def _loop():
+            while True:
+                time.sleep(60)
+                now = time.time()
+                victims = []
+                with self.lock:
+                    for _cid, c in self.commands.items():
+                        if c["status"] == "running" and now - c["start_time"] > BG_MAX_RUNTIME_SEC:
+                            victims.append(c)
+                for c in victims:
+                    logger.warning(
+                        "后台命令超过 %ss 未退出，强制回收进程组: pid=%s cmd=%s",
+                        BG_MAX_RUNTIME_SEC, getattr(c["process"], "pid", "?"),
+                        (c.get("command") or "")[:200],
+                    )
+                    _kill_process_tree(c["process"])
+                    with self.lock:
+                        c["status"] = "stopped"
+                        c["returncode"] = -9
+
+        threading.Thread(target=_loop, daemon=True, name="bg-cmd-watchdog").start()
 
     def _read_output(self, cmd_id, process):
         try:
@@ -116,7 +200,7 @@ class CommandManager:
             cmd = self.commands[cmd_id]
             if cmd["status"] == "running":
                 try:
-                    cmd["process"].terminate() 
+                    _kill_process_tree(cmd["process"])
                     cmd["status"] = "stopped"
                 except Exception:
                     logger.warning("未处理的异常", exc_info=True)
@@ -193,36 +277,37 @@ class Bash:
         if not cwd:
             cwd = PROJECT_ROOT
         if blocking:
+            timeout_sec = timeout / 1000.0
             try:
                 shell_cmd = command
                 if os.name == 'nt':
                     shell_cmd = ["powershell", "-Command", command]
-                timeout_sec = timeout / 1000.0
-                result = subprocess.run(
-                    shell_cmd, cwd=cwd, capture_output=True, text=True,
+                # 关键：独立进程组 + 自己控超时。超时后接管同一进程转后台，
+                # 绝不重新执行一遍命令（旧实现会导致副本不断叠加）。
+                proc = subprocess.Popen(
+                    shell_cmd, cwd=cwd,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     encoding='utf-8', errors='replace',
                     shell=False if os.name == 'nt' else True,
-                    timeout=timeout_sec, check=False,
+                    start_new_session=(os.name != 'nt'),
                 )
-                output = result.stdout
-                if result.stderr:
-                    output += f"\n{result.stderr}" if output else result.stderr
+                output, _ = proc.communicate(timeout=timeout_sec)
                 output = truncate_output(output)
                 if description:
                     output = f"Description: {description}\n\n{output}"
                 elapsed = _time.time() - start_time
                 return _xml_response("done", output, metadata={
-                    "exit_code": str(result.returncode),
+                    "exit_code": str(proc.returncode),
                     "duration": f"{elapsed:.2f}s"
                 })
             except subprocess.TimeoutExpired:
-                # 前台超时 → 自动转后台（参考 bt_agent 后台模式）
-                cmd_id, err = _CMD_MANAGER.start_command(command, cwd)
-                if err:
-                    return _xml_response("error", err)
+                # 前台超时 → 接管已在运行的进程转后台（不重跑）
+                cmd_id = _CMD_MANAGER.adopt(proc, command, cwd)
                 result = (f"<terminal_id>new</terminal_id>\n"
                           f"<terminal_cwd>{cwd}</terminal_cwd>\n"
-                          f"命令已达到 {timeout / 1000.0:g} 秒前台等待上限，已转入后台继续运行。\n"
+                          f"命令已达到 {timeout / 1000.0:g} 秒前台等待上限，已转入后台继续运行"
+                          f"（同一进程，未重复执行）。后台最长存活 {BG_MAX_RUNTIME_SEC}s，"
+                          f"超时会被整组强制回收。\n"
                           f"<command_id>{cmd_id}</command_id>\n"
                           f"【重要】该命令已在后台执行，禁止重复执行同一条命令。\n"
                           f"请先继续处理其他工作，需要结果时再用 CheckCommandStatus 查一次；"

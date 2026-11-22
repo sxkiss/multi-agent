@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -182,3 +184,143 @@ class TestCli:
         p = cli.build_parser()
         for cmd in (["models"], ["skills", "list"], ["experts", "list"], ["connectors", "catalog"], ["ask", "hi"]):
             assert p.parse_args(cmd).cmd == cmd[0]
+
+
+# ── Webhook 通讯器（gateway_webhook，前端可配的 webhook IM 平台）────────
+class TestGatewayWebhook:
+    def test_registered_in_platform_kinds(self):
+        from platform_ext import gateway as gw
+        assert "webhook" in gw.PLATFORM_KINDS
+        meta = gw.PLATFORM_KINDS["webhook"]
+        names = [f["name"] for f in meta["config_fields"]]
+        assert "channel_name" in names and "base_url" in names and "api_key" in names
+        # api_key 是敏感字段
+        assert "api_key" in gw._SENSITIVE_FIELDS
+
+    def test_sdk_available_and_no_deps(self):
+        from platform_ext import gateway as gw
+        assert gw._sdk_available("webhook") is True
+        assert gw._missing_deps("webhook") == []
+
+    def test_config_parse_and_numeric_coercion(self):
+        from platform_ext.gateway_webhook import WebhookConfig
+        c = WebhookConfig.from_dict({
+            "channel_name": "muse1号", "base_url": "http://x:8100",
+            "api_key": "k", "poll_interval": "1", "timeout": "5",
+        })
+        assert c.channel_name == "muse1号" and c.name == "muse1号"
+        assert isinstance(c.poll_interval, float) and c.poll_interval == 1.0
+        assert isinstance(c.timeout, float) and c.timeout == 5.0
+
+    def test_parse_inbound_text_and_media(self):
+        from platform_ext.gateway_webhook import build_webhook_channel
+        ch = build_webhook_channel(object(), config={"channel_name": "muse1号"}, channel_id="i1")
+        text = ch.parse_inbound({
+            "id": "m-1", "type": "text", "content": "hello", "name": "muse1号",
+            "direction": "inbound", "timestamp": 1000.0, "metadata": {"user_key": "wx_a"},
+        })
+        assert text.text == "hello" and text.channel_subject.subject_id == "wx_a"
+        assert text.metadata["webhook_id"] == "m-1"
+        img = ch.parse_inbound({
+            "id": "m-2", "type": "image", "media_url": "http://cdn/x.png",
+            "name": "muse1号", "metadata": {},
+        })
+        assert img.has_media
+
+    def test_start_instance_uses_custom_channel(self, monkeypatch):
+        from platform_ext import gateway as gw
+        captured = {}
+        fake_mgr = MagicMock()
+        fake_mgr.start = AsyncMock()
+        async def fake_add(*a, **kw):
+            if a and hasattr(a[0], "channel_type"):
+                captured["type"] = a[0].channel_type
+                captured["name"] = a[0]._config.channel_name
+            else:
+                captured["by_type"] = kw.get("channel_type")
+            return "ch-x"
+        fake_mgr.add_channel = fake_add
+        monkeypatch.setattr(gw, "_get_manager", lambda: fake_mgr)
+        monkeypatch.setattr(gw, "_manager_running", False, raising=False)
+        monkeypatch.setattr(gw, "_manager_instances", {}, raising=False)
+        monkeypatch.setattr("platform_ext.gateway_processor.make_processor", lambda: object())
+        asyncio.run(gw._start_instance("wh-i", "webhook", {"channel_name": "测试通道"}))
+        assert captured.get("type") == "webhook"
+        assert captured.get("name") == "测试通道"
+        assert "by_type" not in captured
+
+
+# ── Webhook 通讯器：附件（媒体）收发 ─────────────────────────
+class TestGatewayWebhookMedia:
+    def test_rel_media_url_made_absolute(self):
+        from octop_gateway.models import ImageContent, FileContent
+        from platform_ext.gateway_webhook import build_webhook_channel
+        ch = build_webhook_channel(object(), config={
+            "channel_name": "m", "base_url": "http://1.2.3.4:8100"}, channel_id="i")
+        im = ch.parse_inbound({"id": "m1", "type": "image", "media_url": "/uploads/a.png", "metadata": {}})
+        img = [p for p in im.content if isinstance(p, ImageContent)][0]
+        assert img.url == "http://1.2.3.4:8100/uploads/a.png"
+        assert im.metadata["webhook_media_url"] == "http://1.2.3.4:8100/uploads/a.png"
+        # 绝对 url 原样保留
+        im2 = ch.parse_inbound({"id": "m2", "type": "file",
+                                "media_url": "https://cdn/x/pdf", "metadata": {}})
+        f = [p for p in im2.content if isinstance(p, FileContent)][0]
+        assert f.url == "https://cdn/x/pdf"
+
+    def test_send_media_base64_type_detection(self, monkeypatch):
+        """FileContent 装 base64 图片时，应按 mime 判成 image 而非 file。"""
+        import base64
+        from octop_gateway.models import FileContent, ChannelSubject
+        from platform_ext.gateway_webhook import build_webhook_channel
+
+        posted = {}
+        class FakeClient:
+            def __init__(self, **kw): pass
+            async def post(self, url, data=None, files=None, json=None):
+                posted["url"] = url; posted["data"] = data
+                posted["json"] = json; posted["files"] = files
+                class R: pass
+                return R()
+        ch = build_webhook_channel(object(), config={"channel_name": "m"}, channel_id="i")
+        ch._client = FakeClient()
+        subj = ChannelSubject(subject_id="wx_a")
+        png = base64.b64encode(b"\x89PNG-fake").decode()
+        asyncio.run(ch._send_media(subj, FileContent(data=png, filename="x.png", mime_type="image/png")))
+        assert posted["data"]["type"] == "image"
+        assert "media" in posted["files"]
+
+    def test_send_media_relative_url_absolute(self, monkeypatch):
+        from octop_gateway.models import FileContent, ChannelSubject
+        from platform_ext.gateway_webhook import build_webhook_channel
+        posted = {}
+        class FakeClient:
+            def __init__(self, **kw): pass
+            async def post(self, url, json=None, **kw):
+                posted["json"] = json
+                class R: pass
+                return R()
+        ch = build_webhook_channel(object(), config={
+            "channel_name": "m", "base_url": "http://host:8100"}, channel_id="i")
+        ch._client = FakeClient()
+        asyncio.run(ch._send_media(ChannelSubject(subject_id="u"),
+                                   FileContent(url="/uploads/f.pdf", filename="f.pdf")))
+        assert posted["json"]["media_url"] == "http://host:8100/uploads/f.pdf"
+
+    def test_fetch_remote_media_uses_auth(self, monkeypatch):
+        from platform_ext.gateway_webhook import build_webhook_channel
+        captured = {}
+        class FakeResp:
+            content = b"bytes"
+            headers = {"content-type": "image/png"}
+            def raise_for_status(self): pass
+        class FakeClient:
+            def __init__(self, **kw): pass
+            async def get(self, url):
+                captured["url"] = url
+                return FakeResp()
+        ch = build_webhook_channel(object(), config={
+            "channel_name": "m", "base_url": "http://host:8100", "api_key": "k"}, channel_id="i")
+        ch._client = FakeClient()
+        data, ctype = asyncio.run(ch.fetch_remote_media("/uploads/x.png"))
+        assert captured["url"] == "http://host:8100/uploads/x.png"
+        assert data == b"bytes" and ctype == "image/png"

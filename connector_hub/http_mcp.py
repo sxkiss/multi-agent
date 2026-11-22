@@ -103,20 +103,25 @@ class HttpMcpClient:
         if params is not None:
             payload["params"] = params
         to = _TIMEOUT_HANDSHAKE if handshake else self._timeout
+        # 回带服务端下发的 Mcp-Session-Id：部分 MCP server（如 REA streamable-http）
+        # 强制要求后续请求携带，否则报 -32000 "Mcp-Session-Id header is required"。
+        post_headers: dict[str, str] = {}
+        if self._session_id:
+            post_headers["Mcp-Session-Id"] = self._session_id
         # SSE 传输用 GET 接收通道 + POST 发送；streamable 用 POST 同端点
-        resp = await self._client.post(self.url, json=payload, timeout=to)
+        resp = await self._client.post(self.url, json=payload, timeout=to, headers=post_headers)
         ctype = resp.headers.get("content-type", "")
         text = resp.text
+        # 服务端可能在任意 content-type 的响应里下发 session id（initialize 常见）
+        sid = resp.headers.get("mcp-session-id")
+        if sid:
+            self._session_id = sid
         if "text/event-stream" in ctype:
             # 解析最后一条 data: 行作为 JSON-RPC 响应
             data = _last_sse_data(text)
             if data is None:
                 raise HttpMcpError(f"SSE 响应无 data 帧: {text[:200]}")
             body = json.loads(data)
-            # SSE 端点可能回带 Mcp-Session-Id，保存供后续请求
-            sid = resp.headers.get("mcp-session-id")
-            if sid:
-                self._session_id = sid
         else:
             body = resp.json()
         if "error" in body:
@@ -136,9 +141,13 @@ class HttpMcpClient:
         )
         # 发送 initialized 通知
         try:
+            init_headers: dict[str, str] = {}
+            if self._session_id:
+                init_headers["Mcp-Session-Id"] = self._session_id
             await self._client.post(
                 self.url,
                 json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                headers=init_headers,
                 timeout=_TIMEOUT_HANDSHAKE,
             )
         except Exception:  # noqa: BLE001

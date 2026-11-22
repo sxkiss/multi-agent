@@ -270,6 +270,129 @@ class TestGatewayProcessor:
         assert calls[0][0] == "stop"
         assert calls[1][0] == "start"
 
+    def test_extract_images_from_content(self):
+        """入站图片（url / base64 / local_path）转成 chat_start 的 images 参数。"""
+        from octop_gateway.models import ImageContent, FileContent, TextContent, InboundMessage
+        from platform_ext.gateway_processor import _extract_images
+
+        msg = InboundMessage(channel_id="c", content=[
+            TextContent(text="看图"),
+            ImageContent(url="http://host:8100/uploads/a.png"),
+            ImageContent(data="QUJD", mime_type="image/jpeg"),
+            ImageContent(local_path="/tmp/b.png"),
+            FileContent(url="http://x/doc.pdf", mime_type="application/pdf"),  # 非图片，跳过
+        ])
+        imgs = _extract_images(msg)
+        assert len(imgs) == 3
+        assert imgs[0] == {"url": "http://host:8100/uploads/a.png"}
+        assert imgs[1]["url"] == "data:image/jpeg;base64,QUJD"
+        assert imgs[2] == {"path": "/tmp/b.png"}
+
+    def test_processor_passes_images_to_chat_start(self):
+        """processor 把图片作为 images 参数传给 chat_start（多模态）。"""
+        import asyncio
+        from octop_gateway.models import ImageContent, TextContent, InboundMessage
+        from platform_ext.gateway_processor import make_processor
+
+        captured = {}
+
+        class FakeAgentMain:
+            def chat_start(self, params):
+                captured.update(params)
+                return {"status": True, "data": {}}
+
+            async def chat_events(self, params):
+                yield 'event: message\ndata: {"event":"message","data":{"content":"ok"}}\n\n'
+                yield 'event: message_end\ndata: {"event":"message_end"}\n\n'
+
+        msg = InboundMessage(channel_id="c1", channel_type="webhook", content=[
+            TextContent(text="看看这张图"),
+            ImageContent(url="http://host:8100/uploads/a.png"),
+        ])
+        async def run():
+            proc = make_processor(agent_main=FakeAgentMain(), gateway=None)
+            async for _ in proc(msg):
+                pass
+        asyncio.run(run())
+        assert captured.get("images") == [{"url": "http://host:8100/uploads/a.png"}]
+        assert captured.get("message") == "看看这张图"
+
+    def test_processor_image_only_no_text(self):
+        """只有图片没有文字时，仍应发起对话（带 images，message 为空）。"""
+        import asyncio
+        from octop_gateway.models import ImageContent, InboundMessage
+        from platform_ext.gateway_processor import make_processor
+
+        captured = {}
+
+        class FakeAgentMain:
+            def chat_start(self, params):
+                captured.update(params)
+                return {"status": True, "data": {}}
+
+            async def chat_events(self, params):
+                yield 'event: message_end\ndata: {"event":"message_end"}\n\n'
+
+        msg = InboundMessage(channel_id="c1", channel_type="webhook",
+                             content=[ImageContent(url="http://host/a.png")])
+        async def run():
+            proc = make_processor(agent_main=FakeAgentMain(), gateway=None)
+            async for _ in proc(msg):
+                pass
+        asyncio.run(run())
+        assert captured.get("images") == [{"url": "http://host/a.png"}]
+
+    def test_extract_non_image_files(self):
+        """非图片附件提取：file/pdf/docx 收，图片/text 不收。"""
+        from octop_gateway.models import ImageContent, FileContent, TextContent, InboundMessage
+        from platform_ext.gateway_processor import _extract_non_image_files
+
+        msg = InboundMessage(channel_id="c", content=[
+            TextContent(text="看附件"),
+            ImageContent(url="http://x/a.png"),
+            FileContent(url="http://x/doc.pdf", mime_type="application/pdf"),
+            FileContent(url="http://x/data.xlsx", mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            FileContent(local_path="", url=""),
+        ])
+        files = _extract_non_image_files(msg)
+        assert len(files) == 2
+        assert all(getattr(f, "type", "") == "file" for f in files)
+
+    def test_processor_passes_file_blocks_to_chat_start(self, monkeypatch, tmp_path):
+        """非图片附件落盘后以 file 块进 chat_start 的 message。"""
+        import asyncio
+        from octop_gateway.models import FileContent, TextContent, InboundMessage
+        import platform_ext.gateway_processor as gp
+
+        captured = {}
+
+        class FakeAgentMain:
+            def chat_start(self, params):
+                captured.update(params)
+                return {"status": True, "data": {}}
+
+            async def chat_events(self, params):
+                yield 'event: message_end\ndata: {"event":"message_end"}\n\n'
+
+        # 让落盘直接返回指定路径，避免写真实 workspace
+        async def fake_materialize(parts, session_id):
+            return [{"type": "file", "path": "/workspace/inbound/s/doc.pdf"}]
+        monkeypatch.setattr(gp, "_materialize_file_blocks", fake_materialize)
+
+        msg = InboundMessage(channel_id="c1", channel_type="webhook", content=[
+            TextContent(text="请看附件"),
+            FileContent(url="http://x/doc.pdf", mime_type="application/pdf"),
+        ])
+        async def run():
+            proc = gp.make_processor(agent_main=FakeAgentMain(), gateway=None)
+            async for _ in proc(msg):
+                pass
+        asyncio.run(run())
+        sent = captured.get("message")
+        assert isinstance(sent, list)
+        assert {"type": "text", "text": "请看附件"} in sent
+        assert {"type": "file", "path": "/workspace/inbound/s/doc.pdf"} in sent
+
 class TestRuntimeDepsAndFillback:
     def test_missing_deps_qq_none(self):
         from platform_ext import gateway
