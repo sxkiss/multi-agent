@@ -109,6 +109,20 @@ _PLATFORM_META: dict[str, dict[str, Any]] = {
                           {"name": "password", "type": "password", "required": False}],
         "note": "MQTT 协议通道，需 paho-mqtt SDK",
     },
+    "webhook": {
+        "label": "Webhook",
+        "config_fields": [
+            {"name": "channel_name", "type": "string", "required": True,
+             "placeholder": "通道名（webhook 的 name，用于收发隔离）"},
+            {"name": "base_url", "type": "string", "required": False,
+             "placeholder": "webhook 服务地址（含附件 /uploads），默认 http://127.0.0.1:8100"},
+            {"name": "api_key", "type": "password", "required": False,
+             "placeholder": "webhook API Key（Bearer，可选）"},
+            {"name": "poll_interval", "type": "number", "required": False,
+             "placeholder": "轮询间隔秒，默认 2"},
+        ],
+        "note": "webhook-api 作为一个独立 IM 消息平台（HTTP 收发，无需 SDK）",
+    },
 }
 
 # 对齐底层通道 SDK 的 SUPPORTED_CHANNEL_KINDS（动态枚举，自动同步新平台）
@@ -119,7 +133,13 @@ def _build_platform_kinds() -> dict[str, dict[str, Any]]:
         from octop_gateway import SUPPORTED_CHANNEL_KINDS
         supported = sorted(SUPPORTED_CHANNEL_KINDS)
     except Exception:  # noqa: BLE001
-        supported = list(_PLATFORM_META.keys())
+        supported = []
+    # 合并 SDK 平台 + 本模块自定义平台（如 webhook，非 SDK channel）。
+    # 自定义平台由 gateway.py 自己实例化（见 _start_instance 的 webhook 分支），
+    # 不经过 SDK 的 ChannelManager.add_channel(type=...)。
+    for custom in _PLATFORM_META:
+        if custom not in supported:
+            supported.append(custom)
     for kind in supported:
         meta = dict(_PLATFORM_META.get(kind, {}))
         meta.setdefault("label", kind.title())
@@ -426,6 +446,13 @@ def _instance_to_channel_cfg(inst: dict[str, Any]) -> dict[str, Any]:
 def _sdk_available(kind: str) -> bool:
     if kind not in PLATFORM_KINDS:
         return False
+    # webhook 是纯 HTTP 通道，由 gateway_webhook.WebhookChannel 实现，不依赖平台 SDK。
+    if kind == "webhook":
+        try:
+            import platform_ext.gateway_webhook  # noqa: F401
+            return True
+        except Exception:  # noqa: BLE001
+            return False
     # 平台 SDK 模块路径：octop_gateway.channels.<kind>（对齐底层 _CHANNEL_MAP）
     try:
         __import__(f"octop_gateway.channels.{kind}", fromlist=["*"])
@@ -581,7 +608,19 @@ async def _start_instance(instance_id: str, kind: str, cfg: dict[str, Any]) -> s
         await mgr.start()
         _manager_running = True
     norm_cfg = _norm_cfg(kind, cfg)
-    channel_id = await mgr.add_channel(channel_type=kind, config=norm_cfg)
+    if kind == "webhook":
+        # webhook 不是 SDK builtin channel，用自定义 BaseChannel 实例注册。
+        from platform_ext.gateway_webhook import build_webhook_channel
+        from platform_ext.gateway_processor import make_processor
+        # channel_name 是 webhook 的通道标识（前端 config_field），_norm_cfg 会保留。
+        # 若旧数据只有展示名 name，则兜底用实例 id 作为通道名。
+        webhook_cfg = dict(norm_cfg)
+        if not webhook_cfg.get("channel_name"):
+            webhook_cfg["channel_name"] = str(cfg.get("channel_name") or instance_id)
+        channel = build_webhook_channel(make_processor(), config=webhook_cfg, channel_id=instance_id)
+        channel_id = await mgr.add_channel(channel)
+    else:
+        channel_id = await mgr.add_channel(channel_type=kind, config=norm_cfg)
     _manager_instances[channel_id] = instance_id
     _manager_kind_of[channel_id] = kind
     _manager_kinds.add(kind)
@@ -649,7 +688,7 @@ def _err(msg: str) -> JSONResponse:
 # 敏感字段（密码/密钥类），回显时不返回明文，只标记是否已设置
 _SENSITIVE_FIELDS = {
     "token", "secret", "password", "app_secret", "bot_token",
-    "client_secret", "encrypt_key",
+    "client_secret", "encrypt_key", "api_key",
 }
 
 
