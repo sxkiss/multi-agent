@@ -5,3 +5,5 @@
 !octop-gateway/
 !octop-memory/
 !.gitignore
+# vendored 包的 pip 依赖声明需入库，供新环境 clone 后安装
+!octop-gateway/requirements.txt

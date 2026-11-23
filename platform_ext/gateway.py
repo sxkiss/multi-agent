@@ -447,11 +447,16 @@ def _sdk_available(kind: str) -> bool:
     if kind not in PLATFORM_KINDS:
         return False
     # webhook 是纯 HTTP 通道，由 gateway_webhook.WebhookChannel 实现，不依赖平台 SDK。
+    # 注意：这里不能用 import 判断可用性——gateway_webhook 顶层 import octop_gateway.channel，
+    # 后者顶层 `import aiohttp`；缺 aiohttp 时 import 会抛错，导致此处返回 False，
+    # 三个调用点便会提前 return，webhook 永远走不到 _ensure_deps 自检/自动安装，最终静默跳过。
+    # 用 find_spec 只定位模块、不执行顶层 import，缺第三方依赖时仍返回 True，
+    # 让流程继续进入 _ensure_deps("webhook") 检出并自动安装 aiohttp。
     if kind == "webhook":
         try:
-            import platform_ext.gateway_webhook  # noqa: F401
-            return True
-        except Exception:  # noqa: BLE001
+            import importlib.util
+            return importlib.util.find_spec("platform_ext.gateway_webhook") is not None
+        except (ImportError, ValueError, AttributeError):
             return False
     # 平台 SDK 模块路径：octop_gateway.channels.<kind>（对齐底层 _CHANNEL_MAP）
     try:
@@ -507,6 +512,9 @@ _RUNTIME_DEPS: dict[str, dict[str, str]] = {
     "mqtt": {"paho.mqtt": "paho-mqtt"},
     "wecom": {"wecom_aibot_sdk": "wecom-aibot-sdk"},
     "telegram": {"telegram": "python-telegram-bot"},
+    # webhook 无平台 SDK，但经 octop_gateway.channel 顶层 import 传递依赖 aiohttp；
+    # 缺它时 gateway_webhook 无法 import、通道静默跳过。纳入自检以便明确报错并自动安装。
+    "webhook": {"aiohttp": "aiohttp"},
 }
 
 
