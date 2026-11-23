@@ -1,5 +1,6 @@
 import base64
 import logging
+import os
 import re
 import socket
 from urllib.parse import urlparse
@@ -16,6 +17,21 @@ MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5MB
 DEFAULT_TIMEOUT = 30  # seconds
 MAX_TIMEOUT = 120  # seconds
 
+# requests 支持的代理协议前缀（用于校验显式传入的 proxy 参数）
+_VALID_PROXY_PREFIXES = ("http://", "https://", "socks5://", "socks5h://")
+
+
+def _env_proxies() -> dict[str, str] | None:
+    """未显式指定代理时，回退读取标准环境变量（与 websearch._proxies 一致）。
+
+    依次读取 https_proxy/HTTPS_PROXY/all_proxy/ALL_PROXY/http_proxy/HTTP_PROXY，
+    返回 {"http": p, "https": p}；环境里没有代理时返回 None（直连，保持原行为）。
+    """
+    p = os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY") \
+        or os.environ.get("all_proxy") or os.environ.get("ALL_PROXY") \
+        or os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY")
+    return {"http": p, "https": p} if p else None
+
 WEBFETCH_DESC = """- Fetches content from a specified URL
 - Takes a URL and optional format as input
 - Fetches the URL content, converts to requested format (markdown by default)
@@ -27,6 +43,7 @@ Usage notes:
   - The URL must be a fully-formed valid URL
   - HTTP URLs will be automatically upgraded to HTTPS
   - Format options: "markdown" (default), "text", or "html"
+  - Optional `proxy` to route the request through a proxy server (supports http://, https://, socks5://, socks5h://). When omitted, standard proxy environment variables are used; if none are set, the request is made directly.
   - This tool is read-only and does not modify any files
   - Results may be summarized if the content is very large"""
 
@@ -140,7 +157,7 @@ def extract_text_from_html(html: str) -> str:
     return html
 
 @register_tool(category="网络", name_cn="网页获取", risk_level="low")
-def WebFetch(url: str, format: str = "markdown", timeout: int | None = None, **kwargs) -> str:
+def WebFetch(url: str, format: str = "markdown", timeout: int | None = None, proxy: str = "", **kwargs) -> str:
     """
     - Fetches content from a specified URL
     - Takes a URL and optional format as input
@@ -153,16 +170,30 @@ def WebFetch(url: str, format: str = "markdown", timeout: int | None = None, **k
       - The URL must be a fully-formed valid URL
       - HTTP URLs will be automatically upgraded to HTTPS
       - Format options: "markdown" (default), "text", or "html"
+      - Optional `proxy` routes the request through a proxy server (supports http://, https://, socks5://, socks5h://). When omitted, standard proxy environment variables are used; if none are set, the request is made directly.
       - This tool is read-only and does not modify any files
       - Results may be summarized if the content is very large
-    
+
     Args:
         url: The URL to fetch content from.
         format: The format to return the content in (text, markdown, or html). Defaults to markdown.
         timeout: Optional timeout in seconds (max 120).
+        proxy: Optional proxy URL to route the request through, e.g. "http://127.0.0.1:7890" or "socks5h://host:1080". Supports http://, https://, socks5:// and socks5h://. When empty, standard proxy environment variables are used, and if none are set the request is made directly.
     """
     # WebFetch.__doc__ = WEBFETCH_DESC
-    
+
+    # Resolve proxy: explicit argument wins, otherwise fall back to environment.
+    # Validation/cleansing only applies to the explicit proxy; env proxies are trusted.
+    proxy = proxy.strip() if isinstance(proxy, str) else ""
+    if proxy:
+        if not proxy.startswith(_VALID_PROXY_PREFIXES):
+            return _xml_response("error",
+                f"Invalid proxy '{proxy}': must start with one of "
+                f"{', '.join(_VALID_PROXY_PREFIXES)}")
+        proxies = {"http": proxy, "https": proxy}
+    else:
+        proxies = _env_proxies()
+
     # Validate URL
     if not url.startswith("http://") and not url.startswith("https://"):
         return _xml_response("error", "URL must start with http:// or https://")
@@ -193,7 +224,7 @@ def WebFetch(url: str, format: str = "markdown", timeout: int | None = None, **k
         headers["Accept"] = "*/*"
 
     try:
-        response = requests.get(url, headers=headers, timeout=request_timeout, stream=True)
+        response = requests.get(url, headers=headers, timeout=request_timeout, stream=True, proxies=proxies)
         
         # Retry with different UA if 403 (Cloudflare check)
         # if response.status_code == 403:
