@@ -187,3 +187,6 @@ scripts/
 .codeartsdoer/
 codearts-guide.md
 docs/*CodeArts*.md
+
+# Hermes 本地运行时缓存/副本（不入库）
+.hermes/
