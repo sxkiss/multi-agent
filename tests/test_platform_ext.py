@@ -227,6 +227,39 @@ class TestGatewayWebhook:
         })
         assert img.has_media
 
+    def test_parse_inbound_idempotent_for_inbound_message(self):
+        """ChannelManager worker 传入已解析的 InboundMessage 时必须原样返回，
+        否则二次当 dict 解析会得到空消息，processor 直接 return，消息进不了 agent。"""
+        from octop_gateway.models import InboundMessage, TextContent, ChannelSubject
+        from platform_ext.gateway_webhook import build_webhook_channel
+        ch = build_webhook_channel(object(), config={"channel_name": "sxkiss"}, channel_id="i1")
+        original = InboundMessage(
+            channel_id="i1", channel_type="webhook",
+            channel_subject=ChannelSubject(subject_id="sxkiss"),
+            content=[TextContent(text="你是谁")],
+        )
+        again = ch.parse_inbound(original)
+        assert again is original
+        assert again.text == "你是谁"
+
+    def test_start_initializes_cursor_to_now(self, monkeypatch):
+        """启动时应把 cursor 初始化为当前时间，避免首轮轮询不带 since 导致历史消息全量回放。"""
+        import time as _time
+        from platform_ext.gateway_webhook import build_webhook_channel
+        ch = build_webhook_channel(object(), config={"channel_name": "sxkiss"}, channel_id="i1")
+        assert ch._cursor is None
+        async def _fake_ensure_client():
+            return None
+        async def _fake_poll_loop():
+            return None
+        monkeypatch.setattr(ch, "_ensure_client", _fake_ensure_client)
+        monkeypatch.setattr(ch, "_poll_loop", _fake_poll_loop)
+        before = _time.time()
+        asyncio.run(ch.start())
+        after = _time.time()
+        assert ch._cursor is not None
+        assert before <= ch._cursor <= after
+
     def test_start_instance_uses_custom_channel(self, monkeypatch):
         from platform_ext import gateway as gw
         captured = {}
