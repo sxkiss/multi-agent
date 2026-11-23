@@ -1,0 +1,24 @@
+# octop-gateway 1.0.3（vendored）第三方运行时依赖声明
+#
+# 用途：明确声明该 vendored 包依赖的 pip 包，供新环境一键安装。
+# 依据：vendor/octop-gateway/octop_gateway-1.0.3.dist-info/METADATA 的 Requires-Dist（运行时部分）。
+# 注意：仓库内的 vendor/aiohttp 等目录是随包拷贝，import 不可靠（clone 后仍可能失败），
+#      一律以本文件的 pip 包声明为准，勿依赖 vendor 内的同名目录。
+#
+# ===== 公共硬依赖（所有通道共用，缺失会导致 BaseChannel import 失败）=====
+aiohttp>=3.9              # octop_gateway.channel 顶层 import，所有 channel 的公共硬依赖
+cryptography>=42.0        # 加解密 / 签名
+pydantic>=2.0             # models.py / DTO 校验
+httpx>=0.27.0             # HTTP 客户端（webhook 通道轮询/发送）
+websockets>=12.0          # WebSocket 连接层
+websocket-client>=1.6.0   # WebSocket 同步客户端
+python-dotenv>=1.0        # 环境变量加载
+python-socketio[asyncio-client]>=5.0  # Socket.IO 异步客户端
+
+# ===== 平台 SDK 类通道依赖（对应 gateway.py _RUNTIME_DEPS，按需加载）=====
+dingtalk-stream>=0.24.3   # 钉钉
+discord-py>=2.3           # Discord
+lark-oapi>=1.5.3          # 飞书
+paho-mqtt>=2.0.0          # MQTT
+python-telegram-bot>=21.0 # Telegram
+wecom-aibot-sdk>=1.0.7    # 企业微信

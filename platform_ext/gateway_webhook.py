@@ -11,7 +11,9 @@ name，并可启停、可自动启动、配置存 platform_ext.gateway.webhook�
   发：agent 回复 → _send_text/_send_media → POST /webhook/outbound/{name}
       （媒体走 multipart 的 media 字段），供 webhook 订阅方消费。
 
-不依赖任何平台 SDK（webhook 只是 HTTP），因此不需要 _RUNTIME_DEPS 安装步骤。
+不依赖任何平台 SDK（webhook 只是 HTTP），但仍经 octop_gateway.channel 顶层 import
+传递依赖 aiohttp（BaseChannel 定义在该模块）。因此需在 gateway.py 的 _RUNTIME_DEPS
+中登记 webhook 的 aiohttp 依赖，由 _ensure_deps 自检/自动安装，避免缺依赖时静默跳过。
 """
 
 from __future__ import annotations
