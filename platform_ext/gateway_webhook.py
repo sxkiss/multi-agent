@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -149,6 +150,11 @@ class WebhookChannel(BaseChannel):
             return
         if not self._config.name:
             raise RuntimeError("WebhookChannel: name is required")
+        # cursor 是内存态，进程重启会丢。若不在启动时初始化，第一轮轮询将不带 since，
+        # 服务端 /webhook/outbound 会返回最近 50 条历史消息当成新消息全部回放（刷屏）。
+        # 方案 A：只处理启动之后的新消息，不回放停机前的历史。
+        if self._cursor is None:
+            self._cursor = time.time()
         self._stop_evt = asyncio.Event()
         await self._ensure_client()
         self._task = asyncio.create_task(self._poll_loop(), name=f"webhook-channel-{self.channel_id}")
@@ -215,6 +221,12 @@ class WebhookChannel(BaseChannel):
             self._seen_ids = set(list(self._seen_ids)[-1000:])
 
     def parse_inbound(self, raw_payload: Any) -> InboundMessage:
+        # ChannelManager worker 在 handle_inbound 前已把 raw dict 解析过一次，
+        # 传入的是 InboundMessage。若在此再次当 dict 解析会得到空消息，
+        # 导致 processor 因「无文本/无图/无附件」直接 return，消息永远进不了 agent。
+        # 与内置 mqtt/discord channel 保持一致：已解析的 InboundMessage 原样返回。
+        if isinstance(raw_payload, InboundMessage):
+            return raw_payload
         data = raw_payload if isinstance(raw_payload, dict) else {}
         meta = dict(data.get("metadata") or {})
         meta.setdefault("webhook_id", str(data.get("id") or ""))
