@@ -704,6 +704,11 @@ from backup_routes import register_backup_routes as _register_backup_routes
 _register_backup_routes(app, BASE_DIR)
 
 
+# ── 框架自动更新（detection/apply 分离，update_manager.py + update_routes.py）──
+from update_routes import register_update_routes as _register_update_routes
+_register_update_routes(app, BASE_DIR)
+
+
 # ── 卡密路由（已抽离到 card_routes.py）──────────────────────────────
 from card_routes import register_card_routes as _register_card_routes
 _register_card_routes(app, BASE_DIR, agent_main)

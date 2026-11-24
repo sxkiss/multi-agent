@@ -92,6 +92,9 @@ chat_client/skills
 config.json
 agents_data/**/config.json
 
+# 框架更新本地锚点（自动生成，不提交；否则 git 通道会被它污染）
+version.json
+
 # ===== 大文件（超 GitHub 100MB 限制）=====
 uploads/
 fn_unpack/
