@@ -9,13 +9,16 @@ bt 此前入站图片只转 base64 传上游，**未落盘**——agent 无法�
 二次处理（如 OCR、裁剪、存档）。本模块：
 
 - save_inbound_media(...)：把入站媒体落 `workspace/inbound/<session>/`
-- 尺寸/类型校验（防超大文件、防非法扩展名）
+- 尺寸校验（防超大文件）。扩展名不设白名单：任何类型都能接收，
+  二进制文件 agent 侧 _is_binary_file 会拦住读取，不会执行，白名单无实际收益
+  却会误伤 .zip 等常见附件。
 - 返回落盘路径 + 元数据，供 agent 在提示中引用
 """
 import base64
 import hashlib
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -23,11 +26,6 @@ logger = logging.getLogger(__name__)
 
 INBOUND_DIRNAME = "inbound"
 MAX_BYTES = 20 * 1024 * 1024  # 20MB
-ALLOWED_EXT = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
-    ".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".csv", ".json",
-    ".mp3", ".wav", ".ogg", ".mp4", ".mov",
-}
 
 
 def _safe_session(session_id: str) -> str:
@@ -69,9 +67,10 @@ def save_inbound_media(data: bytes | str, *, base_dir: str, session_id: str,
         return {"ok": False, "error": f"超过 {MAX_BYTES // (1024*1024)}MB 上限"}
 
     e = (ext or os.path.splitext(filename or "")[1] or "").lower()
-    if e and e not in ALLOWED_EXT:
-        return {"ok": False, "error": f"不允许的扩展名: {e}"}
-    if not e:
+    # 不设扩展名白名单（任何类型都接收）；但清洗成安全后缀，防路径穿越/注入。
+    # 只保留字母数字，超长/异常后缀统一降为 .bin。
+    e = re.sub(r"[^a-z0-9.]", "", e)
+    if not e or e == "." or len(e) > 12 or not e.startswith(".") or "." in e[1:]:
         e = ".bin"
 
     d = inbound_dir(base_dir, session_id)

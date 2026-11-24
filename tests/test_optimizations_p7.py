@@ -173,10 +173,21 @@ class TestInboundMedia:
                                session_id="single:assistant:x", ext=".png")
         assert r["ok"] and os.path.isfile(r["path"])
 
-    def test_bad_ext(self, tmp_path):
+    def test_any_ext_accepted(self, tmp_path):
+        # 不设白名单：.exe/.zip 等任意扩展名都能接收落盘
         from chat_client.inbound_media import save_inbound_media
-        r = save_inbound_media(b"data", base_dir=str(tmp_path), session_id="s", ext=".exe")
-        assert not r["ok"]
+        for ext in (".exe", ".zip", ".rar", ".apk"):
+            r = save_inbound_media(b"data-" + ext.encode(), base_dir=str(tmp_path),
+                                   session_id="s", ext=ext)
+            assert r["ok"] and os.path.isfile(r["path"]), ext
+
+    def test_unsafe_ext_sanitized(self, tmp_path):
+        # 异常扩展名（路径穿越/多后缀）降为 .bin，不落危险文件名
+        from chat_client.inbound_media import save_inbound_media
+        r = save_inbound_media(b"data", base_dir=str(tmp_path), session_id="s",
+                               ext="../../evil.sh")
+        assert r["ok"] and r["ext"] == ".bin"
+        assert "/" not in os.path.basename(r["path"])
 
 
 class TestResponseMode:
