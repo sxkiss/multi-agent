@@ -183,6 +183,8 @@ background_tasks.sqlite
 
 # 本地脚本工具（不入库）
 scripts/
+# 例外：875 技能的发送 CLI 必须入库（上条 scripts/ 会匹配任意层级）
+!skills/wechat-875-route/scripts/
 
 # CodeArts agent 工具生成的本地文件（不入库）
 .codeartsdoer/
