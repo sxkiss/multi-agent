@@ -1,0 +1,4 @@
+# 真实卡密配置绝不入库
+config/wechat-875.json
+__pycache__/
+*.pyc
