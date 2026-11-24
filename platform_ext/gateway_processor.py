@@ -530,7 +530,11 @@ def make_processor(agent_main=None, chat_jobs=None, gateway=None):
             if text.strip():
                 parts.append({"type": "text", "text": text})
             parts.extend(file_blocks)
-            outbound_message = parts
+            # AgentMain.chat_start → _build_chat_agent 只接受字符串 message：
+            # 它会对字符串 json.loads 还原成 content blocks；直接传 python list
+            # 会被当成「非字符串类型」清空，导致附件消息变成「请输入内容」。
+            import json as _json
+            outbound_message = _json.dumps(parts, ensure_ascii=False)
 
         ag = _get_agent_main()
         if ag is None:

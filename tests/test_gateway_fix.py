@@ -389,9 +389,14 @@ class TestGatewayProcessor:
                 pass
         asyncio.run(run())
         sent = captured.get("message")
-        assert isinstance(sent, list)
-        assert {"type": "text", "text": "请看附件"} in sent
-        assert {"type": "file", "path": "/workspace/inbound/s/doc.pdf"} in sent
+        # chat_start/_build_chat_agent 只接受字符串 message（内部 json.loads 还原 blocks）；
+        # 直接传 python list 会被清空成「请输入内容」，所以这里必须是 JSON 字符串。
+        assert isinstance(sent, str), f"message 必须是字符串，实际 {type(sent)}"
+        import json
+        blocks = json.loads(sent)
+        assert isinstance(blocks, list)
+        assert {"type": "text", "text": "请看附件"} in blocks
+        assert {"type": "file", "path": "/workspace/inbound/s/doc.pdf"} in blocks
 
 class TestRuntimeDepsAndFillback:
     def test_missing_deps_qq_none(self):
