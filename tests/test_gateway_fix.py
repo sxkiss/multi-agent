@@ -612,3 +612,79 @@ class TestGatewayQrInstanceBinding:
         fields = {f["name"]: f for f in target["config_fields"]}
         assert fields["token"]["saved"] is True
         assert fields["token"]["saved_value"] == ""
+
+
+class TestMaterializeFileBlocks:
+    """附件落盘/超大转 URL：不设格式白名单，超 20MB 用地址文本代替落盘。"""
+
+    @staticmethod
+    def _fake_stream(chunks, status=200):
+        """构造 httpx.AsyncClient.stream 上下文管理器的最小替身。"""
+        import contextlib
+
+        class FakeResp:
+            def raise_for_status(self):
+                if status >= 400:
+                    raise RuntimeError(f"HTTP {status}")
+
+            async def aiter_bytes(self, size):
+                for c in chunks:
+                    yield c
+
+        @contextlib.asynccontextmanager
+        async def fake_stream(method, url, **kw):
+            yield FakeResp()
+
+        class FakeClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            stream = staticmethod(fake_stream)
+
+        return FakeClient
+
+    def test_any_ext_materialized(self, monkeypatch, tmp_path):
+        """任意格式（.zip/.exe）小文件正常落盘为 file 块。"""
+        import asyncio
+        from octop_gateway.models import FileContent
+        import platform_ext.gateway_processor as gp
+
+        monkeypatch.setattr(gp.os, "path", gp.os.path)  # 保持真实 os.path
+        FakeClient = self._fake_stream([b"ZIPDATA" * 10])
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+        part = FileContent(url="http://host/file.zip", filename="archive.zip")
+        blocks = asyncio.run(gp._materialize_file_blocks([part], "sess-any-ext"))
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "file"
+        assert os.path.isfile(blocks[0]["path"])
+        assert blocks[0]["path"].endswith(".zip")
+
+    def test_oversized_turns_into_url_text(self, monkeypatch, tmp_path):
+        """>20MB 附件不落盘，转成含完整 url 的文本块。"""
+        import asyncio
+        from octop_gateway.models import FileContent
+        import platform_ext.gateway_processor as gp
+        from chat_client.inbound_media import MAX_BYTES
+        import httpx
+
+        # 生成刚超过上限的字节（分块喂给 stream）
+        chunk = b"x" * (1024 * 1024)  # 1MB
+        chunks = [chunk] * (MAX_BYTES // (1024 * 1024) + 1)
+        FakeClient = self._fake_stream(chunks)
+        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+        url = "http://127.0.0.1:8100/uploads/big-file.zip"
+        part = FileContent(url=url, filename="big.zip")
+        blocks = asyncio.run(gp._materialize_file_blocks([part], "sess-big"))
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "text"
+        assert url in blocks[0]["text"]
+        assert "20MB" in blocks[0]["text"]

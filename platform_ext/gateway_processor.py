@@ -277,17 +277,19 @@ def _extract_non_image_files(message) -> list[Any]:
 
 
 async def _materialize_file_blocks(parts: list[Any], session_id: str) -> list[dict[str, Any]]:
-    """把非图片附件落盘到 workspace/inbound/<session>/，转成 chat_start 的 file 块。
+    """把非图片附件转成 chat_start 的块。
 
-    chat_start 支持 message 里的 {"type":"file","path":"..."} 块：
-    _process_user_input_files 会调用 Read 读取文件内容给 agent。这里负责先把
-    远程 url / base64 的附件落成真实本地文件。二进制文件 agent 会用工具处理。
+    - 小文件（<=20MB）：下载/解码后落盘 workspace/inbound/<session>/，生成 file 块，
+      agent 可用 Read 读取内容。
+    - 大文件（>20MB）：不下载、不落盘，把完整 URL（webhook 地址 + 附件路径）拼成
+      文本块交给 agent，让它/用户直接通过地址访问，避免大文件占工作区与内存。
+    - 不设扩展名白名单：任何格式都能接收。
     """
     blocks: list[dict[str, Any]] = []
     if not parts:
         return blocks
     try:
-        from chat_client.inbound_media import save_inbound_media
+        from chat_client.inbound_media import MAX_BYTES, save_inbound_media
     except Exception:  # noqa: BLE001
         logger.warning("[gw-proc] inbound_media 不可用，附件跳过", exc_info=True)
         return blocks
@@ -301,18 +303,33 @@ async def _materialize_file_blocks(parts: list[Any], session_id: str) -> list[di
         ext = os.path.splitext(filename)[1] if filename else ""
         raw: bytes | str | None = None
         if data:
-            raw = data  # base64 字符串
+            raw = data  # base64 字符串（无外部 url，落盘函数按 MAX_BYTES 兜底）
         elif local_path and os.path.isfile(local_path):
-            raw = local_path  # 已是本地文件，直接引用（不再复制）
             blocks.append({"type": "file", "path": local_path})
             continue
         elif url:
             try:
                 import httpx
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    resp = await client.get(url)
-                    resp.raise_for_status()
-                    raw = resp.content
+                buf = bytearray()
+                oversized = False
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                    async with client.stream("GET", url) as resp:
+                        resp.raise_for_status()
+                        async for chunk in resp.aiter_bytes(65536):
+                            buf.extend(chunk)
+                            if len(buf) > MAX_BYTES:
+                                oversized = True
+                                break
+                if oversized:
+                    # 大文件不落盘：webhook 地址 + 附件路径已经拼成完整 url，直接发文本。
+                    logger.info("[gw-proc] 附件超过 %dMB 未落盘，改用 URL 文本: %s",
+                                MAX_BYTES // (1024 * 1024), url)
+                    blocks.append({"type": "text", "text": (
+                        f"[附件较大（超过 {MAX_BYTES // (1024 * 1024)}MB），未下载到本地，"
+                        f"请通过以下地址访问：{url}]"
+                    )})
+                    continue
+                raw = bytes(buf)
                 if not ext:
                     from urllib.parse import urlparse
                     ext = os.path.splitext(urlparse(url).path)[1]
