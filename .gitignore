@@ -74,6 +74,7 @@ static/js/*
 static/assets/
 skills/*
 !skills/review-agent/
+!skills/wechat-875-route/
 
 # ===== 运行时技能状态 / 市场缓存（外部数据，不入库） =====
 skills_state.json
