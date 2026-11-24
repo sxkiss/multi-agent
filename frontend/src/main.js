@@ -174,3 +174,6 @@ createApp(App).mount('#app')
 
 // 前端功能增强（主题切换 / 对话搜索 / 快捷键 / 自动滚底）——非侵入式
 import('./enhance.js').catch((e) => console.warn('[enhance] 加载失败', e))
+
+// 框架更新提示（检测只读 / 点按钮才更新）——非侵入式，延迟自检
+import('./update-notifier.js').catch((e) => console.warn('[update-notifier] 加载失败', e))
