@@ -1,0 +1,60 @@
+# 版本控制与虚拟环境（本地 .venv 6G+，镜像内重装）
+.git
+.venv
+venv
+
+# 运行时数据与日志（容器内重新生成，不进镜像）
+logs/
+backups/
+sessions/
+jobs/
+uploads/
+workspace/
+fn_unpack/
+test_zips/
+
+# 本地运行时大目录（记忆/会话/项目产物，绝不进镜像）
+# 注意：static/ vendor/ re_captcha/ 是 git 跟踪的源码，不能排除
+.hermes/
+work/
+miniprogram/
+tool_archives/
+market_cache/
+knowledge/
+.playwright-mcp/
+deploy_backup/
+
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.pid
+.server.log
+.server.pid
+
+# 缓存
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 前端构建产物（如需要镜像内构建再放开；当前用源码内已提交资源）
+node_modules/
+frontend/dist/
+
+# 本地配置与密钥（不进镜像）
+.env
+.env.*
+config.json.lock
+.config-*.tmp
+
+# 临时/备份文件
+*.bak
+*.bak.*
+*.before_*
+debug_*.png
+fullwidth_*.png
+
+# CI 自身
+.github/
