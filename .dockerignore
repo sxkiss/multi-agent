@@ -13,17 +13,6 @@ workspace/
 fn_unpack/
 test_zips/
 
-# 本地运行时大目录（记忆/会话/项目产物，绝不进镜像）
-# 注意：static/ vendor/ re_captcha/ 是 git 跟踪的源码，不能排除
-.hermes/
-work/
-miniprogram/
-tool_archives/
-market_cache/
-knowledge/
-.playwright-mcp/
-deploy_backup/
-
 *.log
 *.sqlite
 *.sqlite-shm
