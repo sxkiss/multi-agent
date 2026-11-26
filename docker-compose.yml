@@ -1,0 +1,24 @@
+# multi-agent (bt-agent) 容器启动配置
+# 镜像由 git 仓库（github.com/sxkiss/multi-agent）远端 CI 构建推送到 ghcr。
+# 镜像为私有：首次拉取需先登录（GITHUB_TOKEN 需含 read:packages 权限）：
+#   echo "$GITHUB_TOKEN" | docker login ghcr.io -u <用户名> --password-stdin
+# 端口 9876 不变，启动方式不变（uvicorn web_server:app --host 0.0.0.0 --port 9876）。
+# 不映射任何路径：config.json / auth.json / 记忆 / 会话等运行时数据全部落在容器内。
+#
+# 用法：docker compose up -d
+
+services:
+  multi-agent:
+    image: ${MULTI_AGENT_IMAGE:-ghcr.io/sxkiss/multi-agent:latest}
+    container_name: multi-agent
+    restart: unless-stopped
+    ports:
+      - "9876:9876"
+    # 鉴权默认开启：首次访问前端弹出"设置管理员密码"页，提交即初始化凭据。
+    # 无需预置任何 env；模型 API 配置在登录后的前端面板里填写（存容器内 config.json）。
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9876/api/auth/status', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
