@@ -15,8 +15,9 @@ api_key，任何人访问 9876 端口即可拿到模型密钥并读写文件。
 1. 仅依赖标准库 + PyJWT（bcrypt 可选，缺失时回退 PBKDF2-HMAC-SHA256）。
 2. 令牌走 `Authorization: Bearer <token>`；SSE 端点因前端用 fetch
    实现（非 EventSource），同样可带 header，无需 query 传参。
-3. 默认关闭鉴权（auth.enabled=false），保持既有部署行为不变；
-   开启后除白名单外全部受保护，避免升级即锁死。
+3. 默认开启鉴权（auth.json 不存在时 enabled=true），除白名单外全部受保护；
+   首次访问前端弹出"设置管理员密码"页，提交 /api/auth/login 即初始化凭据。
+   已有 auth.json 显式 enabled=false 的老部署仍按其配置放行，不被强制锁定。
 4. 密码只存 PBKDF2 派生值（salt+hash），永不落明文。
 """
 
@@ -124,12 +125,19 @@ def _verify_password(password: str, stored: dict) -> bool:
 
 
 def load_auth(base_dir: str) -> dict:
-    """读取 auth.json；不存在则返回默认（未初始化 / 关闭）。"""
+    """读取 auth.json；不存在则返回默认（鉴权开启 / 未初始化密码）。
+
+    2026-11-26 改为默认开启鉴权：容器开箱即受保护，首次访问前端会弹出
+    "设置管理员密码"页（/api/auth/status 返回 enabled=true, initialized=false
+    → LoginMask 显示设置密码），提交到 /api/auth/login 首次设置即初始化凭据。
+    status/login 均在免鉴权白名单，故不存在"先鉴权才能设密码"的死锁。
+    已有 auth.json 若显式写了 enabled=false，仍按文件值保留（尊重老部署选择）。
+    """
     path = _auth_file(base_dir)
     # secret 必须在默认键内：否则下面的键过滤会把它丢弃，导致每次读取都
     # 重新生成签名密钥，已签发 token 全部校验失败（表现为"登录成功却仍 401"）。
     default = {
-        "enabled": False,
+        "enabled": True,
         "password": None,
         "token_ttl_hours": DEFAULT_TTL_HOURS,
         "secret": None,
