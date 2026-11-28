@@ -226,6 +226,11 @@ def _build_flags(profile: Profile, headless: bool) -> list[str]:
         "--disable-popup-blocking",
         "--metrics-recording-only",
         "--safebrowsing-disable-auto-update",
+        # Keep background/occluded renderers running at full speed so the
+        # agent's page never stalls while the tab is hidden or unfocused.
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
         # Chrome >=128 hardened its crashpad handler to require an explicit
         # ``--database`` path; in containers/root/CI environments where the
         # crash-database directory can't be resolved (missing/unwritable

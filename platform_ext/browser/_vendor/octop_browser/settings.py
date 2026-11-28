@@ -49,8 +49,17 @@ Environment variables (all optional):
     BROWSER_USE_CDP_WS_URL     - if set, bypass launcher and connect directly to this
                            Chrome DevTools WebSocket URL (e.g. for remote/Docker Chrome)
     BROWSER_USE_PROXY          - HTTP/HTTPS/SOCKS5 proxy for Chrome (e.g. "http://127.0.0.1:7890"
-                           or "socks5://127.0.0.1:1080"). Passed as --proxy-server flag.
-                          default: None
+                             or "socks5://127.0.0.1:1080"). Passed as --proxy-server flag.
+                            default: None
+    BROWSER_USE_BLOCK_RESOURCES - if "0"/"false"/"no"/"off", disable the
+                            Network.setBlockedURLs optimization (load images,
+                            fonts, analytics/ads normally). default: enabled.
+    BROWSER_USE_BLOCK_RESOURCE_PATTERNS - comma-separated CDP URL patterns
+                            blocked via Network.setBlockedURLs when the above
+                            switch is on. Chrome glob syntax: "*" matches any
+                            substring. Set to an empty string to block nothing.
+                            default: common image/font/analytics/ads patterns.
+
   BROWSER_USE_IDLE_TIMEOUT_MINUTES - stop a locally managed Chrome profile after
                           this many minutes without real CDP activity. 0 disables.
                           default: 0
@@ -108,6 +117,52 @@ def _env_str(key: str, default: str | None = None) -> str | None:
     return os.environ.get(key, default)
 
 
+def _env_bool(key: str, default: bool = True) -> bool:
+    """Parse a boolean env var; "0"/"false"/"no"/"off" mean False."""
+    val = os.environ.get(key)
+    if val is None or val == "":
+        return default
+    return val.strip().lower() not in ("0", "false", "no", "off")
+
+
+#: Default CDP URL patterns for Network.setBlockedURLs. Chrome glob syntax:
+#: "*" matches any substring. Kept conservative (no CSS/JS) so page
+#: structure and interactivity are preserved while heavyweight images,
+#: fonts and third-party analytics/ad endpoints are skipped.
+DEFAULT_BLOCK_RESOURCE_PATTERNS: tuple[str, ...] = (
+    "*://*/*.png",
+    "*://*/*.jpg",
+    "*://*/*.jpeg",
+    "*://*/*.gif",
+    "*://*/*.webp",
+    "*://*/*.svg",
+    "*://*/*.ico",
+    "*://*/*.woff",
+    "*://*/*.woff2",
+    "*://*/*.ttf",
+    "*://*/*.otf",
+    "*://*/*.eot",
+    "*://*/*google-analytics.com/*",
+    "*://*/*googletagmanager.com/*",
+    "*://*/*doubleclick.net/*",
+    "*://*/*googleadservices.com/*",
+    "*://connect.facebook.net/*",
+)
+
+
+def _env_patterns(key: str) -> tuple[str, ...]:
+    """Parse a comma-separated list of CDP URL patterns from the environment.
+
+    An unset variable yields the defaults; an explicitly empty string means
+    "block nothing" (return an empty tuple).
+    """
+    raw = os.environ.get(key)
+    if raw is None:
+        return DEFAULT_BLOCK_RESOURCE_PATTERNS
+    patterns = tuple(p.strip() for p in raw.split(",") if p.strip())
+    return patterns
+
+
 @dataclass
 class OctopSettings:
     """
@@ -144,7 +199,8 @@ class OctopSettings:
         )
     )
     cdp_port_start: int = field(
-        default_factory=lambda: _env_int("BROWSER_USE_CDP_PORT_START", 9222)
+        # 9222 常被本机其它服务/有头浏览器占用，默认改到 9300 段避开冲突。
+        default_factory=lambda: _env_int("BROWSER_USE_CDP_PORT_START", 9300)
     )
     chrome_bin: str | None = field(
         default_factory=lambda: _env_str("BROWSER_USE_CHROME_BIN")
@@ -182,6 +238,12 @@ class OctopSettings:
     )
     proxy: str | None = field(
         default_factory=lambda: _env_str("BROWSER_USE_PROXY")
+    )
+    block_resources: bool = field(
+        default_factory=lambda: _env_bool("BROWSER_USE_BLOCK_RESOURCES", True)
+    )
+    block_resource_patterns: tuple[str, ...] = field(
+        default_factory=lambda: _env_patterns("BROWSER_USE_BLOCK_RESOURCE_PATTERNS")
     )
 
 

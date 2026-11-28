@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -148,6 +149,16 @@ class ProfileManager:
         except OSError as exc:
             logger.debug("Could not write %s: %s", path, exc)
 
+    @staticmethod
+    def _port_in_use(port: int) -> bool:
+        """True if something is already listening on this TCP port locally."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.2)
+            try:
+                return sock.connect_ex(("127.0.0.1", port)) == 0
+            except OSError:
+                return False
+
     def _assign_port(self, name: str) -> int:
         ports = self._load_ports()
         existing = ports.get(name)
@@ -156,7 +167,11 @@ class ProfileManager:
 
         used_ports = set(ports.values()) | {p.cdp_port for p in self._profiles.values()}
         port = self._settings.cdp_port_start
-        while port in used_ports:
+        # Skip both ports known to other profiles and ports actually occupied
+        # on the host (e.g. another service's Chrome on 9222). Without the
+        # live check, a stale record could hand us a port owned by a different
+        # browser session and CDP would attach to the wrong Chrome.
+        while port in used_ports or self._port_in_use(port):
             port += 1
         ports[name] = port
         self._save_ports(ports)

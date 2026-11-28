@@ -67,6 +67,7 @@ class _InternalCDPSession:
         # Note: the "Input" domain has no .enable method in CDP — input events
         # are dispatched directly via Input.dispatch* commands without enabling.
         await self._apply_viewport()
+        await self._apply_resource_blocking()
         self._connected = True
         if self._idle_controller is not None:
             self._idle_controller.start()
@@ -94,6 +95,42 @@ class _InternalCDPSession:
             )
         except Exception:  # pragma: no cover  # pylint: disable=broad-except
             logger.debug("setDeviceMetricsOverride failed", exc_info=True)
+
+    async def _apply_resource_blocking(self) -> None:
+        """Configure Network.setBlockedURLs on the current page target.
+
+        Performance optimization: skip heavyweight images, fonts and
+        third-party analytics/ad endpoints so pages render faster and with
+        less traffic. Uses ``Network.setBlockedURLs`` rather than
+        ``Fetch.enable`` because the former is an idempotent per-target
+        setting with no event-loop state to manage — re-sending it after a
+        CDP reconnect (tab switch / new tab) is all that is needed. In
+        contrast ``Fetch.enable`` intercepts every request and requires a
+        ``Fetch.requestPaused`` -> ``failRequest``/``continueRequest`` loop
+        that can stall navigation if any request is left unresolved.
+
+        Turning the feature off is clean: we always send an explicit
+        (possibly empty) pattern list, so a previously blocked target that
+        is reconfigured with the switch off will load everything again.
+        """
+        if not self._cfg.block_resources:
+            patterns: list[str] = []
+        else:
+            patterns = list(self._cfg.block_resource_patterns)
+        try:
+            await self._client.enable_domain("Network")
+            await self._client.send(
+                "Network.setBlockedURLs", {"urls": patterns}
+            )
+            logger.debug(
+                "Resource blocking applied on target: %d patterns (enabled=%s)",
+                len(patterns),
+                self._cfg.block_resources,
+            )
+        except Exception:  # pragma: no cover  # pylint: disable=broad-except
+            # Best-effort optimization: never break navigation if the CDP
+            # domain is unavailable (e.g. some remote/embedded Chrome builds).
+            logger.debug("setBlockedURLs failed", exc_info=True)
 
     async def switch_to_target(self, target_id: str, *, activate: bool = True) -> None:
         """Reconnect this session to another page target.
@@ -144,6 +181,7 @@ class _InternalCDPSession:
         await self._client.enable_domain("DOM")
         await self._client.enable_domain("Runtime")
         await self._apply_viewport()
+        await self._apply_resource_blocking()
         self._profile.save_target(target_id)
 
     async def close(self, *, kill: bool = False) -> None:
